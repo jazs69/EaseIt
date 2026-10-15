@@ -1,0 +1,56 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# build output
+dist/
+build/
+out/
+.next/
+next-env.d.ts
+
+# turborepo
+.turbo/
+
+# prisma
+packages/database/generated/
+*.db
+*.db-journal
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# testing
+coverage/
+*.lcov
+playwright-report/
+test-results/
+
+# logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# typescript / tooling caches
+*.tsbuildinfo
+.eslintcache
+
+# editors
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# os
+.DS_Store
+Thumbs.db
+desktop.ini

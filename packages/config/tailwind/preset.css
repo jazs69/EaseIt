@@ -1,0 +1,223 @@
+/* ===========================================================================
+ * @repo/config - shared Tailwind v4 design-token preset
+ * ---------------------------------------------------------------------------
+ * Tailwind v4 is CSS-first: the shared "preset" is this stylesheet rather than
+ * a JS `presets: []` array. Consume it from an app entry stylesheet as:
+ *
+ *   @import 'tailwindcss';
+ *   @import '@repo/config/tailwind/preset.css';
+ *
+ * Import order matters - `tailwindcss` must come first so that @theme,
+ * @custom-variant and @layer below have something to extend.
+ *
+ * This file deliberately does NOT import 'tailwindcss' itself: doing so would
+ * anchor Tailwind's automatic source detection to packages/config instead of
+ * the consuming app.
+ * ======================================================================== */
+
+/* The shared component library lives outside each app's own tree, so Tailwind
+ * has to be told to scan it. Resolved relative to this file. */
+@source '../../ui/src';
+
+/* Class-based dark mode so the admin PMS can honour an explicit staff
+ * preference, not just the OS setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+ * Raw palette - light theme. shadcn/ui-compatible token names, oklch values.
+ * ------------------------------------------------------------------------ */
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+
+  /* Brand: deep hospitality teal */
+  --primary: oklch(0.52 0.094 194.769);
+  --primary-foreground: oklch(0.985 0 0);
+
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.596 0.145 163.225);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.769 0.168 70.08);
+  --warning-foreground: oklch(0.216 0.045 70.08);
+
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.52 0.094 194.769);
+
+  /* Housekeeping room-status semantics - shared by the admin board and the
+   * reservation calendar so a colour never means two different things. */
+  --room-vacant-clean: oklch(0.596 0.145 163.225);
+  --room-vacant-dirty: oklch(0.769 0.168 70.08);
+  --room-occupied: oklch(0.52 0.094 194.769);
+  --room-inspected: oklch(0.646 0.142 237.323);
+  --room-out-of-order: oklch(0.577 0.245 27.325);
+
+  /* Chart series */
+  --chart-1: oklch(0.52 0.094 194.769);
+  --chart-2: oklch(0.646 0.142 237.323);
+  --chart-3: oklch(0.769 0.168 70.08);
+  --chart-4: oklch(0.596 0.145 163.225);
+  --chart-5: oklch(0.627 0.265 303.9);
+
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar-primary: oklch(0.52 0.094 194.769);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.967 0.001 286.375);
+  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
+  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-ring: oklch(0.52 0.094 194.769);
+}
+
+/* ---------------------------------------------------------------------------
+ * Dark theme. Only the token values change, never the token names.
+ * ------------------------------------------------------------------------ */
+.dark {
+  --background: oklch(0.141 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.21 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+
+  --primary: oklch(0.72 0.09 194.769);
+  --primary-foreground: oklch(0.141 0.005 285.823);
+
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  --accent: oklch(0.274 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.696 0.17 162.48);
+  --success-foreground: oklch(0.141 0.005 285.823);
+  --warning: oklch(0.828 0.189 84.429);
+  --warning-foreground: oklch(0.216 0.045 70.08);
+
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.72 0.09 194.769);
+
+  --room-vacant-clean: oklch(0.696 0.17 162.48);
+  --room-vacant-dirty: oklch(0.828 0.189 84.429);
+  --room-occupied: oklch(0.72 0.09 194.769);
+  --room-inspected: oklch(0.707 0.165 254.624);
+  --room-out-of-order: oklch(0.704 0.191 22.216);
+
+  --chart-1: oklch(0.72 0.09 194.769);
+  --chart-2: oklch(0.707 0.165 254.624);
+  --chart-3: oklch(0.828 0.189 84.429);
+  --chart-4: oklch(0.696 0.17 162.48);
+  --chart-5: oklch(0.627 0.265 303.9);
+
+  --sidebar: oklch(0.21 0.006 285.885);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.72 0.09 194.769);
+  --sidebar-primary-foreground: oklch(0.141 0.005 285.823);
+  --sidebar-accent: oklch(0.274 0.006 286.033);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 12%);
+  --sidebar-ring: oklch(0.72 0.09 194.769);
+}
+
+/* ---------------------------------------------------------------------------
+ * Expose the raw tokens to Tailwind's utility generator. `inline` keeps the
+ * var() indirection so .dark overrides resolve at the use-site.
+ * ------------------------------------------------------------------------ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-room-vacant-clean: var(--room-vacant-clean);
+  --color-room-vacant-dirty: var(--room-vacant-dirty);
+  --color-room-occupied: var(--room-occupied);
+  --color-room-inspected: var(--room-inspected);
+  --color-room-out-of-order: var(--room-out-of-order);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+
+  /* Reservation calendar grid: fixed night/room cell sizing keeps the
+   * room x date grid aligned under horizontal virtual scrolling. */
+  --spacing-night: 3.5rem;
+  --spacing-room-row: 2.75rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+    outline-color: color-mix(in oklch, var(--color-ring) 50%, transparent);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Operational numbers (rates, folio balances, occupancy) must line up in
+   * columns - tabular figures are functional here, not cosmetic. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

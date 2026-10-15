@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "EaseIt Base",
+  "compilerOptions": {
+    /* Language and emit target */
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "useDefineForClassFields": false,
+
+    /* Modern Node ESM-aware resolution: honours package.json "exports" */
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "verbatimModuleSyntax": false,
+    "isolatedModules": true,
+
+    /* Strictness — every flag on. Do not relax these per-package. */
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "useUnknownInCatchVariables": true,
+
+    /* Extra safety beyond `strict` — see CLAUDE.md section 5 */
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "forceConsistentCasingInFileNames": true,
+
+    /* Output */
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": false,
+    "incremental": true,
+    "pretty": true,
+    "skipLibCheck": true
+  },
+  "exclude": ["node_modules", "dist", "build", ".next", ".turbo", "coverage", "generated"]
+}

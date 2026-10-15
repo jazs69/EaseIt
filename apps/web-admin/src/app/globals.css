@@ -1,0 +1,3 @@
+/* Tailwind first, then the shared EaseIt token preset that extends it. */
+@import 'tailwindcss';
+@import '@repo/config/tailwind/preset.css';

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "EaseIt NestJS Application",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    /* NestJS DI reads constructor parameter types at runtime from the metadata
+       emitted by these two flags. Removing either one breaks dependency
+       injection silently at runtime, not at build time. */
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": false,
+    "declarationMap": false,
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+
+    /* Nest's decorator-heavy DTO classes are declared then assigned by the
+       framework; strictPropertyInitialization fights that pattern. */
+    "strictPropertyInitialization": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "**/*.e2e-spec.ts"]
+}

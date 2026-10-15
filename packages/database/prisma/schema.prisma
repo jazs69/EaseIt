@@ -1,0 +1,244 @@
+// =============================================================================
+// EaseIt — multi-tenant Hotel PMS schema
+// -----------------------------------------------------------------------------
+// Tenancy model (CLAUDE.md section 3.2): one PostgreSQL database, row-level
+// isolation keyed on `propertyId`. Two kinds of table exist here and the
+// difference is deliberate:
+//
+//   * Tenant-scoped     — carries a non-nullable `propertyId`, every composite
+//                         index leads with it. `UserRole` is the one in this
+//                         initial slice.
+//   * Portfolio catalog — shared across all 10 hotels and intentionally has no
+//                         `propertyId`: `Role`, `Permission`, `RolePermission`.
+//                         Adding a tenant-scoped column to these would mean ten
+//                         copies of an identical role definition.
+//
+// `User` sits between the two: identity is portfolio-wide (one person, one
+// login, even when they work at three hotels) while *authority* is always
+// scoped through `UserRole`.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+// Prisma 7 removed `url` / `directUrl` from the schema: connection strings for
+// Migrate now live in prisma.config.ts, and the runtime connection comes from
+// the driver adapter passed to the PrismaClient constructor (see src/index.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+/// Mirrors `Role` in @repo/types/rbac. The two must stay in lockstep; the
+/// seed asserts it.
+enum RoleKey {
+  SUPER_ADMIN
+  PROPERTY_ADMIN
+  FRONT_DESK
+  HOUSEKEEPING
+  REVENUE_MANAGER
+  NIGHT_AUDITOR
+}
+
+/// Coarse grouping for rendering the permission matrix in the admin UI.
+enum PermissionCategory {
+  PROPERTY
+  USER_MANAGEMENT
+  RESERVATION
+  INVENTORY
+  RATE
+  FOLIO
+  PAYMENT
+  HOUSEKEEPING
+  NIGHT_AUDIT
+  CHANNEL
+  BOOKING_ENGINE
+  REPORTING
+}
+
+// -----------------------------------------------------------------------------
+// Property — the tenant root
+// -----------------------------------------------------------------------------
+
+model Property {
+  id        String @id @default(uuid()) @db.Uuid
+  /// URL-safe tenant key. Resolved server-side by the booking engine; never
+  /// trusted from a client header (CLAUDE.md section 3.2).
+  slug      String @unique
+  name      String
+  legalName String?
+
+  /// IANA zone, e.g. "Asia/Kolkata". Drives this property's night-audit
+  /// schedule — ten properties means ten independent schedules.
+  timezone String @default("Asia/Kolkata")
+  /// ISO-4217. Every monetary amount stored against this property is an
+  /// integer count of this currency's minor unit (CLAUDE.md section 3.4).
+  currency String @default("INR") @db.Char(3)
+  locale   String @default("en-IN")
+
+  /// The property's open accounting day. A calendar date, NOT a timestamp, and
+  /// advanced only by the night audit's business-date-roll step.
+  businessDate DateTime @db.Date
+
+  /// Local wall-clock times, "HH:MM".
+  checkInTime  String @default("14:00")
+  checkOutTime String @default("11:00")
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  countryCode  String  @default("IN") @db.Char(2)
+  phone        String?
+  email        String?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  users     User[]
+  userRoles UserRole[]
+
+  @@index([isActive])
+  @@map("property")
+}
+
+// -----------------------------------------------------------------------------
+// User — portfolio-wide identity, property-scoped authority
+// -----------------------------------------------------------------------------
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Globally unique across the portfolio: one human, one credential, even
+  /// when they hold roles at several hotels. Authority is never implied by
+  /// this row — it comes only from `UserRole`.
+  email        String  @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String?
+
+  /// Home property, for defaulting the property picker at login. NULL for
+  /// portfolio-level users (SUPER_ADMIN). This is a convenience field and
+  /// confers no access by itself.
+  propertyId String?   @db.Uuid
+  property   Property? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  roles UserRole[]
+
+  @@index([propertyId])
+  @@index([isActive])
+  @@map("user")
+}
+
+// -----------------------------------------------------------------------------
+// Role / Permission — portfolio catalog
+// -----------------------------------------------------------------------------
+
+model Role {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         RoleKey @unique
+  label       String
+  description String
+
+  /// True for the six built-in roles. System roles are seeded, not editable,
+  /// and may not be deleted.
+  isSystem Boolean @default(true)
+
+  /// Authority spans every property rather than one. SUPER_ADMIN only.
+  isPortfolioScoped Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  userRoles   UserRole[]
+
+  @@map("role")
+}
+
+model Permission {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// `resource:action`, e.g. "reservation:check_in". A wire contract shared
+  /// with @repo/types: additive only, never renamed.
+  key         String             @unique
+  label       String
+  description String
+  category    PermissionCategory
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  roles RolePermission[]
+
+  @@index([category])
+  @@map("permission")
+}
+
+model RolePermission {
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permission")
+}
+
+// -----------------------------------------------------------------------------
+// UserRole — the tenant-scoped grant
+// -----------------------------------------------------------------------------
+
+/// A single (user, role, property) grant: the row that actually confers
+/// access. The same person can be FRONT_DESK at one hotel and PROPERTY_ADMIN
+/// at another, which is why the property is part of the grant rather than a
+/// property of the user.
+model UserRole {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  roleId String @db.Uuid
+
+  /// The tenant this grant applies to. NULL only for portfolio-scoped roles
+  /// (SUPER_ADMIN); a property-scoped role with a NULL propertyId is invalid
+  /// data and is rejected by the application layer.
+  propertyId String? @db.Uuid
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  property Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Audit trail: who granted this and when (CLAUDE.md section 3.4).
+  grantedById String?  @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  // A user holds a given role at a given property at most once. Note that in
+  // PostgreSQL two NULL propertyIds compare as distinct, so this constraint
+  // does not de-duplicate portfolio grants — `userRolePortfolioUnique` in the
+  // migration adds a partial unique index covering that case.
+  @@unique([userId, roleId, propertyId], name: "user_role_unique_grant")
+  // Tenant-scoped reads lead with propertyId, per CLAUDE.md section 3.2.
+  @@index([propertyId, userId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_role")
+}
