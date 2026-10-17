@@ -32,6 +32,20 @@ export class PropertyContextService {
     return this.storage.run(context, work);
   }
 
+  /**
+   * Binds `context` for the remainder of the current async execution,
+   * without a wrapping callback.
+   *
+   * Guards cannot use `run()` — they have no handle on the rest of the
+   * request to wrap — so `enterWith` is the only option there. The caveat is
+   * that the binding leaks to anything else sharing this async context, which
+   * for a per-request guard is exactly the intended scope but would be wrong
+   * if ever called from a long-lived worker. Workers use `run()`.
+   */
+  enter(context: PropertyContext): void {
+    this.storage.enterWith(context);
+  }
+
   /** The current context, or null outside a request (e.g. during bootstrap). */
   peek(): PropertyContext | null {
     return this.storage.getStore() ?? null;

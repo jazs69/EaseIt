@@ -1,3 +1,30 @@
 /* Tailwind first, then the shared EaseIt token preset that extends it. */
 @import 'tailwindcss';
 @import '@repo/config/tailwind/preset.css';
+
+/* ---------------------------------------------------------------------------
+ * The staff PMS is a dark-only operations tool: front desks run it for a full
+ * shift, often at night, and a light theme on a reservation grid is punishing.
+ * Set directly rather than via tokens so there is no flash before hydration.
+ * ------------------------------------------------------------------------ */
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #09090b;
+    color: oklch(0.985 0 0);
+  }
+
+  ::selection {
+    background-color: rgb(59 130 246 / 0.3);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(96 165 250 / 0.7);
+    outline-offset: 2px;
+  }
+}

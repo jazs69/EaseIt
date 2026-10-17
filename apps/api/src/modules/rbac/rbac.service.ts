@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import {
   ALL_ROLES,
+  ROLE_DESCRIPTIONS,
   ROLE_LABELS,
-  ROLE_PERMISSIONS,
+  DEFAULT_ROLE_PERMISSIONS,
   isPortfolioRole,
   permissionsForRoles,
   type Permission,
@@ -25,7 +26,7 @@ export class RbacService {
       key: role,
       label: ROLE_LABELS[role],
       description: this.describe(role),
-      permissions: [...ROLE_PERMISSIONS[role]],
+      permissions: [...DEFAULT_ROLE_PERMISSIONS[role]],
       isPortfolioScoped: isPortfolioRole(role),
     }));
   }
@@ -34,20 +35,12 @@ export class RbacService {
     return permissionsForRoles(roles);
   }
 
+  /**
+   * Sourced from @repo/types rather than a local switch: a hand-written
+   * switch here silently stopped compiling the moment POS_STAFF joined the
+   * Role union, which is exactly the drift this avoids.
+   */
   private describe(role: Role): string {
-    switch (role) {
-      case 'SUPER_ADMIN':
-        return 'Portfolio operator. The only role permitted to cross property boundaries.';
-      case 'PROPERTY_ADMIN':
-        return 'General manager of one property. Full control within that property.';
-      case 'FRONT_DESK':
-        return 'Reception: reservations, check-in/out, folio posting and payments.';
-      case 'HOUSEKEEPING':
-        return 'Room status and task execution. No access to financial data.';
-      case 'REVENUE_MANAGER':
-        return 'Rates, restrictions, channel mappings and ARI distribution.';
-      case 'NIGHT_AUDITOR':
-        return 'Runs and reviews the night audit; closes the business date.';
-    }
+    return ROLE_DESCRIPTIONS[role];
   }
 }

@@ -1,3 +1,64 @@
 /* Tailwind first, then the shared EaseIt token preset that extends it. */
 @import 'tailwindcss';
 @import '@repo/config/tailwind/preset.css';
+
+/* ---------------------------------------------------------------------------
+ * Marketing-site motion.
+ *
+ * Kept here rather than in the shared preset: the marquee belongs to the
+ * landing page, and packages/config is consumed by the admin PMS and the
+ * booking engine too.
+ * ------------------------------------------------------------------------ */
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    /* The track renders its children twice, so -50% is one full loop. */
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  animation: marquee 48s linear infinite;
+}
+
+/* Pause on hover so a visitor can actually read a property card. */
+.marquee-track:hover .animate-marquee {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Dark-first page chrome. The marketing site commits to one look rather than
+ * following the OS, so these are set directly instead of via tokens.
+ * ------------------------------------------------------------------------ */
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: #09090b;
+    color: oklch(0.985 0 0);
+  }
+
+  ::selection {
+    background-color: rgb(59 130 246 / 0.3);
+    color: #fff;
+  }
+
+  /* A focus ring that stays visible against pitch black. */
+  :focus-visible {
+    outline: 2px solid rgb(96 165 250 / 0.7);
+    outline-offset: 2px;
+  }
+}

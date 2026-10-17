@@ -1,4 +1,8 @@
 import 'reflect-metadata';
+// Must precede every other import: the module graph below reaches
+// @repo/database, which builds its Prisma client at module scope and needs
+// DATABASE_URL already present. See config/load-env.ts.
+import './config/load-env.js';
 
 import { Logger, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -30,6 +34,7 @@ async function bootstrap(): Promise<void> {
   );
 
   const config = app.get(ConfigService);
+
   const port = config.get<number>('PORT', 4000);
   const nodeEnv = config.get<string>('NODE_ENV', 'development');
   const swaggerEnabled = config.get<boolean>('SWAGGER_ENABLED', nodeEnv !== 'production');
@@ -80,6 +85,7 @@ async function bootstrap(): Promise<void> {
       .setVersion('1.0')
       .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
       .addTag('health', 'Liveness and readiness probes')
+      .addTag('auth', 'Sign-in, two-factor verification and sessions')
       .addTag('rbac', 'Role and permission catalog')
       .addTag('properties', 'Property configuration and the portfolio')
       .addTag('reservations', 'Booking lifecycle and room assignment')

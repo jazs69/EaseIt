@@ -4,13 +4,14 @@
  * Two levels of scope exist and must not be conflated:
  *
  *  - **Portfolio scope** — `SUPER_ADMIN` only. Spans all 10 properties and is
- *    the sole role permitted to read across tenant boundaries. Every such read
- *    still has to go through the audited `withoutTenantScope()` escape hatch
+ *    the sole role permitted to cross tenant boundaries. Every such read still
+ *    goes through the audited `withoutTenantScope()` escape hatch
  *    (CLAUDE.md section 3.2).
  *  - **Property scope** — every other role. A grant is always a triple of
- *    (user, role, propertyId); the same person can be FRONT_DESK at one hotel
- *    and PROPERTY_ADMIN at another. There is no such thing as a role held
- *    "globally" apart from SUPER_ADMIN.
+ *    (user, property, role), modelled by `UserPropertyRole`. The same person
+ *    can be FRONT_DESK at one hotel and PROPERTY_ADMIN at another, and can
+ *    hold *several* roles at one property (e.g. Front Desk + Night Auditor).
+ *    Their effective permission set is the union of all of them.
  *
  * Permissions are the unit authorisation is checked against, never roles.
  * Guards resolve a role set to a permission set once per request and check
@@ -29,7 +30,7 @@ export const Role = {
   SUPER_ADMIN: 'SUPER_ADMIN',
   /** General manager of a single property. Full control within that property. */
   PROPERTY_ADMIN: 'PROPERTY_ADMIN',
-  /** Reception: reservations, check-in/out, folio posting, payments. */
+  /** Reception: reservations, check-in/out, folio posting, settlement. */
   FRONT_DESK: 'FRONT_DESK',
   /** Room status and task execution. Deliberately blind to financials. */
   HOUSEKEEPING: 'HOUSEKEEPING',
@@ -37,6 +38,8 @@ export const Role = {
   REVENUE_MANAGER: 'REVENUE_MANAGER',
   /** Runs and reviews the night audit; closes the business date. */
   NIGHT_AUDITOR: 'NIGHT_AUDITOR',
+  /** Outlet staff posting food, beverage and spa charges to a room folio. */
+  POS_STAFF: 'POS_STAFF',
 } as const;
 
 export type Role = (typeof Role)[keyof typeof Role];
@@ -60,6 +63,17 @@ export const ROLE_LABELS: Record<Role, string> = {
   [Role.HOUSEKEEPING]: 'Housekeeping',
   [Role.REVENUE_MANAGER]: 'Revenue Manager',
   [Role.NIGHT_AUDITOR]: 'Night Auditor',
+  [Role.POS_STAFF]: 'POS Staff',
+};
+
+export const ROLE_DESCRIPTIONS: Record<Role, string> = {
+  [Role.SUPER_ADMIN]: 'Portfolio operator. The only role permitted to cross property boundaries.',
+  [Role.PROPERTY_ADMIN]: 'General manager of one property. Full control within that property.',
+  [Role.FRONT_DESK]: 'Reception: reservations, check-in/out, folio posting and settlement.',
+  [Role.HOUSEKEEPING]: 'Room status and task execution. No access to financial data.',
+  [Role.REVENUE_MANAGER]: 'Rates, restrictions, channel mappings and ARI distribution.',
+  [Role.NIGHT_AUDITOR]: 'Runs and reviews the night audit; closes the business date.',
+  [Role.POS_STAFF]: 'Outlet staff posting charges to an in-house guest folio.',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -67,7 +81,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Granular permissions in `resource:action` form.
+ * Granular permissions in `module:action` form.
  *
  * Rules for adding one:
  *  - The string value is persisted in `Permission.key` and may appear in JWT
@@ -77,107 +91,49 @@ export const ROLE_LABELS: Record<Role, string> = {
  *    gets its own permission rather than riding along on a broader one.
  */
 export const Permission = {
-  /* -- Property & portfolio administration -------------------------------- */
-  PROPERTY_READ: 'property:read',
-  PROPERTY_CREATE: 'property:create',
-  PROPERTY_UPDATE: 'property:update',
-  PROPERTY_ARCHIVE: 'property:archive',
-  PROPERTY_SWITCH_ANY: 'property:switch_any',
-
-  /* -- Users, roles & permissions ----------------------------------------- */
-  USER_READ: 'user:read',
-  USER_INVITE: 'user:invite',
-  USER_UPDATE: 'user:update',
-  USER_DEACTIVATE: 'user:deactivate',
-  USER_RESET_PASSWORD: 'user:reset_password',
-  ROLE_READ: 'role:read',
-  ROLE_ASSIGN: 'role:assign',
-  ROLE_MANAGE: 'role:manage',
-
-  /* -- Reservations ------------------------------------------------------- */
-  RESERVATION_READ: 'reservation:read',
-  RESERVATION_CREATE: 'reservation:create',
-  RESERVATION_UPDATE: 'reservation:update',
-  RESERVATION_CANCEL: 'reservation:cancel',
-  RESERVATION_ASSIGN_ROOM: 'reservation:assign_room',
-  RESERVATION_MOVE_ROOM: 'reservation:move_room',
-  RESERVATION_CHECK_IN: 'reservation:check_in',
-  RESERVATION_CHECK_OUT: 'reservation:check_out',
-  RESERVATION_MARK_NO_SHOW: 'reservation:mark_no_show',
-  /** Book past a closed/restricted date or a stop-sell. Highly privileged. */
-  RESERVATION_OVERRIDE_RESTRICTION: 'reservation:override_restriction',
-
-  /* -- Rooms & inventory -------------------------------------------------- */
-  ROOM_READ: 'room:read',
-  ROOM_MANAGE: 'room:manage',
-  ROOM_TYPE_READ: 'room_type:read',
-  ROOM_TYPE_MANAGE: 'room_type:manage',
-  INVENTORY_READ: 'inventory:read',
-  INVENTORY_ADJUST: 'inventory:adjust',
-  INVENTORY_BLOCK: 'inventory:block',
-  /** Raise `overbookingAllowance`. Never a side effect of a booking race. */
-  INVENTORY_SET_OVERBOOKING: 'inventory:set_overbooking',
-
-  /* -- Rates, restrictions & promotions ----------------------------------- */
-  RATE_READ: 'rate:read',
-  RATE_MANAGE: 'rate:manage',
-  RATE_OVERRIDE: 'rate:override',
-  RESTRICTION_READ: 'restriction:read',
-  RESTRICTION_MANAGE: 'restriction:manage',
-  PROMOTION_READ: 'promotion:read',
-  PROMOTION_MANAGE: 'promotion:manage',
-
-  /* -- Folios & charges --------------------------------------------------- */
-  FOLIO_READ: 'folio:read',
-  FOLIO_POST_CHARGE: 'folio:post_charge',
-  /** Posts a reversing line. Folio lines are immutable (CLAUDE.md 3.4). */
-  FOLIO_REVERSE_CHARGE: 'folio:reverse_charge',
-  FOLIO_TRANSFER: 'folio:transfer',
-  FOLIO_APPLY_DISCOUNT: 'folio:apply_discount',
-  FOLIO_CLOSE: 'folio:close',
-  FOLIO_REOPEN: 'folio:reopen',
-  INVOICE_READ: 'invoice:read',
-  INVOICE_ISSUE: 'invoice:issue',
-
-  /* -- Payments ----------------------------------------------------------- */
-  PAYMENT_READ: 'payment:read',
-  PAYMENT_CAPTURE: 'payment:capture',
-  PAYMENT_REFUND: 'payment:refund',
-  PAYMENT_VOID: 'payment:void',
-  CASHIER_SHIFT_READ: 'cashier_shift:read',
-  CASHIER_SHIFT_CLOSE: 'cashier_shift:close',
+  /* -- Front desk --------------------------------------------------------- */
+  RESERVATIONS_READ: 'reservations:read',
+  RESERVATIONS_CREATE: 'reservations:create',
+  RESERVATIONS_EDIT: 'reservations:edit',
+  RESERVATIONS_CHECKIN: 'reservations:checkin',
+  RESERVATIONS_CHECKOUT: 'reservations:checkout',
+  ROOMS_ASSIGN: 'rooms:assign',
 
   /* -- Housekeeping ------------------------------------------------------- */
   HOUSEKEEPING_READ: 'housekeeping:read',
-  HOUSEKEEPING_UPDATE_ROOM_STATUS: 'housekeeping:update_room_status',
-  HOUSEKEEPING_ASSIGN_TASK: 'housekeeping:assign_task',
-  HOUSEKEEPING_INSPECT: 'housekeeping:inspect',
-  HOUSEKEEPING_SET_OUT_OF_ORDER: 'housekeeping:set_out_of_order',
+  HOUSEKEEPING_UPDATE_STATUS: 'housekeeping:update_status',
 
-  /* -- Night audit & business date ---------------------------------------- */
+  /* -- Billing & folio ---------------------------------------------------- */
+  FOLIO_READ: 'folio:read',
+  FOLIO_CHARGE: 'folio:charge',
+  FOLIO_DISCOUNT: 'folio:discount',
+  FOLIO_REFUND: 'folio:refund',
+  FOLIO_SETTLE: 'folio:settle',
+
+  /* -- Rates & distribution ----------------------------------------------- */
+  RATES_READ: 'rates:read',
+  RATES_MANAGE: 'rates:manage',
+  CHANNELS_READ: 'channels:read',
+  CHANNELS_SYNC: 'channels:sync',
+  /** Raise a room type's overbooking allowance (CLAUDE.md section 3.1). */
+  INVENTORY_OVERRIDE: 'inventory:override',
+
+  /* -- Night audit -------------------------------------------------------- */
   NIGHT_AUDIT_READ: 'night_audit:read',
-  /** Enqueues a run. Never executes it inline (CLAUDE.md 3.3). */
-  NIGHT_AUDIT_ENQUEUE: 'night_audit:enqueue',
-  NIGHT_AUDIT_RESUME: 'night_audit:resume',
-  NIGHT_AUDIT_OVERRIDE_EXCEPTION: 'night_audit:override_exception',
-  BUSINESS_DATE_CLOSE: 'business_date:close',
+  /**
+   * Authorises *enqueueing* an audit run, not running one inline. The audit
+   * is always a BullMQ job on the property's own schedule
+   * (CLAUDE.md section 3.3); this permission gates the button, not the
+   * execution model.
+   */
+  NIGHT_AUDIT_EXECUTE: 'night_audit:execute',
+  FINANCIAL_REPORTS_READ: 'financial_reports:read',
 
-  /* -- Channel manager ---------------------------------------------------- */
-  CHANNEL_READ: 'channel:read',
-  CHANNEL_MANAGE_MAPPING: 'channel:manage_mapping',
-  CHANNEL_PUSH_ARI: 'channel:push_ari',
-  CHANNEL_RESYNC: 'channel:resync',
-  CHANNEL_READ_LOGS: 'channel:read_logs',
-
-  /* -- Direct booking engine --------------------------------------------- */
-  BOOKING_ENGINE_READ_CONFIG: 'booking_engine:read_config',
-  BOOKING_ENGINE_MANAGE_CONFIG: 'booking_engine:manage_config',
-
-  /* -- Reporting & audit trail ------------------------------------------- */
-  REPORT_READ_OPERATIONAL: 'report:read_operational',
-  REPORT_READ_FINANCIAL: 'report:read_financial',
-  REPORT_EXPORT: 'report:export',
-  AUDIT_LOG_READ: 'audit_log:read',
+  /* -- Administration ----------------------------------------------------- */
+  USERS_READ: 'users:read',
+  USERS_MANAGE: 'users:manage',
+  ROLES_MANAGE: 'roles:manage',
+  PROPERTY_SETTINGS: 'property:settings',
 } as const;
 
 export type Permission = (typeof Permission)[keyof typeof Permission];
@@ -187,126 +143,315 @@ export const ALL_PERMISSIONS = Object.values(Permission);
 export const permissionSchema = z.enum(Permission);
 
 /* -------------------------------------------------------------------------- */
-/*  Role to permission mapping                                                */
+/*  Categories — drives the permission matrix in the admin UI                 */
 /* -------------------------------------------------------------------------- */
 
-const P = Permission;
+export const PermissionCategory = {
+  FRONT_DESK: 'FRONT_DESK',
+  HOUSEKEEPING: 'HOUSEKEEPING',
+  BILLING: 'BILLING',
+  RATES_DISTRIBUTION: 'RATES_DISTRIBUTION',
+  NIGHT_AUDIT: 'NIGHT_AUDIT',
+  ADMINISTRATION: 'ADMINISTRATION',
+} as const;
 
-/** Read-only baseline every authenticated staff member needs to use the PMS. */
-const BASELINE: readonly Permission[] = [P.PROPERTY_READ, P.ROOM_READ, P.ROOM_TYPE_READ];
+export type PermissionCategory = (typeof PermissionCategory)[keyof typeof PermissionCategory];
+
+export const PERMISSION_CATEGORY_LABELS: Record<PermissionCategory, string> = {
+  [PermissionCategory.FRONT_DESK]: 'Front Desk',
+  [PermissionCategory.HOUSEKEEPING]: 'Housekeeping',
+  [PermissionCategory.BILLING]: 'Billing & Folio',
+  [PermissionCategory.RATES_DISTRIBUTION]: 'Rates & Distribution',
+  [PermissionCategory.NIGHT_AUDIT]: 'Night Audit',
+  [PermissionCategory.ADMINISTRATION]: 'Administration',
+};
+
+export interface PermissionDefinition {
+  key: Permission;
+  label: string;
+  description: string;
+  category: PermissionCategory;
+  /**
+   * True when granting this lets the holder move money or reduce revenue.
+   * The role editor badges these so an administrator sees what they are
+   * handing out.
+   */
+  sensitive: boolean;
+}
+
+const P = Permission;
+const C = PermissionCategory;
+
+export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
+  {
+    key: P.RESERVATIONS_READ,
+    label: 'View reservations',
+    description: 'See the reservation calendar, arrivals and departures.',
+    category: C.FRONT_DESK,
+    sensitive: false,
+  },
+  {
+    key: P.RESERVATIONS_CREATE,
+    label: 'Create reservations',
+    description: 'Take a new booking, including walk-ins.',
+    category: C.FRONT_DESK,
+    sensitive: false,
+  },
+  {
+    key: P.RESERVATIONS_EDIT,
+    label: 'Edit reservations',
+    description: 'Amend dates, occupancy, rate plan or cancel a booking.',
+    category: C.FRONT_DESK,
+    sensitive: false,
+  },
+  {
+    key: P.RESERVATIONS_CHECKIN,
+    label: 'Check in',
+    description: 'Move an arriving reservation to in-house.',
+    category: C.FRONT_DESK,
+    sensitive: false,
+  },
+  {
+    key: P.RESERVATIONS_CHECKOUT,
+    label: 'Check out',
+    description: 'Depart an in-house stay once its folio is settled.',
+    category: C.FRONT_DESK,
+    sensitive: false,
+  },
+  {
+    key: P.ROOMS_ASSIGN,
+    label: 'Assign rooms',
+    description: 'Allocate or move a physical room for a stay.',
+    category: C.FRONT_DESK,
+    sensitive: false,
+  },
+
+  {
+    key: P.HOUSEKEEPING_READ,
+    label: 'View room status',
+    description: 'See the housekeeping board and task list.',
+    category: C.HOUSEKEEPING,
+    sensitive: false,
+  },
+  {
+    key: P.HOUSEKEEPING_UPDATE_STATUS,
+    label: 'Update room status',
+    description: 'Mark rooms clean, dirty, inspected or out of order.',
+    category: C.HOUSEKEEPING,
+    sensitive: false,
+  },
+
+  {
+    key: P.FOLIO_READ,
+    label: 'View folios',
+    description: 'Read guest folios, charges and balances.',
+    category: C.BILLING,
+    sensitive: false,
+  },
+  {
+    key: P.FOLIO_CHARGE,
+    label: 'Post charges',
+    description: 'Add a charge line to a guest folio.',
+    category: C.BILLING,
+    sensitive: true,
+  },
+  {
+    key: P.FOLIO_DISCOUNT,
+    label: 'Apply discounts',
+    description: 'Reduce a folio total. Writes an audited adjustment line.',
+    category: C.BILLING,
+    sensitive: true,
+  },
+  {
+    key: P.FOLIO_REFUND,
+    label: 'Issue refunds',
+    description: 'Return captured funds to the guest.',
+    category: C.BILLING,
+    sensitive: true,
+  },
+  {
+    key: P.FOLIO_SETTLE,
+    label: 'Settle folios',
+    description: 'Take payment and close a folio to a zero balance.',
+    category: C.BILLING,
+    sensitive: true,
+  },
+
+  {
+    key: P.RATES_READ,
+    label: 'View rates',
+    description: 'See rate plans, the rate calendar and restrictions.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: false,
+  },
+  {
+    key: P.RATES_MANAGE,
+    label: 'Manage rates',
+    description: 'Create and edit rate plans, pricing and restrictions.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: true,
+  },
+  {
+    key: P.CHANNELS_READ,
+    label: 'View channels',
+    description: 'See OTA mappings and the ARI push log.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: false,
+  },
+  {
+    key: P.CHANNELS_SYNC,
+    label: 'Sync channels',
+    description: 'Trigger an ARI push or a full channel resync.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: true,
+  },
+  {
+    key: P.INVENTORY_OVERRIDE,
+    label: 'Override inventory',
+    description: 'Set a room type overbooking allowance. Never a race side effect.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: true,
+  },
+
+  {
+    key: P.NIGHT_AUDIT_READ,
+    label: 'View night audit',
+    description: 'Read audit runs, steps and exceptions.',
+    category: C.NIGHT_AUDIT,
+    sensitive: false,
+  },
+  {
+    key: P.NIGHT_AUDIT_EXECUTE,
+    label: 'Run night audit',
+    description: 'Enqueue an audit run and close the business date.',
+    category: C.NIGHT_AUDIT,
+    sensitive: true,
+  },
+  {
+    key: P.FINANCIAL_REPORTS_READ,
+    label: 'View financial reports',
+    description: 'Revenue, ADR, RevPAR and tax reporting.',
+    category: C.NIGHT_AUDIT,
+    sensitive: true,
+  },
+
+  {
+    key: P.USERS_READ,
+    label: 'View staff',
+    description: 'See the staff directory for this property.',
+    category: C.ADMINISTRATION,
+    sensitive: false,
+  },
+  {
+    key: P.USERS_MANAGE,
+    label: 'Manage staff',
+    description: 'Invite, deactivate and assign roles to staff.',
+    category: C.ADMINISTRATION,
+    sensitive: true,
+  },
+  {
+    key: P.ROLES_MANAGE,
+    label: 'Manage roles',
+    description: 'Create and edit custom roles and their permissions.',
+    category: C.ADMINISTRATION,
+    sensitive: true,
+  },
+  {
+    key: P.PROPERTY_SETTINGS,
+    label: 'Property settings',
+    description: 'Timezone, currency, tax rules and audit cutoff.',
+    category: C.ADMINISTRATION,
+    sensitive: true,
+  },
+];
+
+/** Lookup for a single permission's metadata. */
+export const PERMISSION_BY_KEY: Record<Permission, PermissionDefinition> = Object.fromEntries(
+  PERMISSION_DEFINITIONS.map((definition) => [definition.key, definition]),
+) as Record<Permission, PermissionDefinition>;
+
+/** Permissions grouped by category, in display order. */
+export function permissionsByCategory(): {
+  category: PermissionCategory;
+  label: string;
+  permissions: readonly PermissionDefinition[];
+}[] {
+  return Object.values(PermissionCategory).map((category) => ({
+    category,
+    label: PERMISSION_CATEGORY_LABELS[category],
+    permissions: PERMISSION_DEFINITIONS.filter((definition) => definition.category === category),
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Default role templates                                                    */
+/* -------------------------------------------------------------------------- */
 
 const FRONT_DESK_PERMISSIONS: readonly Permission[] = [
-  ...BASELINE,
-  P.USER_READ,
-  P.RESERVATION_READ,
-  P.RESERVATION_CREATE,
-  P.RESERVATION_UPDATE,
-  P.RESERVATION_CANCEL,
-  P.RESERVATION_ASSIGN_ROOM,
-  P.RESERVATION_MOVE_ROOM,
-  P.RESERVATION_CHECK_IN,
-  P.RESERVATION_CHECK_OUT,
-  P.INVENTORY_READ,
-  P.RATE_READ,
-  P.RESTRICTION_READ,
-  P.PROMOTION_READ,
-  P.FOLIO_READ,
-  P.FOLIO_POST_CHARGE,
-  P.FOLIO_TRANSFER,
-  P.FOLIO_CLOSE,
-  P.INVOICE_READ,
-  P.INVOICE_ISSUE,
-  P.PAYMENT_READ,
-  P.PAYMENT_CAPTURE,
-  P.CASHIER_SHIFT_READ,
-  P.CASHIER_SHIFT_CLOSE,
+  P.RESERVATIONS_READ,
+  P.RESERVATIONS_CREATE,
+  P.RESERVATIONS_EDIT,
+  P.RESERVATIONS_CHECKIN,
+  P.RESERVATIONS_CHECKOUT,
+  P.ROOMS_ASSIGN,
   P.HOUSEKEEPING_READ,
-  P.HOUSEKEEPING_UPDATE_ROOM_STATUS,
-  P.REPORT_READ_OPERATIONAL,
+  P.FOLIO_READ,
+  P.FOLIO_CHARGE,
+  P.FOLIO_SETTLE,
+  P.RATES_READ,
+  // Deliberately excluded: FOLIO_REFUND and FOLIO_DISCOUNT both reduce
+  // revenue, and RATES_MANAGE / CHANNELS_SYNC would let reception move
+  // distribution pricing. These are manager actions.
 ];
 
 const HOUSEKEEPING_PERMISSIONS: readonly Permission[] = [
-  ...BASELINE,
-  // Arrivals/departures are needed to sequence cleaning, but nothing financial.
-  P.RESERVATION_READ,
   P.HOUSEKEEPING_READ,
-  P.HOUSEKEEPING_UPDATE_ROOM_STATUS,
-  P.HOUSEKEEPING_ASSIGN_TASK,
-  P.HOUSEKEEPING_INSPECT,
-  P.HOUSEKEEPING_SET_OUT_OF_ORDER,
+  P.HOUSEKEEPING_UPDATE_STATUS,
+  // Nothing else. Housekeeping is blind to financials by design.
 ];
 
 const REVENUE_MANAGER_PERMISSIONS: readonly Permission[] = [
-  ...BASELINE,
-  P.RESERVATION_READ,
-  P.INVENTORY_READ,
-  P.INVENTORY_ADJUST,
-  P.INVENTORY_BLOCK,
-  P.INVENTORY_SET_OVERBOOKING,
-  P.ROOM_TYPE_MANAGE,
-  P.RATE_READ,
-  P.RATE_MANAGE,
-  P.RATE_OVERRIDE,
-  P.RESTRICTION_READ,
-  P.RESTRICTION_MANAGE,
-  P.PROMOTION_READ,
-  P.PROMOTION_MANAGE,
-  P.CHANNEL_READ,
-  P.CHANNEL_MANAGE_MAPPING,
-  P.CHANNEL_PUSH_ARI,
-  P.CHANNEL_RESYNC,
-  P.CHANNEL_READ_LOGS,
-  P.BOOKING_ENGINE_READ_CONFIG,
-  P.BOOKING_ENGINE_MANAGE_CONFIG,
-  P.REPORT_READ_OPERATIONAL,
-  P.REPORT_READ_FINANCIAL,
-  P.REPORT_EXPORT,
+  P.RESERVATIONS_READ,
+  P.RATES_READ,
+  P.RATES_MANAGE,
+  P.CHANNELS_READ,
+  P.CHANNELS_SYNC,
+  P.INVENTORY_OVERRIDE,
+  P.FINANCIAL_REPORTS_READ,
 ];
 
 const NIGHT_AUDITOR_PERMISSIONS: readonly Permission[] = [
-  ...BASELINE,
-  P.RESERVATION_READ,
-  P.RESERVATION_MARK_NO_SHOW,
-  P.RESERVATION_CHECK_IN,
-  P.RESERVATION_CHECK_OUT,
-  P.INVENTORY_READ,
-  P.RATE_READ,
+  P.RESERVATIONS_READ,
+  P.RESERVATIONS_CHECKOUT,
   P.FOLIO_READ,
-  P.FOLIO_POST_CHARGE,
-  P.FOLIO_REVERSE_CHARGE,
-  P.FOLIO_CLOSE,
-  P.INVOICE_READ,
-  P.PAYMENT_READ,
-  P.CASHIER_SHIFT_READ,
-  P.CASHIER_SHIFT_CLOSE,
+  P.FOLIO_CHARGE,
+  P.FOLIO_SETTLE,
   P.HOUSEKEEPING_READ,
   P.NIGHT_AUDIT_READ,
-  P.NIGHT_AUDIT_ENQUEUE,
-  P.NIGHT_AUDIT_RESUME,
-  P.NIGHT_AUDIT_OVERRIDE_EXCEPTION,
-  P.BUSINESS_DATE_CLOSE,
-  P.REPORT_READ_OPERATIONAL,
-  P.REPORT_READ_FINANCIAL,
-  P.REPORT_EXPORT,
-  P.AUDIT_LOG_READ,
+  P.NIGHT_AUDIT_EXECUTE,
+  P.FINANCIAL_REPORTS_READ,
 ];
 
-/** Everything except the portfolio-crossing permissions. */
-const PROPERTY_ADMIN_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS.filter(
-  (permission) =>
-    permission !== P.PROPERTY_CREATE &&
-    permission !== P.PROPERTY_ARCHIVE &&
-    permission !== P.PROPERTY_SWITCH_ANY &&
-    permission !== P.ROLE_MANAGE,
-);
+const POS_STAFF_PERMISSIONS: readonly Permission[] = [
+  // Enough to find the in-house guest and post an outlet charge, no more.
+  P.RESERVATIONS_READ,
+  P.FOLIO_READ,
+  P.FOLIO_CHARGE,
+];
 
-export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
+/**
+ * Baseline permission set for each system role. These are *templates*: a
+ * property may clone one into a custom role and toggle individual actions,
+ * which is what `Role.isCustom` on the database side represents.
+ */
+export const DEFAULT_ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   [Role.SUPER_ADMIN]: ALL_PERMISSIONS,
-  [Role.PROPERTY_ADMIN]: PROPERTY_ADMIN_PERMISSIONS,
+  [Role.PROPERTY_ADMIN]: ALL_PERMISSIONS,
   [Role.FRONT_DESK]: FRONT_DESK_PERMISSIONS,
   [Role.HOUSEKEEPING]: HOUSEKEEPING_PERMISSIONS,
   [Role.REVENUE_MANAGER]: REVENUE_MANAGER_PERMISSIONS,
   [Role.NIGHT_AUDITOR]: NIGHT_AUDITOR_PERMISSIONS,
+  [Role.POS_STAFF]: POS_STAFF_PERMISSIONS,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -314,10 +459,43 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 /* -------------------------------------------------------------------------- */
 
 /** Union of the permissions granted by every supplied role, de-duplicated. */
+/**
+ * Roles from most to least privileged.
+ *
+ * Used only to pick one label when a staff member holds several at the same
+ * property — it is a presentation concern, never an authorisation one.
+ * Authority is always the *union* of the roles held (see
+ * `permissionsForRoles`), so nothing may branch on this order to decide
+ * whether an action is allowed.
+ */
+export const ROLE_PRECEDENCE: readonly Role[] = [
+  Role.SUPER_ADMIN,
+  Role.PROPERTY_ADMIN,
+  Role.REVENUE_MANAGER,
+  Role.NIGHT_AUDITOR,
+  Role.FRONT_DESK,
+  Role.HOUSEKEEPING,
+  Role.POS_STAFF,
+];
+
+/**
+ * The most privileged of the roles given, or null when none were.
+ *
+ * Null is the honest answer for a staff member whose only role at a property
+ * is property-custom: a custom role has no `Role` key, so there is no system
+ * label to show and the caller should fall back to the role's own name.
+ */
+export function primaryRole(roles: readonly Role[]): Role | null {
+  for (const candidate of ROLE_PRECEDENCE) {
+    if (roles.includes(candidate)) return candidate;
+  }
+  return null;
+}
+
 export function permissionsForRoles(roles: readonly Role[]): Permission[] {
   const granted = new Set<Permission>();
   for (const role of roles) {
-    for (const permission of ROLE_PERMISSIONS[role]) {
+    for (const permission of DEFAULT_ROLE_PERMISSIONS[role]) {
       granted.add(permission);
     }
   }
@@ -369,7 +547,7 @@ export type RoleAssignment = z.infer<typeof roleAssignmentSchema>;
 /**
  * The authenticated subject as guards see it. `activePropertyId` is the
  * property resolved for *this* request and is what every tenant-scoped query
- * must filter on — it is never taken from a client-supplied header or body.
+ * must filter on — it is never taken from a client-supplied body field.
  */
 export const authSubjectSchema = z.object({
   userId: z.uuid(),
@@ -401,4 +579,18 @@ export function canAccessProperty(subject: AuthSubject, propertyId: string): boo
   return subject.assignments.some(
     (assignment) => isPortfolioRole(assignment.role) || assignment.propertyId === propertyId,
   );
+}
+
+/**
+ * The context an authorised request carries: which property it acts on, and
+ * the flattened permission set for that property. Produced by
+ * `ActivePropertyGuard`, consumed by `PermissionsGuard` and repositories.
+ */
+export interface ActivePropertyContext {
+  propertyId: string;
+  propertySlug: string;
+  userId: string;
+  roles: readonly Role[];
+  permissions: readonly Permission[];
+  isPortfolioOperator: boolean;
 }

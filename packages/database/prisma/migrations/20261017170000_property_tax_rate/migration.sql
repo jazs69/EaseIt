@@ -1,0 +1,38 @@
+-- ===========================================================================
+-- A per-property GST rate for room tariff.
+--
+-- Effect on existing rows: additive and nullable. NULL means the statutory
+-- room-tariff treatment that was previously hard-coded — 12% below ₹7,500 a
+-- night, 18% at or above — so nothing changes for a property that does not set
+-- a value.
+--
+-- Why a column rather than a constant: the rate is a per-property
+-- configuration, and CLAUDE.md section 3.4 already requires the related
+-- inclusive-vs-exclusive decision to be a property setting. A hard-coded rate
+-- means a statutory change ships as a code deployment, and a misconfigured one
+-- cannot be corrected at all.
+--
+-- `Decimal(5,2)` is deliberate and is not a section 3.4 violation: that rule
+-- bans Decimal for *money*, and explicitly permits it for tax rates,
+-- percentages and ratios. The money it produces is still integer minor units,
+-- rounded once per night.
+--
+-- As with every migration since 20261016140000, `prisma migrate diff` again
+-- proposed dropping the tenant-coherence constraints it cannot see in
+-- schema.prisma. They are stripped from the generated SQL, never from the
+-- database (CLAUDE.md section 6.2):
+--   * ALTER TABLE "inventory_day" DROP CONSTRAINT "inventory_day_same_property_as_room_type";
+--   * ALTER TABLE "reservation" DROP CONSTRAINT "reservation_same_property_as_company";
+--   * ALTER TABLE "reservation_guest" DROP CONSTRAINT "reservation_guest_same_property_as_reservation";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_reservation";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_room";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_room_type";
+--   * ALTER TABLE "room" DROP CONSTRAINT "room_same_property_as_room_type";
+--   * DROP INDEX "company_property_id_unique_pair";
+--   * DROP INDEX "reservation_property_id_unique_pair";
+--   * DROP INDEX "room_property_id_unique_pair";
+--   * DROP INDEX "room_type_property_id_unique_pair";
+-- ===========================================================================
+
+-- AlterTable
+ALTER TABLE "property" ADD COLUMN "taxRatePercent" DECIMAL(5,2);

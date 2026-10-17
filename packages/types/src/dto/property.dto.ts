@@ -158,18 +158,6 @@ export type ListUsersQuery = z.infer<typeof listUsersQuerySchema>;
 /*  Role assignment                                                           */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Replaces a user's roles at one property. A full replacement rather than an
- * add/remove delta, so two concurrent edits cannot interleave into a role set
- * neither administrator intended.
- */
-export const assignRolesRequestSchema = z.object({
-  userId: userIdSchema,
-  roles: z.array(roleSchema),
-});
-
-export type AssignRolesRequest = z.infer<typeof assignRolesRequestSchema>;
-
 export const roleDefinitionSchema = z.object({
   key: roleSchema,
   label: z.string(),

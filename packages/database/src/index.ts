@@ -66,6 +66,11 @@ export const PORTFOLIO_GLOBAL_MODELS: readonly Prisma.ModelName[] = [
   // blanket propertyId predicate.
   'Property',
   'User',
+  // A second-factor challenge belongs to an identity, not to a hotel. It is
+  // only ever read by id for the user who created it, and the sign-in flow
+  // runs before any property has been resolved — so a propertyId predicate
+  // would have nothing to filter on and would simply break login.
+  'TwoFactorChallenge',
 ];
 
 export function isTenantScopedModel(model: Prisma.ModelName): boolean {

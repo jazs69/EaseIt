@@ -2,20 +2,19 @@
 // EaseIt — multi-tenant Hotel PMS schema
 // -----------------------------------------------------------------------------
 // Tenancy model (CLAUDE.md section 3.2): one PostgreSQL database, row-level
-// isolation keyed on `propertyId`. Two kinds of table exist here and the
-// difference is deliberate:
+// isolation keyed on `propertyId`. Three kinds of table exist here:
 //
-//   * Tenant-scoped     — carries a non-nullable `propertyId`, every composite
-//                         index leads with it. `UserRole` is the one in this
-//                         initial slice.
-//   * Portfolio catalog — shared across all 10 hotels and intentionally has no
-//                         `propertyId`: `Role`, `Permission`, `RolePermission`.
-//                         Adding a tenant-scoped column to these would mean ten
-//                         copies of an identical role definition.
+//   * Tenant root       — `Property`.
+//   * Tenant-scoped     — carries `propertyId`, every composite index leads
+//                         with it: `UserPropertyRole`, and custom `Role` rows.
+//   * Portfolio catalog — shared by all 10 hotels, no `propertyId`:
+//                         `Permission`, and system `Role` templates.
+//   * Identity          — attached to `User`, not to a property, and therefore
+//                         also without `propertyId`: `TwoFactorChallenge`.
 //
-// `User` sits between the two: identity is portfolio-wide (one person, one
-// login, even when they work at three hotels) while *authority* is always
-// scoped through `UserRole`.
+// `User` is portfolio-wide identity: one person, one credential, even when
+// they work at three hotels. Authority is never implied by the user row — it
+// comes only from `UserPropertyRole`.
 // =============================================================================
 
 generator client {
@@ -34,8 +33,8 @@ datasource db {
 // Enums
 // -----------------------------------------------------------------------------
 
-/// Mirrors `Role` in @repo/types/rbac. The two must stay in lockstep; the
-/// seed asserts it.
+/// Mirrors `Role` in @repo/types/rbac. Set on system role templates only;
+/// custom roles have a null `key`. The seed asserts the two stay in lockstep.
 enum RoleKey {
   SUPER_ADMIN
   PROPERTY_ADMIN
@@ -43,22 +42,190 @@ enum RoleKey {
   HOUSEKEEPING
   REVENUE_MANAGER
   NIGHT_AUDITOR
+  POS_STAFF
 }
 
-/// Coarse grouping for rendering the permission matrix in the admin UI.
-enum PermissionCategory {
-  PROPERTY
-  USER_MANAGEMENT
-  RESERVATION
-  INVENTORY
-  RATE
-  FOLIO
+/// Mirrors `PropertyStatus` in @repo/types/domain. Replaces the former
+/// `isActive` boolean: a property that is being onboarded is neither live nor
+/// retired, and a boolean cannot say so (CLAUDE.md section 3.4 — status is a
+/// state machine, not a free-form string, and not a flag either).
+enum PropertyStatus {
+  /// Trading. The only status the booking engine will sell.
+  ACTIVE
+  /// Being configured. Staff may sign in; it is not sellable.
+  ONBOARDING
+  /// Retired. Read-only for reporting and audit history.
+  INACTIVE
+}
+
+/// Mirrors `ReservationStatus` in @repo/types/domain. The legal transitions
+/// between these live in one place in the domain layer, never in a controller
+/// or a bare Prisma update (CLAUDE.md section 3.4).
+enum ReservationStatus {
+  /// Held, not confirmed. Expires, and does NOT consume inventory.
+  TENTATIVE
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+  /// Awaiting payment or a decision. Holds a room but is not yet a sale, so
+  /// like TENTATIVE it does not consume inventory.
+  ON_HOLD
+}
+
+/// Board basis. An enum rather than a free-form string: these four are the
+/// whole set, and a typo in a string column silently becomes a rate the
+/// pricing code cannot interpret (CLAUDE.md section 3.4).
+enum MealPlan {
+  /// European — room only.
+  EP
+  /// Continental — breakfast.
+  CP
+  /// Modified American — breakfast and one meal.
+  MAP
+  /// American — all meals.
+  AP
+}
+
+enum PaymentGatewayProvider {
+  RAZORPAY
+  STRIPE
+}
+
+enum PaymentGatewayStatus {
+  /// Onboarding started, identity checks outstanding. Cannot take payments.
+  PENDING_KYC
+  ACTIVE
+  INACTIVE
+}
+
+/// Mirrors `RoomStatus` in @repo/types/domain.
+enum RoomStatus {
+  VACANT_CLEAN
+  VACANT_DIRTY
+  OCCUPIED_CLEAN
+  OCCUPIED_DIRTY
+  INSPECTED
+  /// Temporarily unsellable (maintenance). Still counted as physical stock.
+  OUT_OF_SERVICE
+  /// Unsellable and NOT counted as physical stock.
+  OUT_OF_ORDER
+}
+
+/// What a folio line represents.
+///
+/// One table with a discriminator rather than separate charge and payment
+/// tables. CLAUDE.md section 3.4 requires a folio balance to be derived by
+/// summing its lines; across two tables that sum spans two queries, two
+/// reversal paths and two chances to disagree. One ledger, signed amounts,
+/// one sum.
+enum FolioLineKind {
+  /// Nightly room tariff for one business date.
+  ROOM_CHARGE
+  /// Tax derived from a specific charge, carrying `derivedFromLineId`.
+  TAX
+  /// Food, laundry, minibar — anything posted by an outlet.
+  SERVICE_CHARGE
+  /// Money received. Stored negative, so the balance is a plain sum.
   PAYMENT
+  /// Money returned. Stored positive.
+  REFUND
+  /// A manual correction, always paired with `reversesLineId`.
+  ADJUSTMENT
+}
+
+enum FolioStatus {
+  /// Accepting postings. Exactly one open folio per reservation.
+  OPEN
+  /// Settled and closed by the night audit or at check-out.
+  CLOSED
+  /// Moved to another folio, e.g. a group master.
+  TRANSFERRED
+}
+
+/// Where a company's legal name came from.
+///
+/// Recorded permanently, because the three are not interchangeable on a tax
+/// invoice. MOCK exists so synthetic development data stays identifiable after
+/// it is saved — without it, a company created against the mock provider is
+/// indistinguishable from a verified one the moment the request ends, which is
+/// precisely the confusion that makes a fake legal name dangerous.
+enum GstinVerification {
+  /// Structure and check digit only. The operator typed the name.
+  UNVERIFIED
+  /// Synthetic data from the development provider. Never trust on an invoice.
+  MOCK
+  /// Confirmed against the GST registry by a live provider.
+  VERIFIED
+}
+
+/// How a payment was taken at the desk.
+enum PaymentMethod {
+  CASH
+  UPI
+  CARD
+  BANK_TRANSFER
+  CHEQUE
+  OTHER
+}
+
+/// The kind of government photo ID recorded at check-in.
+///
+/// An enum, not a free string: the set is fixed by what Indian hotels may
+/// legally accept, and a typo'd "passprt" would silently create a category
+/// nobody can report on (CLAUDE.md section 5).
+enum GovtIdType {
+  AADHAAR
+  PASSPORT
+  DRIVING_LICENSE
+  VOTER_ID
+  PAN
+}
+
+/// Mirrors `BookingSource` in @repo/types/domain.
+///
+/// Two granularities live in one field, deliberately. The original members are
+/// a source *type* (how the booking arrived); the named OTAs below are a
+/// channel *identity*. Keeping them in one enum is what lets a reservation say
+/// "Agoda" rather than the useless "OTA", which is what the booking-source
+/// report needs — and it stays additive, so no existing row changes meaning.
+///
+/// When the `channels` module lands it owns channel identity properly (a
+/// mapping row per property per channel, per CLAUDE.md section 2) and these
+/// named members become a foreign key. Until then this is the only place a
+/// booking can record which OTA sold it.
+///
+/// Note there is no `DIRECT_WEBSITE`: that is `DIRECT_WEB`, already here. Two
+/// members meaning one thing is exactly the near-synonym trap section 6.1
+/// warns about — the report labels it "DIRECT WEBSITE" at the presentation
+/// layer instead.
+enum BookingSource {
+  DIRECT_WEB
+  FRONT_DESK
+  PHONE
+  WALK_IN
+  OTA
+  CORPORATE
+  TRAVEL_AGENT
+
+  /// Named OTAs. `OTA` remains for a channel with no member of its own.
+  MAKEMYTRIP
+  AGODA
+  BOOKING_COM
+  EXPEDIA
+  CLEARTRIP
+}
+
+/// Mirrors `PermissionCategory` in @repo/types/rbac. Drives the grouping of
+/// the permission matrix in the admin role editor.
+enum PermissionCategory {
+  FRONT_DESK
   HOUSEKEEPING
+  BILLING
+  RATES_DISTRIBUTION
   NIGHT_AUDIT
-  CHANNEL
-  BOOKING_ENGINE
-  REPORTING
+  ADMINISTRATION
 }
 
 // -----------------------------------------------------------------------------
@@ -66,12 +233,26 @@ enum PermissionCategory {
 // -----------------------------------------------------------------------------
 
 model Property {
-  id        String @id @default(uuid()) @db.Uuid
+  id   String @id @default(uuid()) @db.Uuid
   /// URL-safe tenant key. Resolved server-side by the booking engine; never
   /// trusted from a client header (CLAUDE.md section 3.2).
-  slug      String @unique
-  name      String
+  slug String @unique
+  /// Short operator-facing identifier, e.g. "31336". What staff say on the
+  /// phone and what appears on printed folios; distinct from `slug`, which is
+  /// a URL segment, and from `id`, which is never shown to anybody.
+  code String @unique
+  name String
+
   legalName String?
+
+  /// Optional brand mark for the group dashboard. Null falls back to initials
+  /// rendered client-side, so a missing logo is never a broken image.
+  logoUrl String?
+
+  /// Operating region this property reports under, e.g. "Bhopal Division".
+  /// Free text: divisions are an org-chart concern that changes without a
+  /// migration, and nothing in the domain branches on it.
+  division String?
 
   /// IANA zone, e.g. "Asia/Kolkata". Drives this property's night-audit
   /// schedule — ten properties means ten independent schedules.
@@ -81,11 +262,29 @@ model Property {
   currency String @default("INR") @db.Char(3)
   locale   String @default("en-IN")
 
-  /// The property's open accounting day. A calendar date, NOT a timestamp, and
+  /// The property's open accounting day. A calendar date, NOT a timestamp,
   /// advanced only by the night audit's business-date-roll step.
   businessDate DateTime @db.Date
 
   /// Local wall-clock times, "HH:MM".
+  /// Flat GST percentage applied to room tariff, or null for statutory slabs.
+  ///
+  /// ===========================================================================
+  /// A `Decimal`, which section 3.4 permits for tax *rates* — it bans Decimal
+  /// for money, not for percentages.
+  ///
+  /// Null means the statutory room-tariff treatment: 12% below ₹7,500 a night
+  /// and 18% at or above it. A value overrides that with a flat rate for every
+  /// tariff.
+  ///
+  /// This exists because the rate is a per-property configuration, not a
+  /// constant — section 3.4 already requires inclusive-vs-exclusive tax to be
+  /// a property setting, and the rate belongs with it. Hard-coding one number
+  /// means a rate change ships as a deployment, and a wrong one cannot be
+  /// corrected at all.
+  /// ===========================================================================
+  taxRatePercent Decimal? @db.Decimal(5, 2)
+
   checkInTime  String @default("14:00")
   checkOutTime String @default("11:00")
 
@@ -98,88 +297,202 @@ model Property {
   phone        String?
   email        String?
 
-  isActive Boolean @default(true)
+  /// Supersedes the former `isActive` boolean. One column, one truth: a
+  /// property cannot be simultaneously active and onboarding.
+  status PropertyStatus @default(ACTIVE)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  users     User[]
-  userRoles UserRole[]
+  /// Roles this property has defined for itself (isCustom = true).
+  customRoles Role[]
+  staffRoles  UserPropertyRole[]
 
-  @@index([isActive])
+  roomTypes      RoomType[]
+  rooms          Room[]
+  inventoryDays  InventoryDay[]
+  reservations   Reservation[]
+  gatewayConfigs PaymentGatewayConfig[]
+  companies      Company[]
+  folios         Folio[]
+  auditLogs      AuditLog[]
+
+  @@index([status])
   @@map("property")
 }
 
 // -----------------------------------------------------------------------------
-// User — portfolio-wide identity, property-scoped authority
+// User — portfolio-wide identity
 // -----------------------------------------------------------------------------
 
 model User {
   id String @id @default(uuid()) @db.Uuid
 
-  /// Globally unique across the portfolio: one human, one credential, even
-  /// when they hold roles at several hotels. Authority is never implied by
-  /// this row — it comes only from `UserRole`.
+  /// Globally unique across the portfolio. Deliberately not scoped by
+  /// property: one human holds one credential and is granted access per
+  /// property through UserPropertyRole.
   email        String  @unique
   passwordHash String
   firstName    String
   lastName     String
   phone        String?
 
-  /// Home property, for defaulting the property picker at login. NULL for
-  /// portfolio-level users (SUPER_ADMIN). This is a convenience field and
-  /// confers no access by itself.
-  propertyId String?   @db.Uuid
-  property   Property? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
-
   isActive    Boolean   @default(true)
   lastLoginAt DateTime? @db.Timestamptz(6)
+
+  /// Whether sign-in requires the emailed second factor.
+  ///
+  /// Defaults to **true**, and that direction matters: a new account is
+  /// protected unless somebody deliberately weakens it, rather than exposed
+  /// until somebody remembers to protect it. A PMS login opens folios, refunds
+  /// and rate overrides, so the safe default is the strict one.
+  ///
+  /// Setting this false is a real reduction in security and is honoured only
+  /// because some integration accounts cannot receive mail. The login path
+  /// answers `authenticated` instead of `two_factor_required` for those, which
+  /// the `loginResultSchema` discriminated union already models.
+  isTwoFactorEnabled Boolean @default(true)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  roles UserRole[]
+  propertyRoles       UserPropertyRole[]
+  twoFactorChallenges TwoFactorChallenge[]
 
-  @@index([propertyId])
   @@index([isActive])
   @@map("user")
 }
 
 // -----------------------------------------------------------------------------
-// Role / Permission — portfolio catalog
+// TwoFactorChallenge — the outstanding second factor
 // -----------------------------------------------------------------------------
 
+/// One email-OTP challenge: created when a password check succeeds, consumed
+/// when the matching code arrives, and useless afterwards.
+///
+/// Not tenant-scoped. It hangs off portfolio-wide `User` identity exactly as
+/// the credential itself does, so it carries no `propertyId` and is listed in
+/// `PORTFOLIO_GLOBAL_MODELS` (CLAUDE.md section 3.2). `requestedPropertyId` is
+/// a *preference* carried through from the login request — step 2 re-verifies
+/// the grant before honouring it, so it never confers access.
+///
+/// The code itself is never stored. `codeHash` is an HMAC-SHA256 of the digits
+/// under a server-side pepper, so a database dump alone cannot be turned back
+/// into a working code: a six-digit space is small enough that an unkeyed
+/// digest of it is equivalent to plaintext.
+model TwoFactorChallenge {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The address the code was sent to, snapshotted at issue time. If the
+  /// account's email changes mid-challenge, the audit trail still records
+  /// where the code actually went.
+  email String
+
+  /// HMAC-SHA256(code, pepper), lowercase hex. Never the code.
+  codeHash String
+
+  /// When the *current* code stops working. A resend replaces both.
+  expiresAt DateTime @db.Timestamptz(6)
+  /// Start of the resend cooldown for the current code.
+  lastSentAt DateTime @db.Timestamptz(6)
+
+  /// Wrong codes so far. At TWO_FACTOR.MAX_ATTEMPTS the challenge is burned.
+  attempts    Int @default(0)
+  /// Codes re-issued so far, capped at TWO_FACTOR.MAX_RESENDS.
+  resendCount Int @default(0)
+
+  /// Set exactly once, by the verification that succeeded. The write is
+  /// guarded on this still being null, which is what makes a single code
+  /// single-use even if two requests race.
+  consumedAt DateTime? @db.Timestamptz(6)
+  /// Set when the challenge is abandoned: attempts exhausted, or superseded by
+  /// a newer sign-in attempt from the same account.
+  revokedAt  DateTime? @db.Timestamptz(6)
+
+  /// The property the operator asked to work in, if they named one. A request,
+  /// never an assertion — re-checked against UserPropertyRole at step 2.
+  requestedPropertyId String? @db.Uuid
+
+  /// Forensics for a suspicious sign-in. Deliberately not the full header set:
+  /// no PII beyond what a login already implies (CLAUDE.md section 5).
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  /// Finding a user's live challenges, newest first.
+  @@index([userId, createdAt])
+  /// Sweeping expired rows.
+  @@index([expiresAt])
+  @@map("two_factor_challenge")
+}
+
+// -----------------------------------------------------------------------------
+// Role — system template (propertyId null) or property-custom
+// -----------------------------------------------------------------------------
+
+/// A named bundle of permissions.
+///
+/// `propertyId == null` is a **system template**, shared read-only by the
+/// whole portfolio and seeded from DEFAULT_ROLE_PERMISSIONS. `propertyId` set
+/// is a **custom role** owned by that property — for example a combined
+/// "Front Desk & Night Auditor" for a small hotel where one person covers
+/// both. Custom roles are the only ones an administrator may edit or delete.
 model Role {
   id          String  @id @default(uuid()) @db.Uuid
-  key         RoleKey @unique
-  label       String
-  description String
+  name        String
+  description String  @default("")
+  isCustom    Boolean @default(false)
 
-  /// True for the six built-in roles. System roles are seeded, not editable,
-  /// and may not be deleted.
-  isSystem Boolean @default(true)
+  /// Set on system templates, null on custom roles. Lets the application map
+  /// a row back to the typed `Role` union in @repo/types.
+  key RoleKey?
 
-  /// Authority spans every property rather than one. SUPER_ADMIN only.
-  isPortfolioScoped Boolean @default(false)
+  /// Null for a system template; set for a role owned by one property.
+  propertyId String?   @db.Uuid
+  property   Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   permissions RolePermission[]
-  userRoles   UserRole[]
+  assignments UserPropertyRole[]
 
+  // A property cannot have two roles with the same name. System templates are
+  // covered by a partial unique index on `key` added in the migration, since
+  // PostgreSQL treats NULL propertyIds as distinct and this constraint would
+  // not catch duplicates among them.
+  @@unique([propertyId, name], name: "role_unique_name_per_property")
+  @@index([propertyId])
+  @@index([isCustom])
   @@map("role")
 }
 
+// -----------------------------------------------------------------------------
+// Permission — portfolio catalog
+// -----------------------------------------------------------------------------
+
+/// The authoritative list of grantable actions, seeded from
+/// PERMISSION_DEFINITIONS in @repo/types.
+///
+/// Modelled as a table rather than a bare string column on RolePermission so
+/// that a typo cannot become a silently unenforceable grant: the foreign key
+/// rejects any key that is not in the catalog.
 model Permission {
   id String @id @default(uuid()) @db.Uuid
 
-  /// `resource:action`, e.g. "reservation:check_in". A wire contract shared
-  /// with @repo/types: additive only, never renamed.
+  /// `module:action`, e.g. "reservations:checkin". A wire contract shared with
+  /// @repo/types: additive only, never renamed.
   key         String             @unique
   label       String
   description String
   category    PermissionCategory
+  /// True when granting this lets the holder move money or reduce revenue.
+  sensitive   Boolean            @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
@@ -189,6 +502,7 @@ model Permission {
   @@map("permission")
 }
 
+/// Join between a role and the permissions it grants.
 model RolePermission {
   roleId       String @db.Uuid
   permissionId String @db.Uuid
@@ -204,41 +518,687 @@ model RolePermission {
 }
 
 // -----------------------------------------------------------------------------
-// UserRole — the tenant-scoped grant
+// UserPropertyRole — the tenant-scoped grant
 // -----------------------------------------------------------------------------
 
-/// A single (user, role, property) grant: the row that actually confers
-/// access. The same person can be FRONT_DESK at one hotel and PROPERTY_ADMIN
-/// at another, which is why the property is part of the grant rather than a
-/// property of the user.
-model UserRole {
+/// The row that actually confers access: this user holds this role at this
+/// property.
+///
+/// Multiple rows per (user, property) are expected and supported — a clerk at
+/// a small hotel may hold both Front Desk and Night Auditor, and their
+/// effective permissions are the union of the two. The same user may equally
+/// hold different roles at different properties.
+model UserPropertyRole {
   id String @id @default(uuid()) @db.Uuid
 
-  userId String @db.Uuid
-  roleId String @db.Uuid
+  userId     String @db.Uuid
+  propertyId String @db.Uuid
+  roleId     String @db.Uuid
 
-  /// The tenant this grant applies to. NULL only for portfolio-scoped roles
-  /// (SUPER_ADMIN); a property-scoped role with a NULL propertyId is invalid
-  /// data and is rejected by the application layer.
-  propertyId String? @db.Uuid
-
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role     Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  property Property? @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  role     Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
   /// Audit trail: who granted this and when (CLAUDE.md section 3.4).
   grantedById String?  @db.Uuid
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @db.Timestamptz(6)
 
-  // A user holds a given role at a given property at most once. Note that in
-  // PostgreSQL two NULL propertyIds compare as distinct, so this constraint
-  // does not de-duplicate portfolio grants — `userRolePortfolioUnique` in the
-  // migration adds a partial unique index covering that case.
-  @@unique([userId, roleId, propertyId], name: "user_role_unique_grant")
+  @@unique([userId, propertyId, roleId], name: "user_property_role_unique")
   // Tenant-scoped reads lead with propertyId, per CLAUDE.md section 3.2.
   @@index([propertyId, userId])
   @@index([userId])
   @@index([roleId])
-  @@map("user_role")
+  @@map("user_property_role")
+}
+
+// =============================================================================
+// Inventory and reservations
+// -----------------------------------------------------------------------------
+// This is the part of the schema CLAUDE.md section 3.1 governs, and the only
+// part where the *database* rather than the application is the guarantee. Two
+// constraints carry that weight, neither is expressible in Prisma, so both live
+// in hand-written SQL in the migration and must never be dropped:
+//
+//   1. inventory_day_not_oversold
+//        CHECK (sold + blocked <= physical + overbookingAllowance)
+//      Selling a room is an UPDATE that increments `sold` on each stay date. A
+//      losing concurrent booking fails this and its transaction rolls back,
+//      which is correct under any isolation level.
+//
+//   2. reservation_room_no_overlap
+//        EXCLUDE USING gist (roomId WITH =, daterange(...) WITH &&)
+//        WHERE (status NOT IN ('CANCELLED','NO_SHOW'))
+//      The same physical room can never hold two overlapping stays.
+//
+// Departure day is exclusive, so every range is half-open: a room checked out
+// in the morning is sellable that same night.
+// =============================================================================
+
+/// A sellable category of room, e.g. "Deluxe Suite".
+///
+/// Availability is counted per room *type* per date (see InventoryDay), not per
+/// physical room: guests book a category, and the front desk assigns a number
+/// later — often not until check-in.
+model RoomType {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Short operator-facing code, e.g. "DLX". Unique within the property.
+  code        String
+  name        String
+  description String?
+
+  maxGuests Int
+  maxAdults Int?
+
+  /// Rack rate in the currency's **minor unit** — paise for INR, so 3500 INR
+  /// is 350000 (CLAUDE.md section 3.4). Never a float, never a major-unit
+  /// decimal. Paired with `currency`, so an amount is never ambiguous.
+  baseRateMinor Int
+  currency      String @db.Char(3)
+
+  /// Default allowance copied onto new InventoryDay rows. Overbooking is only
+  /// ever deliberate; it is never a side effect of a race (section 3.1).
+  overbookingAllowance Int @default(0)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  rooms            Room[]
+  inventoryDays    InventoryDay[]
+  reservationRooms ReservationRoom[]
+
+  @@unique([propertyId, code], name: "room_type_unique_code_per_property")
+  @@unique([propertyId, name], name: "room_type_unique_name_per_property")
+  @@index([propertyId, sortOrder])
+  @@map("room_type")
+}
+
+/// A physical, numbered room.
+model Room {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  /// "101". Unique within the property, not globally.
+  number String
+  floor  String?
+
+  /// Housekeeping state. OUT_OF_ORDER rooms drop out of physical stock when
+  /// inventory is rebuilt; OUT_OF_SERVICE rooms stay counted.
+  status RoomStatus @default(VACANT_CLEAN)
+
+  notes String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  reservationRooms ReservationRoom[]
+
+  @@unique([propertyId, number], name: "room_unique_number_per_property")
+  @@index([propertyId, roomTypeId])
+  @@index([propertyId, status])
+  @@map("room")
+}
+
+/// One row per (property, room type, stay date): the availability counter.
+///
+/// This table *is* the oversell guarantee. The CHECK added in the migration
+/// physically cannot hold a row where more rooms are sold and blocked than
+/// exist, so two concurrent bookings for the last room cannot both commit —
+/// one fails the constraint and rolls back entirely.
+model InventoryDay {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+
+  /// A calendar date, never an instant. Built from the property's own timezone,
+  /// never from a client's local time (CLAUDE.md section 3.3).
+  stayDate DateTime @db.Date
+
+  /// Sellable rooms of this type on this date, excluding OUT_OF_ORDER.
+  physical Int
+  /// Rooms consumed by non-cancelled reservations.
+  sold     Int @default(0)
+  /// Rooms withheld from sale: maintenance, owner use, group holds.
+  blocked  Int @default(0)
+
+  /// Deliberate oversell headroom, set by a Revenue Manager.
+  overbookingAllowance Int @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, roomTypeId, stayDate], name: "inventory_day_unique_per_date")
+  @@index([propertyId, stayDate])
+  @@map("inventory_day")
+}
+
+/// A booking.
+///
+/// Guest details are embedded rather than pointing at a `Guest` profile table,
+/// which does not exist yet. That is a known provisional shape: the `frontdesk`
+/// module in CLAUDE.md section 2 owns guest profiles, and these columns become
+/// a foreign key when it lands. They are kept minimal so that migration stays
+/// additive — and none of them is ever logged, because guest PII must not reach
+/// a log line (section 5).
+model Reservation {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// What the guest quotes on the phone. Unique per property, not globally — a
+  /// unique constraint omitting propertyId would couple unrelated hotels
+  /// (CLAUDE.md section 3.2).
+  confirmationCode String
+
+  status ReservationStatus @default(CONFIRMED)
+  source BookingSource     @default(FRONT_DESK)
+
+  /// Half-open: arrival inclusive, departure exclusive.
+  arrivalDate   DateTime @db.Date
+  departureDate DateTime @db.Date
+
+  adults   Int @default(1)
+  children Int @default(0)
+  /// Under 2s. Counted separately because they do not consume occupancy for
+  /// rate or capacity purposes, so folding them into `children` would inflate
+  /// both the occupancy figure and the price.
+  infants  Int @default(0)
+
+  guestFirstName String
+  guestLastName  String
+  guestEmail     String?
+  guestPhone     String?
+
+  /// The channel's own reservation id, for an OTA booking.
+  ///
+  /// Required by the inbound sync contract, not just by search: CLAUDE.md
+  /// section 5 makes ingestion idempotent *on the channel's reservation id*,
+  /// and that is impossible without storing it. The unique index below is what
+  /// actually enforces it — an index alone would let a retried webhook create
+  /// a second copy of the same booking. Null for anything sold directly.
+  otaBookingId String?
+
+  /// Government photo ID, where one was recorded at check-in.
+  ///
+  /// ===========================================================================
+  /// Guest PII of the most sensitive kind — Aadhaar, passport, PAN, licence.
+  /// Indian hotels are legally required to record it, so the column has to
+  /// exist, and the front desk searches by its last digits when a guest
+  /// presents a card. That forces a plaintext column: a one-way hash cannot
+  /// answer a partial match.
+  ///
+  /// Two rules therefore apply wherever it is touched, both enforced in the
+  /// API rather than here:
+  ///   * It is NEVER returned whole. The search response carries a masked form
+  ///     (`XXXX-XXXX-1234`) plus the last four, never the full value.
+  ///   * It is NEVER logged, not in a query log, not in an error context, and
+  ///     not in a channel payload dump (CLAUDE.md section 5).
+  ///
+  /// When a `guests` module lands with real guest profiles this moves there,
+  /// with column-level encryption and an access audit trail.
+  /// ===========================================================================
+  govtIdNumber String?
+
+  /// Which document `govtIdNumber` is. Null when no ID was recorded.
+  govtIdType GovtIdType?
+
+  mealPlan MealPlan @default(EP)
+
+  /// Integer minor units, paired with its currency (section 3.4). The folio is
+  /// the authority on what is actually owed; this is the agreed stay total.
+  totalAmountMinor Int
+  currency         String @db.Char(3)
+
+  /// Settled so far, in minor units.
+  ///
+  /// Provisional, and knowingly against the grain of section 3.4: a balance
+  /// must be *derived* by summing immutable folio lines, never cached. There
+  /// is no Folio table yet, so this is the minimum that lets the front desk
+  /// see what is outstanding. Note what is deliberately NOT here: a
+  /// `balanceAmount` column. The balance is computed as
+  /// `totalAmountMinor - paidAmountMinor` at the API boundary, so there is no
+  /// third number able to disagree with the two it comes from. When `folios`
+  /// lands, both of these become derived and this column is dropped.
+  paidAmountMinor Int @default(0)
+
+  /// Who checked the guest in, and with what.
+  ///
+  /// `checkedInAt` already existed for the hourly calendar view; these record
+  /// the rest of the desk transaction. `checkedInBy` is a staff user id rather
+  /// than a name, so a renamed account does not rewrite history.
+  checkedInBy            String?  @db.Uuid
+  keyCardsIssued         Int?
+  registrationCardSigned Boolean  @default(false)
+
+  /// How the desk payment was taken, and any reference for it.
+  ///
+  /// Provisional in the same way `paidAmountMinor` is: a payment is properly a
+  /// folio transaction with its own date, actor and reversal trail, and there
+  /// is no Folio table. A cheque number recorded nowhere is a cheque nobody
+  /// can chase, so these hold it until `FolioPayment` exists to own it.
+  paymentMethod PaymentMethod?
+  paymentRemark String?
+
+  /// Tax inside `totalAmountMinor`, in minor units.
+  ///
+  /// Provisional, and knowingly against the grain of section 3.4: tax belongs
+  /// on its own folio line carrying a reference to the charge it derives from,
+  /// never folded into a gross total. There is no Folio table yet, so the
+  /// alternative is to compute tax at booking and then lose it — which would
+  /// make every stored total un-reconcilable. Kept beside `paidAmountMinor`,
+  /// which is provisional for exactly the same reason, and dropped the moment
+  /// `folios` lands and real tax lines exist.
+  taxAmountMinor Int @default(0)
+
+  /// True while a self-service link (check-in, payment) is live for the guest.
+  isMagicLinkActive Boolean @default(false)
+
+  /// When the guest physically arrived and departed.
+  ///
+  /// Distinct from `arrivalDate` / `departureDate`, which are the *booked*
+  /// calendar dates. These are instants, and they are what the hourly Day view
+  /// of the reservation calendar positions a block against — without them the
+  /// best it could do is assume everyone arrives at the property's standard
+  /// desk time, which is exactly the guess an hourly view exists to replace.
+  ///
+  /// Null until the front desk checks the guest in or out, so a booking that
+  /// has not arrived yet legitimately has neither. Written by the `frontdesk`
+  /// module when it lands; until then only the seed populates them.
+  checkedInAt  DateTime? @db.Timestamptz(6)
+  checkedOutAt DateTime? @db.Timestamptz(6)
+
+  notes String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  /// The company billed for this stay, where it is a corporate booking.
+  companyId String?  @db.Uuid
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  rooms  ReservationRoom[]
+  guests ReservationGuest[]
+  folio  Folio?
+
+  @@unique([propertyId, confirmationCode], name: "reservation_unique_code_per_property")
+  /// Idempotency for inbound OTA ingestion (CLAUDE.md section 5). Postgres
+  /// treats NULLs as distinct in a unique index, so every direct booking
+  /// coexists freely; only two bookings claiming the *same* channel reference
+  /// collide, which is exactly the retry case this prevents.
+  @@unique([propertyId, otaBookingId], name: "reservation_unique_ota_id_per_property")
+  @@index([propertyId, arrivalDate])
+  @@index([propertyId, departureDate])
+  @@index([propertyId, status])
+  /// Supports the dashboard's "new bookings today" count, which filters on
+  /// when the booking was *made* rather than when the stay falls.
+  @@index([propertyId, createdAt])
+  @@index([propertyId, isMagicLinkActive])
+  /// Supports the booking-source report, which groups by source across a date
+  /// window. Without it that grouping scans every reservation in the portfolio
+  /// on each dashboard load.
+  @@index([propertyId, source, arrivalDate])
+  /// Omnibar search paths. Each leads with propertyId, as every operational
+  /// index must (CLAUDE.md section 3.2), so a search can never scan another
+  /// hotel's rows even before the tenant filter is applied.
+  ///
+  /// These serve prefix and exact matches. A mid-string `contains` still scans,
+  /// which is acceptable at this scale — ~900 reservations per property, and
+  /// the planner has propertyId to narrow by first. A pg_trgm GIN index is the
+  /// answer if that ever stops being true; it is not worth the write cost for
+  /// ten hotels.
+  @@index([propertyId, guestPhone])
+  @@index([propertyId, govtIdNumber])
+  @@index([propertyId, guestLastName])
+  @@index([propertyId, guestFirstName])
+  @@map("reservation")
+}
+
+/// One room of one reservation, for one date range.
+///
+/// A reservation may hold several rooms, each assignable to a different
+/// physical room — or to none yet. `roomId` is nullable for that reason, and it
+/// interacts with the exclusion constraint usefully: NULLs are not equal to one
+/// another in GiST, so any number of unassigned rows coexist, and the
+/// constraint starts biting the moment a number is given.
+///
+/// `status` is duplicated from the parent reservation deliberately. The partial
+/// exclusion constraint needs the status in its own WHERE clause, and a
+/// constraint cannot read another table. Keeping the two in step is the
+/// aggregate's job (CLAUDE.md section 3.4).
+model ReservationRoom {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String @db.Uuid
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  /// Null until the front desk assigns a number.
+  roomId String? @db.Uuid
+  room   Room?   @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  arrivalDate   DateTime @db.Date
+  departureDate DateTime @db.Date
+
+  status ReservationStatus @default(CONFIRMED)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([propertyId, roomId, arrivalDate])
+  @@index([propertyId, arrivalDate])
+  @@index([reservationId])
+  @@index([roomTypeId])
+  @@map("reservation_room")
+}
+
+/// Everyone staying on one reservation.
+///
+/// ===========================================================================
+/// `ordinal` 1 is the booker, whose name, phone and email are ALSO on
+/// `reservation` — those columns are what search, the timeline and every
+/// report read, and they are indexed for it. The copy is maintained in the
+/// same transaction as this row, which is the only way two representations of
+/// one fact stay honest (CLAUDE.md section 3.4 takes the same position on
+/// materialised balances).
+///
+/// This table is not a guest *profile*. It is the guest list for one stay:
+/// there is no identity shared across reservations, no stay history, no
+/// merging of duplicates. That is the `frontdesk` module's work, and when it
+/// lands this table gains a nullable `guestId` pointing at it rather than
+/// being replaced.
+/// ===========================================================================
+model ReservationGuest {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String @db.Uuid
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  /// 1 is the booker. 2..n are the accompanying adults.
+  ordinal Int
+
+  firstName String
+  lastName  String  @default("")
+  email     String?
+  phone     String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  countryCode  String? @db.Char(2)
+
+  gender      Gender?
+  dateOfBirth DateTime? @db.Date
+  nationality String?
+  occupation  String?
+
+  govtIdType   GovtIdType?
+  govtIdNumber String?
+
+  specialRequest String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  /// One row per position per reservation, and scoped by property like every
+  /// other operational unique constraint (section 3.2).
+  @@unique([propertyId, reservationId, ordinal], name: "reservation_guest_unique_ordinal")
+  @@index([propertyId, reservationId])
+  @@map("reservation_guest")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+/// A corporate account billed for stays.
+///
+/// ===========================================================================
+/// `gstin` is unique **per property**, not globally. A global unique on it
+/// would be a cross-tenant coupling bug: two hotels in this portfolio booking
+/// the same corporate client — the ordinary case, not the exotic one — would
+/// collide, and the second would be unable to create its own record
+/// (CLAUDE.md section 3.2).
+///
+/// The trade is that the same company exists as one row per property. That is
+/// correct here: billing address, contact and credit terms are negotiated per
+/// hotel, and a shared row would force one hotel's edit onto another's
+/// invoices.
+/// ===========================================================================
+model Company {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Legal name as it must appear on the tax invoice.
+  legalName String
+  /// Trading name, where it differs.
+  tradeName String?
+
+  /// 15 characters, validated by structure and checksum before it is stored.
+  gstin String @db.Char(15)
+
+  /// Provenance of `legalName`. See `GstinVerification`.
+  gstinVerification GstinVerification @default(UNVERIFIED)
+  /// Which provider answered, and when. Null when nobody was asked.
+  gstinProvider     String?
+  gstinVerifiedAt   DateTime?         @db.Timestamptz(6)
+
+  addressLine1 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  email        String?
+  phone        String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  reservations Reservation[]
+
+  @@unique([propertyId, gstin], name: "company_unique_gstin_per_property")
+  @@index([propertyId, legalName])
+  @@map("company")
+}
+
+/// A guest's bill for one stay.
+///
+/// ===========================================================================
+/// One folio per reservation, and **no stored balance**.
+///
+/// Section 3.4 is explicit: a folio balance is always derived by summing its
+/// integer lines, never cached in a mutable column. There is deliberately no
+/// `balanceAmount` here — the only way to know what is owed is to add up the
+/// ledger, so there is no second number able to drift from it.
+///
+/// `reservationId` is unique: a reservation has at most one folio. Group
+/// masters and split folios need more than that, and when they arrive this
+/// gains a nullable `parentFolioId` rather than losing the constraint — one
+/// bill per booking is the right default and the wrong thing to relax early.
+/// ===========================================================================
+model Folio {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  reservationId String      @unique @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  status   FolioStatus @default(OPEN)
+  currency String      @db.Char(3)
+
+  openedAt DateTime  @default(now()) @db.Timestamptz(6)
+  closedAt DateTime? @db.Timestamptz(6)
+
+  lines FolioLine[]
+
+  @@index([propertyId, status])
+  @@map("folio")
+}
+
+/// One immutable line of a folio.
+///
+/// ===========================================================================
+/// Append-only. Nothing here is ever updated or deleted.
+///
+/// A mistake is corrected by posting a reversing line that points at the
+/// original through `reversesLineId`, which preserves the audit trail (section
+/// 3.4). An `UPDATE` on this table is a bug, not an optimisation.
+///
+/// `amountMinor` is signed: charges positive, payments negative. That is what
+/// makes the balance a plain `SUM(amountMinor)` with no per-kind branching —
+/// and a branching sum is exactly where a payment eventually gets added
+/// instead of subtracted.
+///
+/// The unique index on `(folioId, chargeDate)` for room charges is the
+/// double-posting guard. Check-in posts the first night; the night audit posts
+/// each subsequent night; both run the same insert. Without the constraint, a
+/// re-run of either would charge a night twice and the guest would dispute a
+/// bill the system insists is right.
+/// ===========================================================================
+model FolioLine {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String @db.Uuid
+
+  folioId String @db.Uuid
+  folio   Folio  @relation(fields: [folioId], references: [id], onDelete: Cascade)
+
+  kind        FolioLineKind
+  description String
+
+  /// Integer minor units, signed. Never a float (section 3.4).
+  amountMinor Int
+  currency    String @db.Char(3)
+
+  /// The business date this line belongs to, never `now()` (section 3.3).
+  chargeDate DateTime @db.Date
+
+  /// For a TAX line: the charge it was computed from.
+  derivedFromLineId String?     @db.Uuid
+  derivedFrom       FolioLine?  @relation("TaxDerivation", fields: [derivedFromLineId], references: [id], onDelete: SetNull)
+  derivedTax        FolioLine[] @relation("TaxDerivation")
+
+  /// For a correction: the line it cancels.
+  reversesLineId String?     @db.Uuid
+  reverses       FolioLine?  @relation("Reversal", fields: [reversesLineId], references: [id], onDelete: SetNull)
+  reversedBy     FolioLine[] @relation("Reversal")
+
+  /// Staff member who posted it. Null for lines posted by the night audit.
+  postedById String? @db.Uuid
+
+  /// Method and reference, for a PAYMENT or REFUND line.
+  paymentMethod PaymentMethod?
+  remark        String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([propertyId, folioId, chargeDate])
+  @@index([propertyId, kind, chargeDate])
+  @@map("folio_line")
+}
+
+/// Who changed what, and to what.
+///
+/// ===========================================================================
+/// Required by section 3.4: every mutation of money, reservation state, rates
+/// or restrictions writes a row here **in the same transaction as the change**.
+/// Written afterwards it would be a log that disagrees with the database the
+/// first time a transaction rolled back.
+///
+/// `before` and `after` are JSON snapshots of the fields that moved, not whole
+/// rows — a whole-row snapshot makes every column change a schema change here
+/// too, and buries the one field that actually moved.
+///
+/// Guest PII never goes in either side. Section 5 forbids logging it, and an
+/// audit table is the most copied, exported and long-lived place in a system.
+/// ===========================================================================
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Staff member responsible. Null for a system actor like the night audit.
+  actorUserId String? @db.Uuid
+
+  /// Machine-readable, e.g. `RESERVATION_CHECKED_IN`.
+  event String
+
+  /// What was changed: `reservation`, `folio`, `room`.
+  entityType String
+  entityId   String @db.Uuid
+
+  before Json?
+  after  Json?
+
+  /// Why, where the actor supplied a reason.
+  reason String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([propertyId, createdAt])
+  @@index([propertyId, entityType, entityId])
+  @@map("audit_log")
+}
+
+/// A property's payment-gateway onboarding state.
+///
+/// Drives the operational alert on the property dashboard: a property stuck in
+/// PENDING_KYC cannot take card payments, and the front desk needs to know
+/// that before a guest tries to pay rather than after.
+///
+/// One row per (property, provider) so a property can migrate between
+/// providers without losing the old record.
+model PaymentGatewayConfig {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  provider PaymentGatewayProvider
+  status   PaymentGatewayStatus   @default(PENDING_KYC)
+
+  /// Provider-side merchant identifier. Not a secret; API keys are never
+  /// stored in the database (CLAUDE.md section 5) — they come from the
+  /// environment at the point of use.
+  merchantId String?
+
+  /// When onboarding should have been finished, for the OVERDUE badge.
+  onboardingDueDate DateTime? @db.Date
+  activatedAt       DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, provider], name: "gateway_unique_provider_per_property")
+  @@index([propertyId, status])
+  @@map("payment_gateway_config")
 }

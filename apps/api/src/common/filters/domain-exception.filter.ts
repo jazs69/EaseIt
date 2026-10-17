@@ -60,6 +60,16 @@ export class DomainExceptionFilter implements ExceptionFilter {
       );
     }
 
+    // A 429 that does not say when to retry forces the client to guess, and
+    // the guess is always "immediately". The number already exists in the
+    // error's details, so publish it where an HTTP client will look for it.
+    if (status === HttpStatus.TOO_MANY_REQUESTS) {
+      const retryAfter = body.details?.['retryAfterSeconds'];
+      if (typeof retryAfter === 'number') {
+        void reply.header('retry-after', String(Math.ceil(retryAfter)));
+      }
+    }
+
     void reply.status(status).send(body);
   }
 

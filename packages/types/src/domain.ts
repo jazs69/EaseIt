@@ -130,6 +130,12 @@ export const ReservationStatus = {
   CHECKED_OUT: 'CHECKED_OUT',
   CANCELLED: 'CANCELLED',
   NO_SHOW: 'NO_SHOW',
+  /**
+   * Awaiting payment or a decision. Holds a room but is not a sale yet, so
+   * like TENTATIVE it is absent from BLOCKING_RESERVATION_STATUSES below and
+   * does not consume inventory.
+   */
+  ON_HOLD: 'ON_HOLD',
 } as const;
 
 export type ReservationStatus = (typeof ReservationStatus)[keyof typeof ReservationStatus];
@@ -142,6 +148,92 @@ export const BLOCKING_RESERVATION_STATUSES: readonly ReservationStatus[] = [
   ReservationStatus.CHECKED_IN,
   ReservationStatus.CHECKED_OUT,
 ];
+
+/**
+ * Statuses that are live but consume no inventory.
+ *
+ * Kept as its own list rather than inferred as "everything not blocking",
+ * because CANCELLED and NO_SHOW are also non-blocking and must not be
+ * confused with these: a held room is still expected to become a sale, a
+ * cancelled one is not.
+ */
+export const NON_CONSUMING_RESERVATION_STATUSES: readonly ReservationStatus[] = [
+  ReservationStatus.TENTATIVE,
+  ReservationStatus.ON_HOLD,
+];
+
+/**
+ * Where a property sits in its own lifecycle.
+ *
+ * Replaces an `isActive` boolean. A hotel being configured is neither trading
+ * nor retired, and a boolean forces that third case to be represented
+ * somewhere else — usually a second flag that then disagrees with the first.
+ */
+export const PropertyStatus = {
+  /** Trading. The only status the booking engine will sell. */
+  ACTIVE: 'ACTIVE',
+  /** Being configured. Staff may sign in; it is not sellable. */
+  ONBOARDING: 'ONBOARDING',
+  /** Retired. Read-only, kept for reporting and audit history. */
+  INACTIVE: 'INACTIVE',
+} as const;
+
+export type PropertyStatus = (typeof PropertyStatus)[keyof typeof PropertyStatus];
+
+export const propertyStatusSchema = z.enum(PropertyStatus);
+
+export const PROPERTY_STATUS_LABELS: Record<PropertyStatus, string> = {
+  ACTIVE: 'Active',
+  ONBOARDING: 'Onboarding',
+  INACTIVE: 'Inactive',
+};
+
+/** Statuses a staff member may still sign into and operate. */
+export const OPERABLE_PROPERTY_STATUSES: readonly PropertyStatus[] = [
+  PropertyStatus.ACTIVE,
+  PropertyStatus.ONBOARDING,
+];
+
+/**
+ * Board basis. EP is room-only; the rest add meals.
+ *
+ * An enum, not a string: these four are the entire set, and the rate a stay is
+ * priced at depends on which one applies — a typo in a free-form column
+ * silently becomes a plan the pricing code cannot interpret.
+ */
+export const MealPlan = {
+  /** European — room only. */
+  EP: 'EP',
+  /** Continental — breakfast included. */
+  CP: 'CP',
+  /** Modified American — breakfast plus one meal. */
+  MAP: 'MAP',
+  /** American — all meals. */
+  AP: 'AP',
+} as const;
+
+export type MealPlan = (typeof MealPlan)[keyof typeof MealPlan];
+
+export const mealPlanSchema = z.enum(MealPlan);
+
+export const MEAL_PLAN_LABELS: Record<MealPlan, string> = {
+  EP: 'Room only',
+  CP: 'Breakfast',
+  MAP: 'Half board',
+  AP: 'Full board',
+};
+
+export const PaymentGatewayStatus = {
+  /** Onboarding started, identity checks outstanding. Cannot take payments. */
+  PENDING_KYC: 'PENDING_KYC',
+  ACTIVE: 'ACTIVE',
+  INACTIVE: 'INACTIVE',
+} as const;
+
+export type PaymentGatewayStatus =
+  (typeof PaymentGatewayStatus)[keyof typeof PaymentGatewayStatus];
+
+export const paymentGatewayStatusSchema = z.enum(PaymentGatewayStatus);
 
 export const RoomStatus = {
   VACANT_CLEAN: 'VACANT_CLEAN',
@@ -167,6 +259,20 @@ export type FolioStatus = (typeof FolioStatus)[keyof typeof FolioStatus];
 
 export const folioStatusSchema = z.enum(FolioStatus);
 
+/**
+ * How a booking reached the hotel. Mirrors the Prisma enum of the same name.
+ *
+ * Two granularities in one field, deliberately: the first seven are a source
+ * *type*, the named OTAs below are a channel *identity*. A reservation has to
+ * be able to say "Agoda" rather than the unactionable "OTA", which is what the
+ * booking-source report groups on via [BOOKING_SOURCE_BUCKET]. When the
+ * `channels` module lands it owns channel identity as mapping rows and these
+ * named members become a foreign key.
+ *
+ * `OTA` is kept for a channel with no member of its own, so nothing has to be
+ * forced into a wrong bucket. There is no `DIRECT_WEBSITE` — that is
+ * `DIRECT_WEB`; only its report label differs.
+ */
 export const BookingSource = {
   DIRECT_WEB: 'DIRECT_WEB',
   FRONT_DESK: 'FRONT_DESK',
@@ -175,11 +281,95 @@ export const BookingSource = {
   OTA: 'OTA',
   CORPORATE: 'CORPORATE',
   TRAVEL_AGENT: 'TRAVEL_AGENT',
+  MAKEMYTRIP: 'MAKEMYTRIP',
+  AGODA: 'AGODA',
+  BOOKING_COM: 'BOOKING_COM',
+  EXPEDIA: 'EXPEDIA',
+  CLEARTRIP: 'CLEARTRIP',
 } as const;
 
 export type BookingSource = (typeof BookingSource)[keyof typeof BookingSource];
 
 export const bookingSourceSchema = z.enum(BookingSource);
+
+/* -------------------------------------------------------------------------- */
+/*  Booking source reporting buckets                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The buckets the booking-source report groups into, in display order.
+ *
+ * ===========================================================================
+ * Distinct from `BookingSource` above, and the distinction is the point.
+ *
+ * `BookingSource` is what a reservation *stores*. It carries two
+ * granularities: a source type (how the booking arrived — walk-in, phone,
+ * corporate) and, for the named OTAs, a channel identity. These are what the
+ * report *shows*, and a GM reading it wants named channels: "Agoda earned
+ * ₹1.2L" is actionable, "OTA earned ₹8L" is not.
+ *
+ * Keeping them as two types rather than one means the report's buckets can be
+ * reordered, merged or renamed without a migration, and the storage enum can
+ * gain a channel without the report silently growing a bar nobody designed.
+ * `BOOKING_SOURCE_BUCKET` below is the only mapping between them.
+ *
+ * `DIRECT_WEBSITE` here is stored as `DIRECT_WEB` — the label differs, the
+ * concept does not. `OTHERS` is a real bucket, not a dumping ground for
+ * unmapped values: every member of the storage enum maps somewhere, and the
+ * `Record` type makes a new one a compile error rather than a silent omission.
+ * ===========================================================================
+ */
+export const BOOKING_SOURCES = [
+  'WALK_IN',
+  'MAKEMYTRIP',
+  'AGODA',
+  'BOOKING_COM',
+  'EXPEDIA',
+  'CLEARTRIP',
+  'DIRECT_WEBSITE',
+  'OTHERS',
+] as const;
+
+export type BookingSourceKey = (typeof BOOKING_SOURCES)[number];
+
+export const bookingSourceKeySchema = z.enum(BOOKING_SOURCES);
+
+/** Operator-facing labels. Punctuated the way the brands actually write them. */
+export const BOOKING_SOURCE_LABELS: Record<BookingSourceKey, string> = {
+  WALK_IN: 'WALK-IN',
+  MAKEMYTRIP: 'MAKEMYTRIP',
+  AGODA: 'AGODA',
+  BOOKING_COM: 'BOOKING.COM',
+  EXPEDIA: 'EXPEDIA',
+  CLEARTRIP: 'CLEARTRIP',
+  DIRECT_WEBSITE: 'DIRECT WEBSITE',
+  OTHERS: 'OTHERS',
+};
+
+/**
+ * Stored source -> report bucket. Exhaustive by type.
+ *
+ * `FRONT_DESK`, `PHONE`, `CORPORATE` and `TRAVEL_AGENT` fold into `OTHERS`
+ * because the report's axis is sales channel, and none of them is one — a
+ * front-desk booking is a booking the hotel took itself, which is what
+ * `WALK_IN` already says when the guest was standing there. `OTA` folds in too:
+ * it means "an OTA we have not named", so it cannot be charged to Agoda or
+ * Booking.com without inventing attribution.
+ */
+export const BOOKING_SOURCE_BUCKET: Record<BookingSource, BookingSourceKey> = {
+  WALK_IN: 'WALK_IN',
+  MAKEMYTRIP: 'MAKEMYTRIP',
+  AGODA: 'AGODA',
+  BOOKING_COM: 'BOOKING_COM',
+  EXPEDIA: 'EXPEDIA',
+  CLEARTRIP: 'CLEARTRIP',
+  DIRECT_WEB: 'DIRECT_WEBSITE',
+  FRONT_DESK: 'OTHERS',
+  PHONE: 'OTHERS',
+  OTA: 'OTHERS',
+  CORPORATE: 'OTHERS',
+  TRAVEL_AGENT: 'OTHERS',
+};
 
 /* -------------------------------------------------------------------------- */
 /*  Transport envelopes                                                       */
@@ -232,6 +422,32 @@ export const ErrorCode = {
   NIGHT_AUDIT_IN_PROGRESS: 'NIGHT_AUDIT_IN_PROGRESS',
   CHANNEL_REJECTED: 'CHANNEL_REJECTED',
   TENANT_SCOPE_VIOLATION: 'TENANT_SCOPE_VIOLATION',
+  ROLE_NAME_TAKEN: 'ROLE_NAME_TAKEN',
+  ROLE_IMMUTABLE: 'ROLE_IMMUTABLE',
+
+  /* -- Authentication ---------------------------------------------------- */
+
+  /**
+   * Returned for a wrong password *and* for an address with no account. The
+   * two are deliberately indistinguishable: a distinct "no such user" code
+   * turns the login form into an account-enumeration oracle.
+   */
+  INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
+  ACCOUNT_DISABLED: 'ACCOUNT_DISABLED',
+  /** The second factor is outstanding; finish it at /auth/verify-otp. */
+  TWO_FACTOR_REQUIRED: 'TWO_FACTOR_REQUIRED',
+  /** Unknown, already-used, or superseded challenge id. */
+  OTP_CHALLENGE_NOT_FOUND: 'OTP_CHALLENGE_NOT_FOUND',
+  OTP_INVALID: 'OTP_INVALID',
+  OTP_EXPIRED: 'OTP_EXPIRED',
+  /** Too many wrong codes. The challenge is burned; sign in again. */
+  OTP_ATTEMPTS_EXCEEDED: 'OTP_ATTEMPTS_EXCEEDED',
+  OTP_RESEND_TOO_SOON: 'OTP_RESEND_TOO_SOON',
+  OTP_RESEND_LIMIT: 'OTP_RESEND_LIMIT',
+  /** The code could not be mailed. No challenge is left behind. */
+  OTP_DELIVERY_FAILED: 'OTP_DELIVERY_FAILED',
+  RATE_LIMITED: 'RATE_LIMITED',
+
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const;
 

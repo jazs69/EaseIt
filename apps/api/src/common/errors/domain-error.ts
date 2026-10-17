@@ -95,6 +95,42 @@ export class TenantScopeViolationError extends DomainError {
   }
 }
 
+export class ValidationFailedError extends DomainError {
+  readonly code = ErrorCode.VALIDATION_FAILED;
+  readonly httpStatus = HttpStatus.BAD_REQUEST;
+
+  constructor(issues: Record<string, string>) {
+    super('The request body failed validation.', { issues });
+  }
+}
+
+export class RoleNameTakenError extends DomainError {
+  readonly code = ErrorCode.ROLE_NAME_TAKEN;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(name: string) {
+    super(`A role named "${name}" already exists at this property.`, { name });
+  }
+}
+
+/**
+ * System role templates are shared by all ten hotels. One property editing a
+ * template would silently change access at the other nine, so they are
+ * read-only and a property customises by creating its own role instead.
+ */
+export class RoleImmutableError extends DomainError {
+  readonly code = ErrorCode.ROLE_IMMUTABLE;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(name: string) {
+    super(
+      `"${name}" is a system role template and cannot be edited. ` +
+        'Create a custom role for this property instead.',
+      { name },
+    );
+  }
+}
+
 export class ForbiddenError extends DomainError {
   readonly code = ErrorCode.FORBIDDEN;
   readonly httpStatus = HttpStatus.FORBIDDEN;
@@ -113,5 +149,131 @@ export class UnauthenticatedError extends DomainError {
 
   constructor() {
     super('Authentication is required.');
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Sign-in                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Wrong password, or no account at that address.
+ *
+ * One error class for both on purpose. A distinct "no such user" response
+ * turns the login form into an account-enumeration oracle: an attacker learns
+ * which of ten thousand guessed addresses are real staff without ever
+ * guessing a password. `AuthService` additionally spends the same bcrypt work
+ * on a miss as on a hit, so the response *time* does not leak it either.
+ */
+export class InvalidCredentialsError extends DomainError {
+  readonly code = ErrorCode.INVALID_CREDENTIALS;
+  readonly httpStatus = HttpStatus.UNAUTHORIZED;
+
+  constructor() {
+    super('That email and password combination was not recognised.');
+  }
+}
+
+export class AccountDisabledError extends DomainError {
+  readonly code = ErrorCode.ACCOUNT_DISABLED;
+  readonly httpStatus = HttpStatus.FORBIDDEN;
+
+  constructor() {
+    super('This account has been deactivated. Contact your property administrator.');
+  }
+}
+
+/**
+ * Unknown, already-used, revoked or expired-past-rescue challenge id.
+ *
+ * Reported as 404 rather than 401 for the same reason a cross-tenant read is
+ * (CLAUDE.md section 3.2): a 401 would confirm that *some* challenge exists
+ * under that id.
+ */
+export class OtpChallengeNotFoundError extends DomainError {
+  readonly code = ErrorCode.OTP_CHALLENGE_NOT_FOUND;
+  readonly httpStatus = HttpStatus.NOT_FOUND;
+
+  constructor() {
+    super('That verification request is no longer valid. Please sign in again.');
+  }
+}
+
+/** Wrong code, with the remaining budget so the UI can warn before lockout. */
+export class OtpInvalidError extends DomainError {
+  readonly code = ErrorCode.OTP_INVALID;
+  readonly httpStatus = HttpStatus.UNAUTHORIZED;
+
+  constructor(attemptsRemaining: number) {
+    super(
+      attemptsRemaining === 1
+        ? 'That code is not correct. One more attempt before you have to sign in again.'
+        : `That code is not correct. ${String(attemptsRemaining)} attempts remaining.`,
+      { attemptsRemaining },
+    );
+  }
+}
+
+export class OtpExpiredError extends DomainError {
+  readonly code = ErrorCode.OTP_EXPIRED;
+  readonly httpStatus = HttpStatus.UNAUTHORIZED;
+
+  constructor() {
+    super('That code has expired. Request a new one.');
+  }
+}
+
+export class OtpAttemptsExceededError extends DomainError {
+  readonly code = ErrorCode.OTP_ATTEMPTS_EXCEEDED;
+  readonly httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+
+  constructor() {
+    super('Too many incorrect codes. For your security, please sign in again.');
+  }
+}
+
+export class OtpResendTooSoonError extends DomainError {
+  readonly code = ErrorCode.OTP_RESEND_TOO_SOON;
+  readonly httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+
+  constructor(retryAfterSeconds: number) {
+    super(`Wait ${String(retryAfterSeconds)}s before requesting another code.`, {
+      retryAfterSeconds,
+    });
+  }
+}
+
+export class OtpResendLimitError extends DomainError {
+  readonly code = ErrorCode.OTP_RESEND_LIMIT;
+  readonly httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+
+  constructor() {
+    super('No more codes can be sent for this sign-in. Please start again.');
+  }
+}
+
+/**
+ * The mail transport refused the message.
+ *
+ * Deliberately a failure rather than a silent success: answering "code sent"
+ * when nothing was sent leaves the operator staring at an empty inbox with no
+ * way to tell that retrying is pointless. `AuthService` revokes the challenge
+ * before raising this, so nothing unusable is left behind.
+ */
+export class OtpDeliveryFailedError extends DomainError {
+  readonly code = ErrorCode.OTP_DELIVERY_FAILED;
+  readonly httpStatus = HttpStatus.SERVICE_UNAVAILABLE;
+
+  constructor() {
+    super('We could not send your verification code. Please try again in a moment.');
+  }
+}
+
+export class RateLimitedError extends DomainError {
+  readonly code = ErrorCode.RATE_LIMITED;
+  readonly httpStatus = HttpStatus.TOO_MANY_REQUESTS;
+
+  constructor(retryAfterSeconds: number) {
+    super('Too many attempts. Please wait before trying again.', { retryAfterSeconds });
   }
 }

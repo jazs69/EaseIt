@@ -2,7 +2,7 @@
   "name": "easeit",
   "version": "0.1.0",
   "private": true,
-  "description": "EaseIt — multi-tenant Hotel PMS, Channel Manager and Direct Booking Engine",
+  "description": "EaseIt \u2014 multi-tenant Hotel PMS, Channel Manager and Direct Booking Engine",
   "packageManager": "pnpm@9.14.4",
   "engines": {
     "node": ">=20.11.0",
@@ -23,7 +23,9 @@
     "db:migrate:deploy": "turbo run db:migrate:deploy",
     "db:seed": "turbo run db:seed",
     "db:studio": "turbo run db:studio",
-    "db:reset": "turbo run db:reset"
+    "db:reset": "turbo run db:reset",
+    "test:concurrency": "node test/concurrency/parallel-booking.test.mjs",
+    "test:checkin": "node test/integration/check-in.test.mjs"
   },
   "devDependencies": {
     "@repo/config": "workspace:*",

@@ -29,6 +29,15 @@
 :root {
   --radius: 0.625rem;
 
+  /* Layered elevation for cards that float above a dimmed backdrop - the
+   * sign-in dialog and the verification panel. Stacked small shadows read as
+   * a physical lift where one large blur reads as a grey halo. */
+  --elevated-lg:
+    0 1px 1px 0.5px rgb(41 41 41 / 0.04), 0 3px 3px -1.5px rgb(41 41 41 / 0.02),
+    0 6px 6px -3px rgb(41 41 41 / 0.04), 0 12px 12px -6px rgb(41 41 41 / 0.04),
+    0 24px 24px -12px rgb(41 41 41 / 0.04), 0 0 0 1px rgb(41 41 41 / 0.04),
+    inset 0 -1px 1px -0.5px rgb(51 51 51 / 0.06);
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.141 0.005 285.823);
   --card: oklch(1 0 0);
@@ -87,6 +96,13 @@
  * Dark theme. Only the token values change, never the token names.
  * ------------------------------------------------------------------------ */
 .dark {
+  /* On a near-black surface the light theme's grey shadows are invisible, so
+   * the lift comes from a hairline rim and an inset highlight instead. */
+  --elevated-lg:
+    0 1px 1px 0.5px rgb(0 0 0 / 0.3), 0 6px 12px -3px rgb(0 0 0 / 0.4),
+    0 24px 48px -12px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.06),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+
   --background: oklch(0.141 0.005 285.823);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.21 0.006 285.885);
@@ -191,6 +207,16 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 10px);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --shadow-elevated-lg: var(--elevated-lg);
+
+  /* The one-time-password field draws its own caret, because the real input
+   * behind the slots is transparent and the native caret would sit in the
+   * wrong place (see @repo/ui OtpInput). */
+  --animate-caret-blink: caret-blink 1.25s ease-out infinite;
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
@@ -199,6 +225,18 @@
    * room x date grid aligned under horizontal virtual scrolling. */
   --spacing-night: 3.5rem;
   --spacing-room-row: 2.75rem;
+}
+
+@keyframes caret-blink {
+  0%,
+  70%,
+  100% {
+    opacity: 1;
+  }
+  20%,
+  50% {
+    opacity: 0;
+  }
 }
 
 @layer base {

@@ -22,3 +22,4 @@ export {
   CardFooter,
 } from './components/card';
 export { Badge, badgeVariants, type BadgeProps } from './components/badge';
+export { OtpInput, type OtpInputProps } from './components/otp-input';
