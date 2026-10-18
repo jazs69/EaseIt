@@ -1,0 +1,78 @@
+-- ===========================================================================
+-- Server-side session revocation.
+--
+-- Effect on existing rows: additive and null. A null means "no sessions have
+-- been revoked for this account", which is true of every row today, so every
+-- live session keeps working across the deploy. Nothing is backfilled —
+-- stamping existing accounts would sign out every operator at once for no
+-- reason.
+--
+-- WHAT THIS FIXES
+-- The session token is a stateless HS256 JWT with an eight-hour TTL. Signing
+-- out cleared the cookie, which stops *that browser* sending it, and that is
+-- genuinely enough for the ordinary case: a clerk stepping away from a shared
+-- front-desk terminal. What it could not do is stop a copy of the token being
+-- replayed, for up to eight hours, because nothing server-side knew the
+-- session had ended. Sign-out now stamps this column and the guard refuses any
+-- token whose `iat` predates it.
+--
+-- WHY A COLUMN AND NOT A SESSION TABLE OR A REDIS DENYLIST
+-- `SessionAuthGuard` already loads this user row on every single request, to
+-- check `isActive` — "a deactivated staff member holding a token issued an
+-- hour ago must stop working now, not in seven hours". Revocation is the same
+-- argument and the query is already paid for, so this costs one additional
+-- selected column and no extra round trip.
+--
+-- A denylist in Redis, or a `Session` table with a row per login, would buy
+-- per-device revocation ("sign out my other devices"), which nobody has asked
+-- for, at the price of a store to maintain, expire and keep consistent.
+-- CLAUDE.md section 6.4: the answer at ten properties is almost always that
+-- the existing stack can do it.
+--
+-- THE TRADE-OFF, STATED
+-- This revokes *all* of a user's sessions, not one. Signing out on the front
+-- desk terminal also ends that person's session on their phone. For staff
+-- accounts on shared machines that is the safer default and arguably the
+-- expected one; if per-device sign-out is ever wanted, it needs the session
+-- table this deliberately avoids.
+--
+-- Second-granularity note: `iat` is in whole seconds, so the comparison is
+-- `iat < floor(sessionsValidFrom)`. A token minted during the same second as
+-- the sign-out survives. That window is one second wide and closes on its own,
+-- and the alternative — rounding up — would reject a token issued in the same
+-- second as a *subsequent* sign-in and leave the operator unable to log back
+-- in.
+--
+-- NO CHECK CONSTRAINT ON THIS COLUMN, AND WHY NOT
+-- A future-dated stamp would lock an account out — a fresh login's token would
+-- itself predate it — so guarding against one is worth doing. It is not worth
+-- doing with `CHECK (... <= now() + interval '1 day')`: a CHECK is evaluated
+-- only when the row is written and never again, so it would not catch a stamp
+-- that becomes stale, and `now()` is not immutable, which makes a restored
+-- dump able to fail a constraint the original row satisfied. The real guard is
+-- that the endpoint accepts no date at all: the service stamps
+-- `clock.now()`, so a client cannot supply one.
+--
+-- As with every migration since 20261016140000, `prisma migrate diff` again
+-- proposed dropping the tenant-coherence constraints it cannot see in
+-- schema.prisma. They are stripped from the generated SQL below and remain in
+-- the database (CLAUDE.md section 6.2):
+--   * ALTER TABLE "folio" DROP CONSTRAINT "folio_same_property_as_reservation";
+--   * ALTER TABLE "folio_line" DROP CONSTRAINT "folio_line_same_property_as_folio";
+--   * ALTER TABLE "inventory_day" DROP CONSTRAINT "inventory_day_same_property_as_room_type";
+--   * ALTER TABLE "reservation" DROP CONSTRAINT "reservation_same_property_as_company";
+--   * ALTER TABLE "reservation_guest" DROP CONSTRAINT "reservation_guest_same_property_as_reservation";
+--   * ALTER TABLE "reservation_note" DROP CONSTRAINT "reservation_note_same_property_as_reservation";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_reservation";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_room";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_room_type";
+--   * ALTER TABLE "room" DROP CONSTRAINT "room_same_property_as_room_type";
+--   * DROP INDEX "company_property_id_unique_pair";
+--   * DROP INDEX "folio_property_id_unique_pair";
+--   * DROP INDEX "reservation_property_id_unique_pair";
+--   * DROP INDEX "room_property_id_unique_pair";
+--   * DROP INDEX "room_type_property_id_unique_pair";
+-- ===========================================================================
+
+-- AlterTable
+ALTER TABLE "user" ADD COLUMN "sessionsValidFrom" TIMESTAMPTZ(6);

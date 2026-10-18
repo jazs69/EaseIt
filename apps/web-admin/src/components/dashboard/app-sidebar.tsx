@@ -17,6 +17,8 @@
  */
 
 import { cn } from '@repo/ui';
+
+import { useSignOut } from '@/hooks/use-sign-out';
 import {
   CalendarDays,
   ChartColumn,
@@ -27,10 +29,9 @@ import {
   Settings,
 } from 'lucide-react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import { useState, useSyncExternalStore, type ComponentType } from 'react';
+import { usePathname } from 'next/navigation';
+import { useSyncExternalStore, type ComponentType } from 'react';
 
-import { signOut } from '@/lib/auth-client';
 import { useOptionalSession } from '@/components/session-provider';
 
 const COLLAPSE_KEY = 'easeit.pms.sidebar.collapsed';
@@ -109,7 +110,6 @@ function writeCollapsed(next: boolean): void {
 
 export function AppSidebar() {
   const pathname = usePathname();
-  const router = useRouter();
   const session = useOptionalSession();
 
   const collapsed = useSyncExternalStore(
@@ -117,23 +117,13 @@ export function AppSidebar() {
     getCollapseSnapshot,
     getCollapseServerSnapshot,
   );
-  const [signingOut, setSigningOut] = useState(false);
+  // Shared with the account popover in the property top bar. Two
+  // implementations of "end the session" is how one of them ends up skipping a
+  // step — see `use-sign-out.ts`.
+  const { signingOut, signOutNow } = useSignOut();
 
   function toggle(): void {
     writeCollapsed(!collapsed);
-  }
-
-  async function handleSignOut(): Promise<void> {
-    setSigningOut(true);
-    try {
-      await signOut();
-    } catch {
-      // Intentionally ignored: the API clears the cookie, and if it is
-      // unreachable, stranding the operator on a dashboard they asked to leave
-      // is the worse outcome. A stale cookie is rejected on its next use.
-    }
-    router.replace('/login');
-    router.refresh();
   }
 
   return (
@@ -205,7 +195,7 @@ export function AppSidebar() {
         <button
           type="button"
           onClick={() => {
-            void handleSignOut();
+            void signOutNow();
           }}
           disabled={signingOut}
           title={collapsed ? 'Logout' : undefined}

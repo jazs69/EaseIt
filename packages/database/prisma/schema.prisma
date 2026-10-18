@@ -353,6 +353,21 @@ model User {
   /// the `loginResultSchema` discriminated union already models.
   isTwoFactorEnabled Boolean @default(true)
 
+  /// Sessions issued before this instant are refused.
+  ///
+  /// How signing out actually ends a session. The session token is a stateless
+  /// JWT, so clearing the cookie stops *this* browser sending it but cannot
+  /// stop a copy of it being replayed until it expires — up to eight hours.
+  /// Signing out stamps this, and the guard refuses any token whose `iat` is
+  /// older, which revokes every session that user holds.
+  ///
+  /// One nullable column rather than a session table or a Redis denylist: the
+  /// guard already loads this row on every request to check `isActive`, so the
+  /// check costs one more selected column and no extra query. A denylist would
+  /// add a datastore to maintain and expire for the same effect (CLAUDE.md
+  /// section 6.4).
+  sessionsValidFrom DateTime? @db.Timestamptz(6)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -832,9 +847,10 @@ model Reservation {
   companyId String?  @db.Uuid
   company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
-  rooms  ReservationRoom[]
-  guests ReservationGuest[]
-  folio  Folio?
+  rooms           ReservationRoom[]
+  guests          ReservationGuest[]
+  folio           Folio?
+  internalNotes   ReservationNote[]
 
   @@unique([propertyId, confirmationCode], name: "reservation_unique_code_per_property")
   /// Idempotency for inbound OTA ingestion (CLAUDE.md section 5). Postgres
@@ -1025,6 +1041,47 @@ model Company {
   @@unique([propertyId, gstin], name: "company_unique_gstin_per_property")
   @@index([propertyId, legalName])
   @@map("company")
+}
+
+/// An internal note somebody wrote against a reservation.
+///
+/// ===========================================================================
+/// Separate rows, not the free-text `Reservation.notes` field.
+///
+/// `Reservation.notes` is one string with no author and no timestamp, which is
+/// fine for "late arrival, flight AI-302" captured at booking and useless for
+/// a running log: two clerks editing it overwrite each other, and nothing
+/// records who said what. The drawer needs a list with an author and a time,
+/// so notes become rows.
+///
+/// The booking-time field stays where it is and is shown as the booking note.
+/// Migrating it into this table would invent an author and a timestamp for
+/// text that has neither.
+///
+/// Append-only by contract, like `FolioLine`: an internal note is part of how
+/// a property explains a decision later, and silently editable history is
+/// worth less than none.
+/// ===========================================================================
+model ReservationNote {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String @db.Uuid
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  /// Staff member who wrote it. Null for a note the system generated.
+  authorUserId String? @db.Uuid
+  /// Their name as it was when they wrote it, so a renamed or departed
+  /// account does not blank the byline on an old note.
+  authorName String
+
+  body String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([propertyId, reservationId, createdAt])
+  @@map("reservation_note")
 }
 
 /// A guest's bill for one stay.

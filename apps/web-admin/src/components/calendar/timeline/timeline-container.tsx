@@ -200,6 +200,7 @@ export function TimelineContainer({ calendar, hotelId }: TimelineContainerProps)
       <ReservationDrawer
         block={drawerBlock}
         roomNumber={drawerBlock === null ? null : roomNumberFor(drawerBlock.id)}
+        hotelId={hotelId}
         onClose={closeDrawer}
         onCheckIn={openCheckIn}
       />

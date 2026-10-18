@@ -235,12 +235,26 @@ export const propertyDashboardSchema = z.object({
     slug: z.string(),
     timezone: z.string(),
     currency: z.string().length(3),
+    /**
+     * The calendar date it currently is **at the property**.
+     *
+     * The default `targetDate`, and what the "Today" control returns to.
+     * Distinct from `businessDate`, which is a ledger position advanced only
+     * by night audit step 7 (CLAUDE.md section 3.3) and therefore sits behind
+     * the real date whenever an audit has not run.
+     */
+    today: businessDateSchema,
     /** The property's own open accounting day. */
     businessDate: businessDateSchema,
     checkInTime: z.string(),
     checkOutTime: z.string(),
   }),
-  /** The day being viewed, which may differ from the business date. */
+  /**
+   * The day being viewed.
+   *
+   * Defaults to `property.today`, and may differ from both that and
+   * `businessDate` once an operator picks a date.
+   */
   targetDate: businessDateSchema,
   metrics: dashboardMetricsSchema,
   activeMetric: dashboardMetricSchema,

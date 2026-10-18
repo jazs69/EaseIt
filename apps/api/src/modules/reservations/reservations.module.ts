@@ -6,6 +6,8 @@ import { CheckInController } from './check-in.controller.js';
 import { CheckInService } from './check-in.service.js';
 import { CreateReservationController } from './create-reservation.controller.js';
 import { CreateReservationService } from './create-reservation.service.js';
+import { ReservationDetailController } from './reservation-detail.controller.js';
+import { ReservationDetailService } from './reservation-detail.service.js';
 import { ReservationSearchController } from './reservation-search.controller.js';
 import { ReservationSearchRepository } from './reservation-search.repository.js';
 import { ReservationSearchService } from './reservation-search.service.js';
@@ -26,15 +28,29 @@ import { ReservationSearchService } from './reservation-search.service.js';
  * `ClockService` arrive from the global modules.
  */
 @Module({
-  controllers: [ReservationSearchController, CreateReservationController, CheckInController],
+  controllers: [
+    ReservationSearchController,
+    CreateReservationController,
+    CheckInController,
+    // Registered last: its `:reservationId` route would otherwise shadow the
+    // literal sibling paths above it, and `/reservations/quote` would be read
+    // as a reservation whose id is "quote".
+    ReservationDetailController,
+  ],
   providers: [
     CheckInService,
     CreateReservationService,
+    ReservationDetailService,
     ReservationSearchService,
     ReservationSearchRepository,
     TokenService,
     SessionAuthGuard,
   ],
-  exports: [ReservationSearchService, CreateReservationService, CheckInService],
+  exports: [
+    ReservationSearchService,
+    CreateReservationService,
+    CheckInService,
+    ReservationDetailService,
+  ],
 })
 export class ReservationsModule {}

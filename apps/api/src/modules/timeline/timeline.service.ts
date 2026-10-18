@@ -82,6 +82,16 @@ function minutesFromWallClock(wallClock: string): number {
   return Number.isNaN(parsed) ? 0 : Math.max(0, Math.min(parsed, TIMELINE.MINUTES_PER_DAY));
 }
 
+/**
+ * Narrowest a day-axis block may render, in column units.
+ *
+ * Only reached by a degenerate stay — a same-day booking, or a property whose
+ * check-out time is not before its check-in time. Such a block would otherwise
+ * compute to zero or negative width and vanish, which hides the very booking
+ * somebody needs to go and fix.
+ */
+const MIN_BLOCK_UNITS = 0.08;
+
 /** The geometry half of a block, shared by the day and hour coordinate systems. */
 interface BlockGeometry {
   gridStartIndex: number;
@@ -204,13 +214,26 @@ export class TimelineService {
     const [rooms, stays, inventory, unassigned, roomTypes, floors, adrStays] =
       await Promise.all([
         this.repository.findRooms(property.id, filter),
-        // Day view is hourly, so it can render a departure morning; the date
-        // axes cannot and must not.
+        /**
+         * Departures on the first visible date are included on every axis.
+         *
+         * This used to be `query.timeframe === 'day'`, on the reasoning that
+         * only an hourly axis could render a departure morning. Now that a day
+         * column is drawn from check-in to check-out rather than edge to edge,
+         * every axis renders it — and without this, opening the calendar *on*
+         * a date hid the guest who checks out that morning, which is the one
+         * stay the front desk most needs to see.
+         *
+         * The occupancy strip is unaffected: `findInventory` counts sold
+         * room-nights per stay date, where a departure date is correctly not
+         * one (CLAUDE.md section 3.1 — departure day is exclusive, so the room
+         * is sellable that night).
+         */
         this.repository.findOverlappingStays(
           property.id,
           windowStart,
           windowEndExclusive,
-          query.timeframe === 'day',
+          true,
         ),
         this.repository.findInventory(property.id, windowStart, windowEnd),
         this.repository.findUnassignedStays(property.id, windowStart, windowEndExclusive),
@@ -486,7 +509,7 @@ export class TimelineService {
     const geometry =
       columnKind === 'hour'
         ? this.hourGeometry(stay, windowStart, property)
-        : this.dayGeometry(stay, windowStart, columnCount);
+        : this.dayGeometry(stay, windowStart, columnCount, property);
 
     return {
       id: reservation.id,
@@ -519,29 +542,99 @@ export class TimelineService {
     };
   }
 
-  /** Placement across date columns. */
+  /**
+   * Placement across date columns.
+   *
+   * ===========================================================================
+   * **A stay occupies the desk's hours, not whole calendar squares.**
+   *
+   * This used to snap blocks to column boundaries, so a one-night stay filled
+   * its arrival column from edge to edge and stopped dead at midnight. Both
+   * ends of that are operationally wrong:
+   *
+   *   * The room is not occupied from midnight on the arrival date. It is let
+   *     at the property's check-in time, and before that it is being cleaned
+   *     or is simply free.
+   *   * The room *is* still occupied on the departure morning, until the
+   *     check-out time. A block that ends at midnight claims the room is free
+   *     from 00:00, which is when the front desk double-sells it.
+   *
+   * So the stay is measured in **column units** — whole columns plus a
+   * fraction — from check-in on the arrival date to check-out on the departure
+   * date, and the fractions are handed to the client as `leadFraction` and
+   * `trailFraction`. The client already insets the block by those percentages,
+   * which is how the hour view has always placed a 14:35 arrival.
+   *
+   * What this buys, beyond looking right: **back-to-back stays stop
+   * colliding.** A departure and an arrival on the same date now share that
+   * column with a visible gap between check-out and check-in — the
+   * housekeeping turnaround. The two blocks' grid items overlap, which CSS
+   * grid permits, and their absolutely-positioned buttons do not.
+   *
+   * The times come from the property, never from a constant. These hotels
+   * check in at 14:00, not the 12:00 a generic PMS assumes, and the drawer
+   * already shows that; a hardcoded midday here would quietly disagree with
+   * both the configuration and the stay detail beside it.
+   *
+   * Desk times rather than recorded arrival instants, deliberately: a column
+   * here is a whole day, so a guest who arrived at 15:10 instead of 14:00
+   * would move the block by 0.8% of a column — invisible, and it would make
+   * the row disagree with the rest of its own date axis. The hour view, where
+   * that difference is a whole column, does use the recorded instants.
+   * ===========================================================================
+   */
   private dayGeometry(
     stay: TimelineStayRow,
     windowStart: Date,
     columnCount: number,
+    property: { checkInTime: string; checkOutTime: string },
   ): BlockGeometry {
     const windowStartMs = windowStart.getTime();
-    const windowEndExclusiveMs = addDays(windowStart, columnCount).getTime();
-    const arrival = stay.arrivalDate.getTime();
-    const departure = stay.departureDate.getTime();
+    const arrivalOffset = Math.round((stay.arrivalDate.getTime() - windowStartMs) / DAY_MS);
+    const departureOffset = Math.round(
+      (stay.departureDate.getTime() - windowStartMs) / DAY_MS,
+    );
 
-    const visibleStart = Math.max(arrival, windowStartMs);
-    const visibleEnd = Math.min(departure, windowEndExclusiveMs);
+    const checkInFraction =
+      minutesFromWallClock(property.checkInTime) / TIMELINE.MINUTES_PER_DAY;
+    const checkOutFraction =
+      minutesFromWallClock(property.checkOutTime) / TIMELINE.MINUTES_PER_DAY;
+
+    // Column units from the window's left edge.
+    const rawStart = arrivalOffset + checkInFraction;
+    const rawEnd = departureOffset + checkOutFraction;
+
+    const continuesBefore = rawStart < 0;
+    const continuesAfter = rawEnd > columnCount;
+
+    // Clamped to the window, then widened to a minimum so that a day-use
+    // booking, or a property configured to check out after it checks in,
+    // still renders something a clerk can click rather than a zero-width
+    // block that silently disappears.
+    let start = Math.min(Math.max(rawStart, 0), columnCount - MIN_BLOCK_UNITS);
+    let end = Math.max(Math.min(rawEnd, columnCount), start + MIN_BLOCK_UNITS);
+    if (end > columnCount) {
+      end = columnCount;
+      start = Math.max(0, end - MIN_BLOCK_UNITS);
+    }
+
+    // The columns the block touches. `ceil(end) - 1` is the last one it enters
+    // at all: a stay ending exactly on a boundary does not reach into the
+    // column after it.
+    const gridStartIndex = Math.min(Math.floor(start), columnCount - 1);
+    const lastIndex = Math.min(
+      Math.max(Math.ceil(end) - 1, gridStartIndex),
+      columnCount - 1,
+    );
 
     return {
-      gridStartIndex: Math.round((visibleStart - windowStartMs) / DAY_MS),
-      // At least one column: a stay overlapping the window at all must be
-      // visible, and this also guards a rounding edge at the boundary.
-      gridSpan: Math.max(1, Math.round((visibleEnd - visibleStart) / DAY_MS)),
-      leadFraction: 0,
-      trailFraction: 0,
-      continuesBefore: arrival < windowStartMs,
-      continuesAfter: departure > windowEndExclusiveMs,
+      gridStartIndex,
+      gridSpan: lastIndex - gridStartIndex + 1,
+      // Unused slivers at each end of the spanned columns.
+      leadFraction: start - gridStartIndex,
+      trailFraction: lastIndex + 1 - end,
+      continuesBefore,
+      continuesAfter,
     };
   }
 

@@ -211,6 +211,15 @@ export const propertyGrantSchema = z.object({
    * data — a hotel that has not supplied a logo is simply shown its initials.
    */
   propertyLogoUrl: z.string().nullable(),
+  /**
+   * The property's own contact address, where one is configured.
+   *
+   * Distinct from `Session.email`, which is the signed-in staff member. The
+   * account popover shows this one under the hotel's name, because that block
+   * identifies the *property* a clerk is working in — and on a shared front
+   * desk terminal those two are rarely the same person.
+   */
+  propertyEmail: z.string().nullable(),
   timezone: z.string(),
   currency: z.string().length(3),
   businessDate: businessDateSchema,

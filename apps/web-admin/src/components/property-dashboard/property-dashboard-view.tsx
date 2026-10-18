@@ -152,11 +152,21 @@ export function PropertyDashboardView({ dashboard, localHour }: PropertyDashboar
     );
   }, [dashboard.reservations, search]);
 
-  /** Pushes one changed parameter, preserving the rest. */
-  function navigate(changes: Record<string, string>): void {
+  /**
+   * Pushes changed parameters, preserving the rest.
+   *
+   * `null` removes a parameter, which is how "Today" works: dropping `date`
+   * lets the server supply the property's own current date, rather than this
+   * component guessing it from the browser's clock and timezone.
+   */
+  function navigate(changes: Record<string, string | null>): void {
     const next = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(changes)) {
-      next.set(key, value);
+      if (value === null) {
+        next.delete(key);
+      } else {
+        next.set(key, value);
+      }
     }
     startTransition(() => {
       router.push(`/property-dashboard?${next.toString()}`, { scroll: false });
@@ -187,8 +197,29 @@ export function PropertyDashboardView({ dashboard, localHour }: PropertyDashboar
               className="tabular rounded-lg border border-white/10 bg-zinc-900/60 py-1.5 pr-2 pl-8 text-xs font-medium text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
             />
           </label>
+          {/* Only when it would do something — a "Today" button on today is
+              a control that does nothing, and the calendar's behaves the same
+              way: it drops the parameter rather than setting a date. */}
+          {dashboard.targetDate === dashboard.property.today ? null : (
+            <button
+              type="button"
+              onClick={() => {
+                navigate({ date: null });
+              }}
+              title={`Back to ${dashboard.property.today} (${dashboard.property.timezone})`}
+              className="rounded-lg border border-white/10 bg-zinc-900/60 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-white/25"
+            >
+              Today
+            </button>
+          )}
           <span className="tabular text-xs text-zinc-600">
             {formatLongDate(dashboard.targetDate)}
+            {dashboard.targetDate === dashboard.property.today ? (
+              <span className="ml-1.5 text-[10px] text-zinc-500">(today)</span>
+            ) : null}
+            {/* The books being behind the calendar means an audit is overdue.
+                Worth saying on the operational screen, because every charge
+                posted now lands on that older date. */}
             {dashboard.targetDate !== dashboard.property.businessDate ? (
               <span className="ml-1.5 rounded border border-amber-400/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
                 business date {dashboard.property.businessDate}

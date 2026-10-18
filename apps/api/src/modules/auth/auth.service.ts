@@ -149,6 +149,23 @@ export class AuthService implements OnModuleInit {
   /*  Step 1 — password                                                      */
   /* ---------------------------------------------------------------------- */
 
+  /**
+   * End every session this account holds.
+   *
+   * Stamped from the injected clock, never from anything a caller supplies —
+   * the endpoint takes no date at all, so a future instant that would lock the
+   * account out cannot be requested (CLAUDE.md section 5: the clock is
+   * injected).
+   *
+   * All sessions rather than one: the token carries no per-session identity to
+   * revoke. For staff accounts on shared front-desk machines that is the safer
+   * default — signing out at the desk should not leave a session alive on
+   * somebody's phone.
+   */
+  async revokeSessions(userId: string): Promise<void> {
+    await this.repository.revokeSessions(userId, this.clock.now());
+  }
+
   async login(request: LoginRequest, origin: RequestOrigin): Promise<LoginOutcome> {
     this.enforce(`login:ip:${origin.ipAddress ?? 'unknown'}`, LIMITS.LOGIN_PER_IP);
     this.enforce(`login:email:${request.email}`, LIMITS.LOGIN_PER_EMAIL);
@@ -531,6 +548,7 @@ function toPropertyGrant(grant: GrantRow): PropertyGrant {
     propertySlug: grant.propertySlug,
     propertyName: grant.propertyName,
     propertyLogoUrl: grant.propertyLogoUrl,
+    propertyEmail: grant.propertyEmail,
     timezone: grant.timezone,
     currency: grant.currency,
     businessDate: grant.businessDate as PropertyGrant['businessDate'],

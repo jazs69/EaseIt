@@ -9,6 +9,7 @@ import { HealthModule } from './modules/health/health.module.js';
 import { CompaniesModule } from './modules/companies/companies.module.js';
 import { PerformanceModule } from './modules/performance/performance.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
+import { FoliosModule } from './modules/folios/folios.module.js';
 import { ReservationsModule } from './modules/reservations/reservations.module.js';
 import { PropertiesModule } from './modules/properties/properties.module.js';
 import { PropertyDashboardModule } from './modules/property-dashboard/property-dashboard.module.js';
@@ -44,6 +45,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     PerformanceModule,
     ReportsModule,
     ReservationsModule,
+    FoliosModule,
     CalendarModule,
     PropertyDashboardModule,
     TimelineModule,

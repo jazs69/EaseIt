@@ -10,6 +10,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   ReservationStatus,
+  currentDateInTimeZone,
   type AvailabilityBreakdown,
   type BusinessDate,
   type DashboardMetric,
@@ -23,6 +24,7 @@ import {
 } from '@repo/types';
 
 import { TenantScopeViolationError } from '../../common/errors/domain-error.js';
+import { ClockService } from '../platform/clock.service.js';
 import {
   PropertyDashboardRepository,
   type InventoryRow,
@@ -48,7 +50,10 @@ function nightsBetween(arrival: Date, departure: Date): number {
 
 @Injectable()
 export class PropertyDashboardService {
-  constructor(private readonly repository: PropertyDashboardRepository) {}
+  constructor(
+    private readonly repository: PropertyDashboardRepository,
+    private readonly clock: ClockService,
+  ) {}
 
   async summary(
     userId: string,
@@ -63,10 +68,26 @@ export class PropertyDashboardService {
       throw new TenantScopeViolationError('Property');
     }
 
-    // The property's own business date is the default, never the server's
-    // calendar day: a hotel in Asia/Kolkata and the process running it can be
-    // on different dates (CLAUDE.md section 3.3).
-    const targetDate = query.date ?? toBusinessDate(property.businessDate);
+    /**
+     * The default day is **today at the property**.
+     *
+     * Never the server's calendar day — a hotel in Asia/Kolkata and the
+     * process running it are on different dates for five and a half hours
+     * out of every twenty-four (CLAUDE.md section 3.3).
+     *
+     * And no longer the *business date*, which is what this used to use. The
+     * business date is a ledger position advanced only by night audit step 7,
+     * so until an audit runs it stays put: a property two nights behind opened
+     * its dashboard on a two-day-old date and reported that day's arrivals,
+     * departures and availability as though they were today's. A front desk
+     * reading stale arrival counts is how a guest is turned away from a room
+     * that is free.
+     *
+     * The business date still appears beside it, because the gap between the
+     * two is exactly how overdue an audit is.
+     */
+    const propertyToday = currentDateInTimeZone(property.timezone, this.clock.now());
+    const targetDate = query.date ?? propertyToday;
     const targetDateValue = toUtcMidnight(targetDate);
 
     const [counts, reservationRows, inventoryRows, gateways] = await Promise.all([
@@ -105,6 +126,7 @@ export class PropertyDashboardService {
         slug: property.slug,
         timezone: property.timezone,
         currency: property.currency,
+        today: propertyToday,
         businessDate: toBusinessDate(property.businessDate),
         checkInTime: property.checkInTime,
         checkOutTime: property.checkOutTime,

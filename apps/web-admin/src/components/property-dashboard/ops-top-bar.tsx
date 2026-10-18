@@ -437,7 +437,10 @@ export function OpsTopBar({ session }: OpsTopBarProps) {
             hotelId={hotelId}
             propertyName={active?.propertyName ?? 'Property'}
             propertyCode={active?.propertyCode ?? ''}
+            propertyEmail={active?.propertyEmail ?? null}
             logoUrl={active?.propertyLogoUrl ?? null}
+            userName={`${session.firstName} ${session.lastName}`.trim()}
+            userEmail={session.email}
           />
 
         </div>

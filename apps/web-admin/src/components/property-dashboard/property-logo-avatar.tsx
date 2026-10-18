@@ -22,14 +22,20 @@
  */
 
 import { cn } from '@repo/ui';
-import Link from 'next/link';
 import { useState } from 'react';
+
+import { AccountPopover } from './account-popover';
 
 export interface PropertyLogoAvatarProps {
   hotelId: string | null;
   propertyName: string;
   propertyCode: string;
+  /** The hotel's own contact address, shown under its name in the popover. */
+  propertyEmail: string | null;
   logoUrl: string | null;
+  /** The signed-in staff member, named separately from the property. */
+  userName: string;
+  userEmail: string;
 }
 
 /**
@@ -54,68 +60,126 @@ export function propertyInitials(name: string): string {
   return letters.length > 0 ? letters : 'P';
 }
 
-export function PropertyLogoAvatar({
-  hotelId,
+/**
+ * The badge itself: a logo, or the initials.
+ *
+ * Extracted so the navbar trigger and the account popover's header render the
+ * same mark at two sizes rather than each drawing its own. The popover header
+ * is a rounded rectangle and the trigger a circle, which is a `className`
+ * override rather than a second component.
+ */
+export function PropertyBadge({
   propertyName,
-  propertyCode,
   logoUrl,
-}: PropertyLogoAvatarProps) {
+  size = 'md',
+  className,
+}: {
+  propertyName: string;
+  logoUrl: string | null;
+  size?: 'md' | 'lg';
+  className?: string | undefined;
+}) {
   // A logo that 404s falls through to the initials rather than leaving a
   // broken-image glyph in the navigation bar.
   const [logoFailed, setLogoFailed] = useState(false);
   const showLogo = logoUrl !== null && logoUrl.length > 0 && !logoFailed;
-
-  const shell = cn(
-    'relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-full',
-    'border border-white/10 bg-zinc-900 shadow-sm select-none',
-    'transition-all hover:ring-2 hover:ring-white/20',
-    'focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none',
-  );
-
-  const content = showLogo ? (
-    /* `next/image` throws at request time for any host absent from
-       `images.remotePatterns`, and a logo URL is operator-supplied data.
-       Optimising a 36px avatar is not worth crashing the top bar of every
-       page; the docblock above has the full reasoning. */
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={logoUrl}
-      alt=""
-      width={36}
-      height={36}
-      onError={() => {
-        setLogoFailed(true);
-      }}
-      className="size-full bg-zinc-900 object-cover"
-    />
-  ) : (
-    <span className="text-xs font-semibold tracking-wider text-white">
-      {propertyInitials(propertyName)}
-    </span>
-  );
-
-  // The image is `alt=""` because the link already carries the accessible
-  // name — otherwise a screen reader announces the property twice.
-  const label = `${propertyName} · property settings`;
-
-  if (hotelId === null) {
-    // No property in context, so there is nowhere to navigate. Still rendered,
-    // so the bar does not change shape, but inert rather than a dead link.
-    return (
-      <span className={cn(shell, 'cursor-default')} title={propertyName} aria-label={propertyName}>
-        {content}
-      </span>
-    );
-  }
+  const pixels = size === 'lg' ? 48 : 36;
 
   return (
-    <Link
-      href={`/settings/property-config?hotelId=${encodeURIComponent(hotelId)}`}
-      title={`${propertyName} (${propertyCode}) · property settings`}
-      aria-label={label}
-      className={shell}
+    <span
+      className={cn(
+        'relative flex shrink-0 items-center justify-center overflow-hidden rounded-full',
+        'border border-white/10 bg-zinc-900 select-none',
+        size === 'lg' ? 'size-12' : 'size-9',
+        className,
+      )}
     >
-      {content}
-    </Link>
+      {showLogo ? (
+        /* `next/image` throws at request time for any host absent from
+           `images.remotePatterns`, and a logo URL is operator-supplied data.
+           Optimising a small avatar is not worth crashing the top bar of every
+           page; the docblock above has the full reasoning. */
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={logoUrl}
+          alt=""
+          width={pixels}
+          height={pixels}
+          onError={() => {
+            setLogoFailed(true);
+          }}
+          className="size-full bg-zinc-900 object-cover"
+        />
+      ) : (
+        <span
+          className={cn(
+            'font-semibold tracking-wider',
+            size === 'lg' ? 'text-base' : 'text-xs text-white',
+          )}
+        >
+          {propertyInitials(propertyName)}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The navbar trigger: the property badge, opening the account popover.
+ *
+ * It used to be a `Link` straight to property settings. A single-destination
+ * avatar is a reasonable thing, but it left the two actions an operator most
+ * needs from a top bar — move between hotels, and sign out — reachable only
+ * from the group sidebar, which a property screen does not show. Settings is
+ * still one click away, inside the popover.
+ */
+export function PropertyLogoAvatar({
+  hotelId,
+  propertyName,
+  propertyCode,
+  propertyEmail,
+  logoUrl,
+  userName,
+  userEmail,
+}: PropertyLogoAvatarProps) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((current) => !current);
+        }}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={`${propertyName} · account menu`}
+        title={propertyCode === '' ? propertyName : `${propertyName} (${propertyCode})`}
+        className={cn(
+          'flex rounded-full transition-all',
+          'hover:ring-2 hover:ring-white/20',
+          'focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none',
+          open && 'ring-2 ring-white/25',
+        )}
+      >
+        {/* `alt=""` on the image inside: the button already carries the
+            accessible name, and announcing the property twice is noise. */}
+        <PropertyBadge propertyName={propertyName} logoUrl={logoUrl} />
+      </button>
+
+      <AccountPopover
+        isOpen={open}
+        onClose={() => {
+          setOpen(false);
+        }}
+        hotelId={hotelId}
+        propertyName={propertyName}
+        propertyCode={propertyCode}
+        propertyEmail={propertyEmail}
+        logoUrl={logoUrl}
+        userName={userName}
+        userEmail={userEmail}
+      />
+    </div>
   );
 }

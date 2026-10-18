@@ -65,7 +65,7 @@ export class SessionAuthGuard implements CanActivate {
     // ago must stop working now, not in seven hours.
     const user = await this.prisma.client.user.findUnique({
       where: { id: claims.sub },
-      select: { id: true, email: true, isActive: true },
+      select: { id: true, email: true, isActive: true, sessionsValidFrom: true },
     });
 
     if (user === null) {
@@ -73,6 +73,31 @@ export class SessionAuthGuard implements CanActivate {
     }
     if (!user.isActive) {
       throw new AccountDisabledError();
+    }
+
+    /**
+     * Revoked by a sign-out.
+     *
+     * The token is a stateless JWT, so clearing the cookie stops this browser
+     * sending it but cannot stop a copy being replayed for the rest of its
+     * eight hours. Signing out stamps `sessionsValidFrom`, and anything issued
+     * before that instant stops working here.
+     *
+     * `iat` is whole seconds, so the stamp is floored to compare. A token
+     * minted during the same second as the sign-out survives — a one-second
+     * window that closes on its own, and the alternative rejects the token
+     * from a *subsequent* sign-in landing in that same second, which would
+     * leave the operator unable to get back in.
+     *
+     * Costs no extra query: this row was already being loaded to check
+     * `isActive`.
+     */
+    if (user.sessionsValidFrom !== null) {
+      const revokedFrom = Math.floor(user.sessionsValidFrom.getTime() / 1000);
+      if (claims.iat < revokedFrom) {
+        this.logger.warn(`Rejected a revoked session token [${request.id}]`);
+        throw new UnauthenticatedError();
+      }
     }
 
     request.user = {

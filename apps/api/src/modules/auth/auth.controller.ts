@@ -20,6 +20,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Post,
   Req,
   Res,
@@ -51,6 +52,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import {
   clearSessionCookieAttributes,
+  readCookie,
   serializeClearedSessionCookie,
   serializeSessionCookie,
   sessionCookieAttributes,
@@ -59,15 +61,19 @@ import {
 import type { AuthenticatedRequest } from '../../common/auth/authenticated-user.js';
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { TokenService } from '../../common/auth/token.service.js';
 import { AuthService, type RequestOrigin } from './auth.service.js';
 
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   private readonly cookieName: string;
 
   constructor(
     private readonly auth: AuthService,
+    private readonly tokens: TokenService,
     private readonly config: ConfigService,
   ) {
     this.cookieName = sessionCookieName(config);
@@ -190,13 +196,53 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
-    summary: 'Clear the session cookie',
+    summary: 'End the session',
     description:
+      'Clears the cookie and revokes every session token the account holds, ' +
+      'so a copy of the token cannot be replayed for the rest of its life. ' +
       'Unguarded on purpose: signing out must work even when the token has ' +
-      'already expired, and it reveals nothing — the only effect is to ' +
-      'discard whatever cookie the caller sent.',
+      'already expired, and it reveals nothing — a caller with no valid ' +
+      'session simply gets their cookie discarded.',
   })
-  logout(@Res({ passthrough: true }) reply: FastifyReply): void {
+  async logout(
+    @Req() request: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<void> {
+    /**
+     * Revoke first, then clear.
+     *
+     * ===========================================================================
+     * This route stays unguarded, and still revokes.
+     *
+     * A guard here would make sign-out fail for the one caller who most needs
+     * it to succeed: somebody whose token has just expired, or was already
+     * revoked, and who is left with a stale cookie the browser keeps sending.
+     * They would get a 401 from the act of signing out.
+     *
+     * So the token is read rather than required. When it verifies, the account
+     * is stamped and every session it holds dies. When it does not, there is
+     * nothing to revoke and the cookie is cleared anyway — which is the whole
+     * of what an unauthenticated caller can achieve here.
+     *
+     * A failure to revoke must not block the clear: leaving the browser
+     * holding a live cookie because a write failed is strictly worse than
+     * clearing it and logging the problem.
+     * ===========================================================================
+     */
+    const token = readCookie(request.headers.cookie, this.cookieName);
+    const claims = token === null ? null : this.tokens.verify(token);
+
+    if (claims !== null) {
+      try {
+        await this.auth.revokeSessions(claims.sub);
+      } catch (error) {
+        this.logger.error(
+          `Sign-out could not revoke sessions for a user; the cookie was still cleared [${request.id}]`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
+    }
+
     // Name, path and domain must match what set the cookie or the browser
     // keeps it (see session-cookie.ts).
     reply.header(

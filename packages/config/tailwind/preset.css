@@ -218,6 +218,13 @@
    * wrong place (see @repo/ui OtpInput). */
   --animate-caret-blink: caret-blink 1.25s ease-out infinite;
 
+  /* Popover and dropdown entrance. A token rather than a dependency: the one
+   * thing an animation library would add here is this curve, and the app
+   * already has a popover convention that needs no runtime (CLAUDE.md
+   * section 6.4). `forwards` holds the end state, or the panel snaps back to
+   * 95% scale once the animation finishes. */
+  --animate-menu-in: menu-in 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
 
@@ -225,6 +232,33 @@
    * room x date grid aligned under horizontal virtual scrolling. */
   --spacing-night: 3.5rem;
   --spacing-room-row: 2.75rem;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Respecting a stated preference is not optional: a scale-and-slide is exactly
+ * the kind of motion that triggers vestibular symptoms, and the menu is just
+ * as usable appearing instantly. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes menu-in {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
 }
 
 @keyframes caret-blink {

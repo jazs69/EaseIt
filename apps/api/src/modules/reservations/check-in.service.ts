@@ -22,6 +22,7 @@ import { Injectable } from '@nestjs/common';
 import {
   OVERRIDABLE_BLOCKERS,
   Permission,
+  currentDateInTimeZone,
   permissionsForRoles,
   ReservationStatus,
   type CheckInBlocker,
@@ -40,6 +41,7 @@ import {
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { ClockService } from '../platform/clock.service.js';
 import {
   isCleanRoomState,
   isOccupiedRoomState,
@@ -74,7 +76,10 @@ function nightsBetween(arrival: Date, departure: Date): number {
 
 @Injectable()
 export class CheckInService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clock: ClockService,
+  ) {}
 
   /* -------------------------------------------------------------------- */
   /*  Pre-flight                                                           */
@@ -117,11 +122,12 @@ export class CheckInService {
           });
 
     const businessDate = toBusinessDateString(property.businessDate);
+    const propertyToday = currentDateInTimeZone(property.timezone, this.clock.now());
 
     const blockers = this.blockersFor({
       status: reservation.status,
       arrivalDate: toBusinessDateString(reservation.arrivalDate),
-      businessDate,
+      today: propertyToday,
       roomStatus: room?.status ?? null,
       hasGovtId: (reservation.govtIdNumber ?? '').trim().length > 0,
     });
@@ -211,11 +217,14 @@ export class CheckInService {
     const govtIdNumber = request.primaryGuestIdNumber ?? reservation.govtIdNumber;
     const govtIdType = request.primaryGuestIdType ?? reservation.govtIdType;
 
+    // Posting uses the business date; the arrival gate uses the calendar date.
     const businessDate = toBusinessDateString(property.businessDate);
+    const propertyToday = currentDateInTimeZone(property.timezone, this.clock.now());
+
     const blockers = this.blockersFor({
       status: reservation.status,
       arrivalDate: toBusinessDateString(reservation.arrivalDate),
-      businessDate,
+      today: propertyToday,
       roomStatus: targetRoom?.status ?? null,
       hasGovtId: (govtIdNumber ?? '').trim().length > 0,
     });
@@ -350,7 +359,17 @@ export class CheckInService {
   private blockersFor(input: {
     status: string;
     arrivalDate: string;
-    businessDate: string;
+    /**
+     * The calendar date at the property, **not** its business date.
+     *
+     * A guest standing at the desk today must be checkable in today. The
+     * business date is a ledger position that only moves when night audit
+     * step 7 runs, so gating on it refused every booking taken after the
+     * last audit — which, with the audit module not built, is all of them.
+     * Charges still post to the business date; that is a separate question
+     * from whether the guest may walk into the room (CLAUDE.md section 3.3).
+     */
+    today: string;
     roomStatus: string | null;
     hasGovtId: boolean;
   }): CheckInBlocker[] {
@@ -378,7 +397,7 @@ export class CheckInService {
     // Lexicographic comparison is exact on `YYYY-MM-DD`, and avoids building a
     // Date that would reintroduce a timezone the business date does not have
     // (section 3.3).
-    if (input.arrivalDate > input.businessDate) blockers.push('ARRIVAL_IN_FUTURE');
+    if (input.arrivalDate > input.today) blockers.push('ARRIVAL_IN_FUTURE');
 
     if (input.roomStatus === null) {
       blockers.push('NO_ROOM_ASSIGNED');
@@ -409,7 +428,7 @@ export class CheckInService {
   private async authorise(
     userId: string,
     codeOrId: string,
-  ): Promise<{ id: string; code: string; businessDate: Date }> {
+  ): Promise<{ id: string; code: string; businessDate: Date; timezone: string }> {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       codeOrId,
     );
@@ -418,7 +437,7 @@ export class CheckInService {
       where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
       select: {
         role: { select: { key: true } },
-        property: { select: { id: true, code: true, businessDate: true } },
+        property: { select: { id: true, code: true, businessDate: true, timezone: true } },
       },
     });
 

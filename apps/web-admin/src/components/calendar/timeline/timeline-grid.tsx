@@ -553,6 +553,16 @@ function BlockCell({
   const leftPercent = (block.leadFraction / block.gridSpan) * 100;
   const rightPercent = (block.trailFraction / block.gridSpan) * 100;
 
+  /**
+   * How wide the block actually renders, in column units.
+   *
+   * Not `gridSpan`: a one-night stay now *spans* two columns, because it runs
+   * from check-in on the arrival date to check-out the next morning, but it
+   * only fills about 0.9 of a column between them. Keying the meal-plan badge
+   * off the span would print it on blocks far too narrow to hold it.
+   */
+  const widthInColumns = block.gridSpan - block.leadFraction - block.trailFraction;
+
   return (
     <div
       className="relative z-10 min-h-9"
@@ -585,7 +595,7 @@ function BlockCell({
         )}
       >
         <span className="truncate text-[10px] font-semibold">{block.guestName}</span>
-        {block.gridSpan > 1 ? (
+        {widthInColumns > 1.4 ? (
           <span className="ml-auto shrink-0 rounded bg-black/25 px-1 text-[8px] font-bold">
             {block.mealPlan}
           </span>

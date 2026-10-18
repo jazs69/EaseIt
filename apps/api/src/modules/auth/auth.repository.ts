@@ -80,6 +80,7 @@ export interface GrantRow {
   propertySlug: string;
   propertyName: string;
   propertyLogoUrl: string | null;
+  propertyEmail: string | null;
   timezone: string;
   currency: string;
   /** `YYYY-MM-DD`, the property's own open accounting day. */
@@ -142,6 +143,20 @@ export class AuthRepository {
       where: { id: userId },
       data: { lastLoginAt: at },
       select: { id: true },
+    });
+  }
+
+  /**
+   * Mark every token issued before `at` as refused.
+   *
+   * `updateMany` rather than `update`: signing out of an account that has
+   * since been deleted is not worth raising at the caller — the session is
+   * gone either way, and the cookie still needs clearing.
+   */
+  async revokeSessions(userId: string, at: Date): Promise<void> {
+    await this.prisma.client.user.updateMany({
+      where: { id: userId },
+      data: { sessionsValidFrom: at },
     });
   }
 
@@ -300,6 +315,7 @@ export class AuthRepository {
             slug: true,
             name: true,
             logoUrl: true,
+            email: true,
             timezone: true,
             currency: true,
             businessDate: true,
@@ -330,6 +346,7 @@ export class AuthRepository {
           propertySlug: row.property.slug,
           propertyName: row.property.name,
           propertyLogoUrl: row.property.logoUrl,
+          propertyEmail: row.property.email,
           timezone: row.property.timezone,
           currency: row.property.currency,
           // @db.Date comes back as UTC midnight, so the first ten characters

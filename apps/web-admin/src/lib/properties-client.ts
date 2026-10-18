@@ -10,6 +10,9 @@
 
 import {
   checkInPreflightSchema,
+  folioPageSchema,
+  reservationDetailSchema,
+  reservationNoteSchema,
   checkInResultSchema,
   groupCalendarResponseSchema,
   groupPerformanceSchema,
@@ -34,6 +37,13 @@ import {
   type PropertyStatusFilter,
   type CompanySummary,
   type CreateCompanyCommand,
+  type FolioPage,
+  type PostFolioChargeCommand,
+  type PostFolioDiscountCommand,
+  type PostFolioPaymentCommand,
+  type AddReservationNoteCommand,
+  type ReservationDetail,
+  type ReservationNoteView,
   type CheckInPreflight,
   type CheckInRequest,
   type CheckInResult,
@@ -412,6 +422,111 @@ export function createReservation(
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/reservations`,
     createdReservationSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Folio and billing                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The billing page, by the booking code a clerk reads aloud.
+ *
+ * Scoped by `hotelId`: the code is unique per property, so the same code at
+ * another hotel is a different booking and the API refuses it.
+ */
+export function fetchFolioPage(
+  hotelId: string,
+  bookingCode: string,
+  options?: { signal?: AbortSignal; cookieHeader?: string },
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/by-booking/${encodeURIComponent(bookingCode)}`,
+    folioPageSchema,
+    {
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      ...(options?.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    },
+  );
+}
+
+/**
+ * Each posting returns the whole recomputed page.
+ *
+ * Not the created line: the balance and every total are derived from the
+ * ledger, so a client that patched one line into local state would have to
+ * re-derive all of them — and would eventually re-derive one differently
+ * (CLAUDE.md section 3.4).
+ */
+export function postFolioPayment(
+  hotelId: string,
+  folioId: string,
+  body: PostFolioPaymentCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/payment`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+export function postFolioCharge(
+  hotelId: string,
+  folioId: string,
+  body: PostFolioChargeCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/charge`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+export function postFolioDiscount(
+  hotelId: string,
+  folioId: string,
+  body: PostFolioDiscountCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/discount`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Reservation detail                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The drawer's own fetch.
+ *
+ * Deliberately not folded into the timeline payload: the grid returns a block
+ * per stay in the window, and attaching every guest row, folio line and note
+ * to all of them to serve the one a clerk might click would overfetch by two
+ * orders of magnitude (CLAUDE.md section 5).
+ */
+export function fetchReservationDetail(
+  hotelId: string,
+  reservationId: string,
+  signal?: AbortSignal,
+): Promise<ReservationDetail> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}`,
+    reservationDetailSchema,
+    signal === undefined ? undefined : { signal },
+  );
+}
+
+export function addReservationNote(
+  hotelId: string,
+  reservationId: string,
+  body: AddReservationNoteCommand,
+): Promise<ReservationNoteView> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/notes`,
+    reservationNoteSchema,
     { method: 'POST', body },
   );
 }
