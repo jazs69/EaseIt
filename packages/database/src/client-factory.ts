@@ -31,9 +31,45 @@ function logLevels(): Prisma.LogLevel[] {
   return process.env['NODE_ENV'] === 'production' ? ['warn', 'error'] : ['warn', 'error'];
 }
 
+/**
+ * Every connection runs with its session time zone pinned to UTC.
+ *
+ * ===========================================================================
+ * Without this, timestamps are silently stored at the wrong instant.
+ *
+ * The driver serialises a JS `Date` as its UTC wall-clock digits with **no
+ * offset** ("2026-06-15 10:00:00"), and Postgres then interprets those digits
+ * in the session time zone. On a machine in Asia/Kolkata that turns 10:00Z
+ * into 04:30Z -- every stored timestamp is early by the local UTC offset.
+ *
+ * Reads are shifted back by the same amount, so an ORM-only round trip looks
+ * correct and the bug stays invisible. It surfaces the moment SQL does
+ * arithmetic:
+ *
+ *   * `WHERE "leaseExpiresAt" < now()` was true for a lease claimed one second
+ *     ago with sixty seconds to run -- measured, not theorised, while building
+ *     the outbox dispatcher. Left in place it would have reclaimed every
+ *     in-flight row immediately and delivered every side effect repeatedly.
+ *   * `WHERE "availableAt" <= now()` makes a deliberately delayed event due
+ *     five and a half hours early.
+ *   * any report, BI query, backup or `psql` session reads the wrong hour.
+ *
+ * CLAUDE.md section 3.3 requires timestamps to be stored in UTC, so the
+ * previous behaviour was a bug against the blueprint rather than a choice.
+ * `-c timezone=UTC` is sent in the startup packet, so it applies to every
+ * session on the pool, including the ones Migrate and the seed script use.
+ *
+ * It does **not** change how calendar values behave: `arrivalDate`,
+ * `businessDate` and `stayDate` are `@db.Date` and carry no time zone, and
+ * per-property local time continues to come from the property's IANA zone
+ * through the date helpers in `packages/types`.
+ * ===========================================================================
+ */
+const SESSION_OPTIONS = '-c timezone=UTC';
+
 export function createPrismaClient(): PrismaClient {
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString: connectionString() }),
+    adapter: new PrismaPg({ connectionString: connectionString(), options: SESSION_OPTIONS }),
     log: logLevels(),
     errorFormat: process.env['NODE_ENV'] === 'production' ? 'minimal' : 'pretty',
   });

@@ -5,6 +5,9 @@ import { TokenService } from '../../common/auth/token.service.js';
 import { PropertiesController } from './properties.controller.js';
 import { PropertiesRepository } from './properties.repository.js';
 import { PropertiesService } from './properties.service.js';
+import { PropertySetupController } from './property-setup.controller.js';
+import { PropertySetupService } from './property-setup.service.js';
+import { PropertyTaxService } from './property-tax.service.js';
 
 /**
  * The `properties` module from CLAUDE.md section 2.
@@ -17,8 +20,18 @@ import { PropertiesService } from './properties.service.js';
  * one-directional rather than importing AuthModule to borrow them.
  */
 @Module({
-  controllers: [PropertiesController],
-  providers: [PropertiesService, PropertiesRepository, TokenService, SessionAuthGuard],
-  exports: [PropertiesService],
+  controllers: [PropertiesController, PropertySetupController],
+  providers: [
+    PropertiesService,
+    PropertiesRepository,
+    PropertySetupService,
+    PropertyTaxService,
+    TokenService,
+    SessionAuthGuard,
+  ],
+  // `PropertyTaxService` is exported because section 2 puts tax rules in this
+  // module: `reservations` and `folios` price through it rather than each
+  // reading the slab table and disagreeing about precedence.
+  exports: [PropertiesService, PropertyTaxService],
 })
 export class PropertiesModule {}

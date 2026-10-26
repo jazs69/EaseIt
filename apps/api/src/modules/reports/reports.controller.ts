@@ -19,7 +19,10 @@ import {
 } from '@nestjs/swagger';
 import {
   reportQuerySchema,
+  masterReportQuerySchema,
   reportTypeSchema,
+  type MasterReportQuery,
+  type MasterReportResponse,
   type ReportQuery,
   type ReportResponse,
 } from '@repo/types';
@@ -32,7 +35,8 @@ import {
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { toCsv } from './report-csv.js';
+import { MasterReportService } from './master-report.service.js';
+import { masterReportToCsv, toCsv } from './report-csv.js';
 import { ReportsService } from './reports.service.js';
 
 const UTF8_FILENAME = "filename*=UTF-8''";
@@ -42,7 +46,58 @@ const UTF8_FILENAME = "filename*=UTF-8''";
 @Controller('properties')
 @UseGuards(SessionAuthGuard)
 export class ReportsController {
-  constructor(private readonly reports: ReportsService) {}
+  constructor(
+    private readonly reports: ReportsService,
+    private readonly masterReports: MasterReportService,
+  ) {}
+
+  /**
+   * Declared **before** `:reportType`, which would otherwise shadow it.
+   *
+   * This module's sibling route is `reports/:reportType`, and "master-report"
+   * is a perfectly good value for that parameter — it would match, fail
+   * `reportTypeSchema`, and return a 400 about an unknown report type for a
+   * path that exists. The reservations module carries the same hazard and the
+   * same fix, which is declaration order.
+   */
+  @Get(':hotelId/reports/master-report')
+  @ApiOperation({
+    summary: 'The master report: every booking in a window',
+    description:
+      'Paginated and filterable per column, with the window applied to the ' +
+      'chosen date dimension — checkout, checkin, booking date or overlapping ' +
+      'stay dates. Totals cover the whole filtered set rather than the page, ' +
+      'because a "Total" under page one of forty is a number nobody asked ' +
+      'for. Requires financial_reports:read at the property.',
+  })
+  @ApiOkResponse({ description: 'The report page, or a CSV attachment.' })
+  @ApiForbiddenResponse({ description: 'No financial reporting permission here.' })
+  @ApiNotFoundResponse({ description: 'No such property for this caller.' })
+  async masterReport(
+    @Req() request: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+    @Param('hotelId') hotelId: string,
+    @Query(new ZodValidationPipe(masterReportQuerySchema)) query: MasterReportQuery,
+  ): Promise<MasterReportResponse | string> {
+    const user = (request as unknown as AuthenticatedRequest).user;
+    if (user === undefined) {
+      throw new UnauthenticatedError();
+    }
+
+    const report = await this.masterReports.run(user.userId, hotelId, query);
+
+    if (query.format === 'csv') {
+      const filename = `master-report-${report.startDate}-to-${report.endDate}.csv`;
+      void reply.header('content-type', 'text/csv; charset=utf-8');
+      void reply.header(
+        'content-disposition',
+        `attachment; filename="${filename}"; ${UTF8_FILENAME}${encodeURIComponent(filename)}`,
+      );
+      return masterReportToCsv(report);
+    }
+
+    return report;
+  }
 
   @Get(':hotelId/reports/:reportType')
   @ApiOperation({

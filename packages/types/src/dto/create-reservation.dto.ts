@@ -25,6 +25,8 @@
 
 import { z } from 'zod';
 
+import { taxComponentsSchema } from './property-config.dto.js';
+
 import {
   bookingSourceSchema,
   businessDateSchema,
@@ -196,6 +198,13 @@ export const reservationQuoteSchema = z.object({
   currency: z.string().length(3),
   /** The GST slab applied, for the UI to explain the figure. */
   taxRatePercent: z.number(),
+  /**
+   * The slab's CGST/SGST split, or null for an exempt stay.
+   *
+   * Null rather than zeroes, because an exempt stay must show no GST line at
+   * all on an invoice — not a 0% line naming a slab the guest was never in.
+   */
+  taxComponents: taxComponentsSchema.nullable(),
   isTaxExempt: z.boolean(),
   /** Per-night split, for the "view day-wise split" accordion. */
   nightly: z.array(nightlyLineSchema),

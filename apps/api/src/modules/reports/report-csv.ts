@@ -22,7 +22,12 @@
  * ===========================================================================
  */
 
-import type { ReportColumn, ReportResponse, ReportRow } from '@repo/types';
+import type {
+  MasterReportResponse,
+  ReportColumn,
+  ReportResponse,
+  ReportRow,
+} from '@repo/types';
 
 const NEEDS_QUOTING = /[",\n\r]|^\s|\s$/;
 const FORMULA_PREFIX = /^[=+\-@\t\r]/;
@@ -94,4 +99,66 @@ export function toCsv(report: ReportResponse): string {
   }
 
   return lines.join('\r\n');
+}
+
+/**
+ * The master report as CSV.
+ *
+ * Shares `escapeCell` and `formatCell` with the generic report above, so the
+ * three rules in this file's header — quoting, major-unit money, and the
+ * formula-injection guard — apply here too rather than being reimplemented
+ * slightly differently.
+ *
+ * The totals row is written as a row, labelled in the first column. A finance
+ * team opening this sums the money columns themselves and would double-count a
+ * total they could not see, so it is spelled out: the figure covers every
+ * booking matching the filters, not only the exported page.
+ */
+export function masterReportToCsv(report: MasterReportResponse): string {
+  const columns = report.columns;
+
+  // The same identifying preamble the generic report carries: a CSV that
+  // leaves its property and window implicit is a file nobody can identify
+  // three weeks later.
+  const preamble = [
+    escapeCell(`Master report - ${report.propertyName} (${report.propertyCode})`),
+    escapeCell(
+      `${report.startDate} to ${report.endDate} · filtered on ` +
+        `${report.dateDimension.toLowerCase()} · amounts in ${report.currency}`,
+    ),
+    '',
+  ];
+
+  const header = columns.map((column) => escapeCell(column.label)).join(',');
+
+  const body = report.rows.map((row) =>
+    columns
+      .map((column) =>
+        escapeCell(
+          formatCell(
+            (row as unknown as Record<string, string | number | null>)[column.key],
+            column.kind,
+          ),
+        ),
+      )
+      .join(','),
+  );
+
+  // Keyed by column, so a totals cell appears under exactly the columns the
+  // catalogue marks summable — and adding a new one needs no change here.
+  const totals = columns
+    .map((column, index) => {
+      if (index === 0) {
+        return escapeCell(`Total (${String(report.totals.bookingCount)} bookings)`);
+      }
+      const value = report.totals.byColumn[column.key];
+      return value === undefined ? '' : escapeCell(formatCell(value, column.kind));
+    })
+    .join(',');
+
+  // Notes last, each on its own line in the first column, so a spreadsheet
+  // shows them as text under the table instead of mangling the grid.
+  const notes = report.notes.map((note) => escapeCell(note));
+
+  return [...preamble, header, ...body, totals, '', ...notes].join('\r\n');
 }

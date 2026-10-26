@@ -7,10 +7,13 @@ import { CheckInService } from './check-in.service.js';
 import { CreateReservationController } from './create-reservation.controller.js';
 import { CreateReservationService } from './create-reservation.service.js';
 import { ReservationDetailController } from './reservation-detail.controller.js';
+import { RoomMoveController } from './room-move.controller.js';
+import { RoomMoveService } from './room-move.service.js';
 import { ReservationDetailService } from './reservation-detail.service.js';
 import { ReservationSearchController } from './reservation-search.controller.js';
 import { ReservationSearchRepository } from './reservation-search.repository.js';
 import { ReservationSearchService } from './reservation-search.service.js';
+import { PropertiesModule } from '../properties/properties.module.js';
 
 /**
  * The `reservations` bounded context.
@@ -28,10 +31,15 @@ import { ReservationSearchService } from './reservation-search.service.js';
  * `ClockService` arrive from the global modules.
  */
 @Module({
+  // Tax slabs are resolved through `PropertyTaxService` (section 2 puts tax
+  // rules in the properties module), so that module is imported rather than
+  // its service re-provided here.
+  imports: [PropertiesModule],
   controllers: [
     ReservationSearchController,
     CreateReservationController,
     CheckInController,
+    RoomMoveController,
     // Registered last: its `:reservationId` route would otherwise shadow the
     // literal sibling paths above it, and `/reservations/quote` would be read
     // as a reservation whose id is "quote".
@@ -41,6 +49,7 @@ import { ReservationSearchService } from './reservation-search.service.js';
     CheckInService,
     CreateReservationService,
     ReservationDetailService,
+    RoomMoveService,
     ReservationSearchService,
     ReservationSearchRepository,
     TokenService,
@@ -51,6 +60,7 @@ import { ReservationSearchService } from './reservation-search.service.js';
     CreateReservationService,
     CheckInService,
     ReservationDetailService,
+    RoomMoveService,
   ],
 })
 export class ReservationsModule {}

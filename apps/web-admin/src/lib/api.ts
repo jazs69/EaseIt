@@ -55,7 +55,9 @@ export class ApiUnreachableError extends Error {
 }
 
 export interface ApiFetchOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  // PUT is here for the one endpoint that genuinely replaces a whole
+  // collection — the GST slab table, which is only valid as a set.
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
   /** Forwarded server-side, where there is no browser to attach the cookie. */
   cookieHeader?: string;

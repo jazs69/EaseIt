@@ -7,11 +7,12 @@
  *
  * Two rules do the real work:
  *
- *   **GST is banded by the nightly tariff, per night.** Under ₹7,500 a night
- *   attracts 12%, ₹7,500 and over attracts 18%. The band is decided by the
- *   *nightly* rate, not the stay total — a four-night stay at ₹3,000 is
- *   ₹12,000 total but still a 12% room, and banding on the total would
- *   overcharge it by six points.
+ *   **GST is banded by the nightly tariff, per night.** Which band, and at
+ *   what rate, is the property's configured `PropertyTaxSlab` table — passed
+ *   in as data and resolved by `tax-engine.ts`, never hardcoded here. The band
+ *   is decided by the *nightly* rate, not the stay total: a four-night stay at
+ *   ₹3,000 is ₹12,000 in total but still a ₹3,000 room, and banding on the
+ *   total would push it up a slab and overcharge it.
  *
  *   **Rounding is once per night, and the total is the sum of the rounded
  *   nights.** Not a rounded percentage of a stay total. Section 3.4 is
@@ -25,41 +26,15 @@
  * ===========================================================================
  */
 
-import type { NightlyLine, ReservationQuote } from '@repo/types';
+import type { NightlyLine, ReservationQuote, TaxSlab } from '@repo/types';
+
+import {
+  componentsFor,
+  solveUnitNetForGross,
+  taxOnNight,
+} from '../properties/tax-engine.js';
 
 const DAY_MS = 86_400_000;
-
-/**
- * The slab boundary, in minor units: ₹7,500.
- *
- * A constant rather than a literal at the comparison, because this is a tax
- * rule that changes by statute and somebody will have to find it.
- */
-export const GST_SLAB_BOUNDARY_MINOR = 750_000;
-export const GST_LOWER_PERCENT = 12;
-export const GST_UPPER_PERCENT = 18;
-
-/**
- * The rate to apply to a nightly tariff.
- *
- * A property-configured flat rate wins. With none configured it falls back to
- * the statutory room-tariff slabs: 12% below ₹7,500 a night, 18% at or above.
- *
- * Note which rate belongs where, because it is easy to mix up and expensive to
- * get wrong: 12/18 is the *room tariff* treatment. 5% is the rate for
- * restaurant service in a hotel, charged without input credit — it is not a
- * room-tariff rate, so a property configured to 5% is making a deliberate
- * choice rather than following the default.
- */
-export function gstPercentFor(
-  nightlyRateMinor: number,
-  configuredPercent?: number | null,
-): number {
-  if (configuredPercent !== undefined && configuredPercent !== null) {
-    return configuredPercent;
-  }
-  return nightlyRateMinor >= GST_SLAB_BOUNDARY_MINOR ? GST_UPPER_PERCENT : GST_LOWER_PERCENT;
-}
 
 /** Calendar nights between two `YYYY-MM-DD` dates. */
 export function nightsBetween(arrival: string, departure: string): number {
@@ -88,60 +63,53 @@ export interface QuoteInput {
   targetTotalMinor?: number | undefined;
   isTaxExempt: boolean;
   currency: string;
-  /** The property's flat GST rate, or null to use the statutory slabs. */
-  taxRatePercent?: number | null | undefined;
+  /**
+   * The property's configured GST bands, lowest floor first.
+   *
+   * Required rather than optional, and a table rather than a rate, so a caller
+   * cannot accidentally price a stay with no tax policy at all. An empty array
+   * is accepted and means "not configured", which the engine answers with the
+   * statutory default — the deliberate choice, not the accidental one.
+   */
+  taxSlabs: readonly TaxSlab[];
 }
 
 /**
  * Solves for the nightly rate that produces a given **gross** total.
  *
  * ===========================================================================
- * The naive formula is `exTax = total / 1.12`, and it is wrong, because the
+ * The naive formula is `exTax = total / 1.05`, and it is wrong, because the
  * slab it assumes depends on the answer it produces. A one-night total of
- * ₹10,000 divided by 1.12 gives ₹8,928.57 a night — which is above the ₹7,500
+ * ₹10,000 divided by 1.05 gives ₹9,523.81 a night — which is above the ₹7,500
  * boundary, so the correct slab was 18% and the figure contradicts its own
  * premise. Charge it and the hotel has under-collected GST on an invoice that
  * looks arithmetically fine.
  *
- * So both slabs are tried and only a **self-consistent** one is accepted: a
- * 12% solution is valid only if its nightly rate really is under the boundary,
- * and an 18% solution only if its rate really is at or above it.
+ * The arithmetic — trying every slab, accepting only a self-consistent answer,
+ * and clamping into the nearest band when a total is unreachable — lives in
+ * `tax-engine.ts`, because deriving the net inside a tax-inclusive figure is
+ * tax math and the folio needs the same answer when it splits an agreed total.
+ * Two implementations would be two answers to one question.
  *
- * Totals in the narrow band between the two solutions are unreachable — there
- * is no nightly rate that produces them under either slab. Rather than pick
- * one and silently charge something else, the boundary rate is used and the
- * caller is told the achieved total differs from the requested one.
- *
- * Returns the nightly rate; the normal forward path then prices from it, so
- * there is exactly one implementation of the per-night rounding.
+ * What stays here is the stay semantics: a night is the unit, and an exempt
+ * stay short-circuits. Returns the nightly rate; the normal forward path then
+ * prices from it, so there is exactly one implementation of the per-night
+ * rounding.
  * ===========================================================================
  */
 export function solveNightlyRateForTotal(
   targetTotalMinor: number,
   nights: number,
   isTaxExempt: boolean,
-  configuredPercent?: number | null,
+  slabs: readonly TaxSlab[],
 ): number {
   if (nights <= 0) throw new Error('A stay must cover at least one night.');
+
+  // An exempt stay has no slab to be consistent with: the gross *is* the net,
+  // so the division is the plain one and always lands exactly.
   if (isTaxExempt) return Math.round(targetTotalMinor / nights);
 
-  // A flat rate has no slab to be consistent with, so the reverse solve is the
-  // plain division the brief describes — and it always lands exactly.
-  if (configuredPercent !== undefined && configuredPercent !== null) {
-    const exTax = targetTotalMinor / (1 + configuredPercent / 100);
-    return Math.round(exTax / nights);
-  }
-
-  for (const percent of [GST_LOWER_PERCENT, GST_UPPER_PERCENT]) {
-    const exTax = targetTotalMinor / (1 + percent / 100);
-    const nightly = Math.round(exTax / nights);
-    // Accept only if this rate genuinely falls in the slab we assumed.
-    if (gstPercentFor(nightly) === percent) return nightly;
-  }
-
-  // Unreachable total: it sits between what 12% and 18% can produce. The
-  // boundary is the closest defensible answer, and the caller reports the gap.
-  return GST_SLAB_BOUNDARY_MINOR;
+  return solveUnitNetForGross(targetTotalMinor, nights, slabs);
 }
 
 /**
@@ -171,23 +139,33 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
           input.targetTotalMinor,
           nights,
           input.isTaxExempt,
-          input.taxRatePercent,
+          input.taxSlabs,
         );
 
   const isOverridden =
     input.overrideNightlyRateMinor !== undefined || solved !== undefined;
   const nightlyRateMinor =
     solved ?? input.overrideNightlyRateMinor ?? input.baseNightlyRateMinor;
-  const taxRatePercent = input.isTaxExempt
-    ? 0
-    : gstPercentFor(nightlyRateMinor, input.taxRatePercent);
+
+  /**
+   * The slab, resolved once for the stay.
+   *
+   * An exempt stay resolves no slab at all rather than resolving one and
+   * multiplying by zero: the two are indistinguishable in the total and very
+   * distinguishable on an invoice, which must show no GST line rather than a
+   * 0% GST line against a slab the guest was never in.
+   */
+  const components = input.isTaxExempt
+    ? null
+    : componentsFor(nightlyRateMinor, input.taxSlabs);
+  const taxRatePercent = components?.taxRatePercent ?? 0;
 
   const nightly: NightlyLine[] = stayDates(input.arrivalDate, input.departureDate).map(
     (stayDate) => ({
       stayDate: stayDate as NightlyLine['stayDate'],
       nightlyRateMinor,
       // Rounded here, per night, exactly once.
-      taxMinor: Math.round((nightlyRateMinor * taxRatePercent) / 100),
+      taxMinor: taxOnNight(nightlyRateMinor, taxRatePercent),
     }),
   );
 
@@ -206,6 +184,9 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
     totalMinor,
     currency: input.currency,
     taxRatePercent,
+    // The CGST/SGST split, so an invoice prints the components the slab
+    // configured rather than halving the total and hoping.
+    taxComponents: components,
     isTaxExempt: input.isTaxExempt,
     nightly,
     isOverridden,

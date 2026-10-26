@@ -253,3 +253,235 @@ export const reportResponseSchema = z.object({
 });
 
 export type ReportResponse = z.infer<typeof reportResponseSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*  Master report                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which date column the window filters against.
+ *
+ * ===========================================================================
+ * A master report is asked four different questions by four different people,
+ * and they are not the same query.
+ *
+ * Finance reconciling a day's takings wants stays that *checked out* in it.
+ * The front desk wants arrivals. Sales measuring campaign performance wants
+ * bookings *made* in it, which is a different column entirely — `createdAt`,
+ * an instant, not a calendar date. Occupancy wants every stay that *touched*
+ * the window, which is an overlap test rather than a containment one.
+ *
+ * Defaulting to `CHECKOUT` because that is the settled-revenue view, and a
+ * report whose default silently meant something else is how two people quote
+ * different numbers from the same screen.
+ * ===========================================================================
+ */
+export const masterReportDimensionSchema = z.enum(['CHECKOUT', 'CHECKIN', 'BOOKED', 'STAY']);
+
+export type MasterReportDimension = z.infer<typeof masterReportDimensionSchema>;
+
+export const MASTER_REPORT_DIMENSION_LABELS: Record<MasterReportDimension, string> = {
+  CHECKOUT: 'Checkout date',
+  CHECKIN: 'Checkin date',
+  STAY: 'Stay through',
+  BOOKED: 'Booking made date',
+};
+
+/** Menu order: the two containment tests, then overlap, then the booking date. */
+export const MASTER_REPORT_DIMENSION_ORDER: readonly MasterReportDimension[] = [
+  'CHECKOUT',
+  'CHECKIN',
+  'STAY',
+  'BOOKED',
+];
+
+/**
+ * Per-column filters.
+ *
+ * Applied in the database, not in the browser. A property with three years of
+ * history has more rows than a page holds, so a client-side filter would
+ * narrow only the page the reader happens to be on and quietly report a total
+ * for the wrong set — the single most misleading thing a report can do.
+ */
+export const masterReportFiltersSchema = z.object({
+  bookingId: z.string().max(80).optional(),
+  guest: z.string().max(80).optional(),
+  source: z.string().max(40).optional(),
+  status: z.string().max(40).optional(),
+  roomType: z.string().max(80).optional(),
+  room: z.string().max(40).optional(),
+});
+
+export const masterReportQuerySchema = masterReportFiltersSchema.extend({
+  /** Omitted means the property's own business date, never the server's day. */
+  startDate: businessDateSchema.optional(),
+  endDate: businessDateSchema.optional(),
+  dateDimension: masterReportDimensionSchema.default('CHECKOUT'),
+  page: z.coerce.number().int().positive().default(1),
+  /**
+   * Capped at 200.
+   *
+   * The table is horizontally scrollable with up to forty columns; a thousand
+   * rows of it is not something anyone reads, and the cap keeps one careless
+   * request from pulling a property's whole history into a browser. Export
+   * exists for the whole set.
+   */
+  limit: z.coerce.number().int().min(1).max(200).default(10),
+  format: reportFormatSchema.default('json'),
+  /**
+   * Which columns to return, comma-separated.
+   *
+   * The server narrows the response and the CSV to these, so an export matches
+   * what the operator is looking at rather than carrying forty columns they
+   * deliberately hid. Unknown or unavailable keys are dropped rather than
+   * refused — a preference saved by an older browser should degrade, not 400.
+   */
+  columns: z
+    .string()
+    .max(2000)
+    .optional()
+    .transform((value) =>
+      value === undefined
+        ? undefined
+        : value
+            .split(',')
+            .map((key) => key.trim())
+            .filter((key) => key !== ''),
+    ),
+});
+
+export type MasterReportQuery = z.infer<typeof masterReportQuerySchema>;
+
+/**
+ * One row.
+ *
+ * Every optional column is nullable rather than absent, so the viewer renders
+ * a dash for "this booking has none" without having to distinguish it from
+ * "this column was not requested" — which the `columns` list already answers.
+ */
+export const masterReportRowSchema = z.object({
+  /** The reservation's uuid, for navigating to its folio. */
+  reservationId: z.string(),
+  bookingId: z.string(),
+
+  /* Booking */
+  bookedOn: businessDateSchema,
+  bookedAtTime: z.string().nullable(),
+  source: z.string(),
+  status: z.string(),
+  otaBookingId: z.string().nullable(),
+  companyGstin: z.string().nullable(),
+  cancelDate: businessDateSchema.nullable(),
+  bookingReference: z.string().nullable(),
+  segment: z.string().nullable(),
+  scantyBaggage: z.string().nullable(),
+  complimentary: z.string().nullable(),
+  complimentaryRemarks: z.string().nullable(),
+  otaPrepaidMinor: z.number().int(),
+
+  /* Stay */
+  rooms: z.string().nullable(),
+  roomTypes: z.string().nullable(),
+  ratePlans: z.string(),
+  roomCount: z.number().int().nonnegative(),
+  roomNights: z.number().int().nonnegative(),
+  arrival: businessDateSchema,
+  departure: businessDateSchema,
+  scheduledCheckInTime: z.string().nullable(),
+  scheduledCheckOutTime: z.string().nullable(),
+  actualCheckIn: z.string().nullable(),
+  actualCheckOut: z.string().nullable(),
+  leadTimeDays: z.number().int(),
+
+  /* Guest */
+  guest: z.string(),
+  adults: z.number().int().nonnegative(),
+  children: z.number().int().nonnegative(),
+  infants: z.number().int().nonnegative(),
+  customerIdentification: z.string().nullable(),
+  customerEmail: z.string().nullable(),
+  customerPhone: z.string().nullable(),
+  customerAddressLine1: z.string().nullable(),
+  customerAddressLine2: z.string().nullable(),
+  customerCity: z.string().nullable(),
+  customerState: z.string().nullable(),
+  customerCountry: z.string().nullable(),
+  customerZipcode: z.string().nullable(),
+  specialRequests: z.string().nullable(),
+
+  /* Financial */
+  totalMinor: z.number().int(),
+  balanceMinor: z.number().int(),
+  bookingAmountMinor: z.number().int(),
+  roomRevenueMinor: z.number().int(),
+  roomTaxMinor: z.number().int(),
+  taxPercent: z.number(),
+  serviceGrossMinor: z.number().int(),
+  serviceTaxMinor: z.number().int(),
+  serviceNetMinor: z.number().int(),
+  otaCommissionMinor: z.number().int(),
+  otaTaxMinor: z.number().int(),
+  otaNetMinor: z.number().int(),
+  promoMinor: z.number().int(),
+  customFolioId: z.string().nullable(),
+
+  /* Payment */
+  paidMinor: z.number().int(),
+  onlinePaymentMinor: z.number().int(),
+  offlinePaymentMinor: z.number().int(),
+  refundMinor: z.number().int(),
+  depositMinor: z.number().int(),
+  externalSourcePayment: z.number().int(),
+  externalCardPayment: z.number().int(),
+  cardLast4: z.string().nullable(),
+  paymentIssuer: z.string().nullable(),
+  transactionType: z.string().nullable(),
+  couponCode: z.string().nullable(),
+});
+
+export type MasterReportRow = z.infer<typeof masterReportRowSchema>;
+
+/**
+ * Totals across the **whole filtered set**, not the page on screen.
+ *
+ * Keyed by column, because the visible columns are chosen at request time and
+ * a fixed shape would mean adding a field here every time a summable column
+ * joins the catalogue. `bookingCount` sits outside the map: it is what the
+ * figures *cover*, not one of them.
+ *
+ * This is the only honest way to pin a total row under a paginated table. A
+ * sum of the ten visible rows labelled "Total" is a number nobody asked for:
+ * the reader sees "Total 5,600" under a report of four hundred bookings and
+ * has no way to tell it is page one.
+ */
+export const masterReportTotalsSchema = z.object({
+  bookingCount: z.number().int().nonnegative(),
+  byColumn: z.record(z.string(), z.number()),
+});
+
+export type MasterReportTotals = z.infer<typeof masterReportTotalsSchema>;
+
+export const masterReportResponseSchema = z.object({
+  propertyId: propertyIdSchema,
+  propertyName: z.string(),
+  propertyCode: z.string(),
+  currency: z.string().length(3),
+  startDate: businessDateSchema,
+  endDate: businessDateSchema,
+  generatedFor: businessDateSchema,
+  dateDimension: masterReportDimensionSchema,
+
+  /** Exactly the columns requested, resolved and ordered by the catalogue. */
+  columns: z.array(reportColumnSchema),
+  rows: z.array(masterReportRowSchema),
+  totals: masterReportTotalsSchema,
+  pagination: z.object({
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    limit: z.number().int().positive(),
+    pageCount: z.number().int().nonnegative(),
+  }),
+  notes: z.array(z.string()),
+});
+
+export type MasterReportResponse = z.infer<typeof masterReportResponseSchema>;

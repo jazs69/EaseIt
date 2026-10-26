@@ -1,0 +1,25 @@
+-- ===========================================================================
+-- Drop the redundant plain index on (propertyId, minTariffMinor).
+--
+-- Effect on existing rows: **none**. Index-only change, no data is read or
+-- written. 33 slab rows across 11 properties are untouched.
+--
+-- WHY
+-- 20261019080000 added `@@index([propertyId, minTariffMinor])` from the schema
+-- and `property_tax_slab_unique_floor_per_property` by hand, on exactly the
+-- same two columns in the same order. The unique index serves every lookup the
+-- plain one did — slab resolution is `propertyId = $1 AND minTariffMinor <= $2
+-- ORDER BY minTariffMinor DESC LIMIT 1`, which this satisfies — so the second
+-- index only cost a write on every insert and a line of schema a reviewer has
+-- to ask about.
+--
+-- The unique is the one that survives because it carries a guarantee as well
+-- as an access path: two slabs of one property cannot claim the same floor
+-- (CLAUDE.md section 6.2 — the constraint is not the thing to drop).
+--
+-- The `@@unique` in schema.prisma carries `map:` with the hand-written name, so
+-- `prisma migrate diff` now sees the schema and the database agreeing on it
+-- rather than proposing to create it a second time.
+-- ===========================================================================
+
+DROP INDEX "property_tax_slab_propertyId_minTariffMinor_idx";

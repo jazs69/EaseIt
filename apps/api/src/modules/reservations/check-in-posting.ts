@@ -46,8 +46,36 @@ export interface CheckInPostingInput {
   propertyId: string;
   reservationId: string;
   staffUserId: string;
-  /** The property's business date — never `now()` (section 3.3). */
+  /**
+   * The property's business date — never `now()` (section 3.3).
+   *
+   * Which accounting day the money lands in. Used for the payment.
+   */
   businessDate: string;
+  /**
+   * The night the room charge is for.
+   *
+   * ===========================================================================
+   * **A room charge is dated to its night, not to the business date.**
+   *
+   * These coincide when the night audit runs nightly, which is why one field
+   * looked like enough. They do not coincide when it has not run: a guest
+   * arriving on the 18th against a business date still on the 16th had their
+   * arrival night posted to the 16th — a night they were not in the room.
+   *
+   * That is not only mislabelled, it defeats the guard built to prevent it.
+   * `folio_line_one_room_charge_per_date` is unique on (folio, chargeDate) for
+   * room charges precisely so check-in and the night audit cannot both charge
+   * one night. Keyed on the business date instead, check-in posts the 16th and
+   * the audit later posts the 18th, and the guest is charged twice for one
+   * night with the index none the wiser.
+   *
+   * The folio page showed the symptom first: four tariff rows on a three-night
+   * stay, because the projection could not match a posted charge dated outside
+   * the stay to any night inside it.
+   * ===========================================================================
+   */
+  roomChargeDate: string;
   currency: string;
   /** The arrival night's tariff, exclusive of tax, in minor units. */
   roomChargeMinor: number;
@@ -71,7 +99,8 @@ export async function postCheckIn(
   tx: Prisma.TransactionClient,
   input: CheckInPostingInput,
 ): Promise<FolioView> {
-  const chargeDate = toUtcMidnight(input.businessDate);
+  const paymentDate = toUtcMidnight(input.businessDate);
+  const chargeDate = toUtcMidnight(input.roomChargeDate);
 
   // Occupancy transitions the existing `RoomStatus` enum rather than a
   // parallel `occupancyStatus` column. One stored field means there is one
@@ -127,8 +156,8 @@ export async function postCheckIn(
         kind: 'ROOM_CHARGE',
         description:
           input.room === null
-            ? `Room tariff — ${input.businessDate}`
-            : `Room ${input.room.number} tariff — ${input.businessDate}`,
+            ? `Room tariff — ${input.roomChargeDate}`
+            : `Room ${input.room.number} tariff — ${input.roomChargeDate}`,
         amountMinor: input.roomChargeMinor,
         currency: input.currency,
         chargeDate,
@@ -145,7 +174,7 @@ export async function postCheckIn(
           propertyId: input.propertyId,
           folioId: folio.id,
           kind: 'TAX',
-          description: `GST on room tariff — ${input.businessDate}`,
+          description: `GST on room tariff — ${input.roomChargeDate}`,
           amountMinor: input.taxMinor,
           currency: input.currency,
           chargeDate,
@@ -168,7 +197,9 @@ export async function postCheckIn(
         // instead of subtracted. The CHECK constraint refuses the other sign.
         amountMinor: -input.payment.amountMinor,
         currency: input.currency,
-        chargeDate,
+        // The open accounting day, not the night: money received at 00:30
+        // belongs to the day the books are on (section 3.3).
+        chargeDate: paymentDate,
         paymentMethod: input.payment.method as PaymentMethod,
         remark: input.payment.remark,
         postedById: input.staffUserId,

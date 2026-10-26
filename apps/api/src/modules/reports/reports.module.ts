@@ -4,6 +4,7 @@ import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { TokenService } from '../../common/auth/token.service.js';
 import { ReportsController } from './reports.controller.js';
 import { ReportsRepository } from './reports.repository.js';
+import { MasterReportService } from './master-report.service.js';
 import { ReportsService } from './reports.service.js';
 
 /**
@@ -17,7 +18,7 @@ import { ReportsService } from './reports.service.js';
  */
 @Module({
   controllers: [ReportsController],
-  providers: [ReportsService, ReportsRepository, TokenService, SessionAuthGuard],
+  providers: [ReportsService, MasterReportService, ReportsRepository, TokenService, SessionAuthGuard],
   exports: [ReportsService],
 })
 export class ReportsModule {}

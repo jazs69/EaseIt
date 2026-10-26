@@ -1,0 +1,58 @@
+feature_id,category,feature,description,evidence_grade,evidence_id,status,implementation_task,test_criteria,notes
+CM-A-001,A-Connections,Multi-OTA connectivity,"Booking.com, Airbnb, Expedia, Agoda, Hotels.com and Google Hotel Ads named as pre-integrated; ""100+ more"" unnamed",VENDOR,EV-003,partial,BL-A-001,Connection record persists and reports a status per channel,"Named set is small; the ""100+"" claim is unverifiable from public sources"
+CM-A-002,A-Connections,Rentals United distribution hub,Integration with Rentals United listed under Property Configuration for users routing through a hub,DOC,EV-001,partial,BL-A-002,Hub connection modelled as a Channel like any other,Suggests Stayflexi does not hold 100+ direct certifications itself
+CM-A-003,A-Connections,Channel mapping performed by vendor at onboarding,Stayflexi's team performs channel mapping during onboarding,VENDOR,EV-004,partial,BL-A-003,n/a,"Implies self-serve mapping UI may be limited or absent; material for Q-002"
+CM-A-004,A-Connections,View connected channels per room type,"""View Connected Channels"" option beside each Room Type opens a pop-up listing the OTAs and channels connected to that Room Type and Rate Plan",DOC,EV-006,verified-doc,BL-A-004,Pop-up lists every mapping for a room type,This is a read-only view; the mapping editor was not located
+CM-A-005,A-Connections,Room type to OTA category mapping,"""Map your room types to each OTA's categories""",VENDOR,EV-003,partial,BL-A-005,A room type maps to exactly one external category per channel,Cardinality unknown; see Q-003
+CM-A-006,A-Connections,Rate plan and policy mapping per channel,Mapping stated to cover room types rates and policies per channel,VENDOR,EV-003,partial,BL-A-006,Rate plan maps to an external rate code per channel,Meal-plan mapping not separately evidenced
+CM-A-007,A-Connections,Authorization model for connections,How a channel connection is authorised (credentials OAuth partner key),UNKNOWN,,unknown,BL-A-007,,No public evidence; Q-004
+CM-A-008,A-Connections,Reconnecting a disconnected channel,Reconnect flow and whether state is preserved,UNKNOWN,,unknown,BL-A-008,,No public evidence; Q-005
+CM-B-001,B-Inventory,Pooled inventory across channels,"""Intelligent inventory pooling prevents double bookings""",VENDOR,EV-003,verified-vendor,BL-B-001,One counter per room-type/date serves all channels,ALREADY BUILT in our inventory_day model
+CM-B-002,B-Inventory,Automatic close-out on sell-out,"""Automatic close-outs when rooms are sold""",VENDOR,EV-003,partial,BL-B-002,Availability reaching zero pushes a close to every mapped channel,Trigger mechanism unknown
+CM-B-003,B-Inventory,Stop-sell,Stop-sell listed among per-channel restrictions,VENDOR,EV-003,partial,BL-B-003,Stop-sell blocks sale on the chosen channels for the chosen dates,
+CM-B-004,B-Inventory,Close/open room type and rate plan,Dedicated article for closing and opening a room type and rate plan,DOC,EV-001,partial,BL-B-004,Close applies per room type and rate plan,
+CM-B-005,B-Inventory,Restrict a room category on OTAs,Dedicated article for restricting a particular room category on OTAs,DOC,EV-002,partial,BL-B-005,Restriction scoped to a room category and channel set,
+CM-B-006,B-Inventory,Per-channel inventory override,"Article: ""How to change prices or inventory for specific channel / OTA?""",DOC,EV-002,partial,BL-B-006,Per-channel inventory differs from the pooled figure,"Tension with pooling (CM-B-001); see Q-006 — this is important"
+CM-B-007,B-Inventory,Length-of-stay restrictions,Min/max stay listed among per-channel restrictions,VENDOR,EV-003,partial,BL-B-007,MinLOS/MaxLOS push per channel per date,
+CM-B-008,B-Inventory,Arrival/departure restrictions,CTA/CTD listed among per-channel restrictions,VENDOR,EV-003,partial,BL-B-008,CTA/CTD push per channel per date,
+CM-B-009,B-Inventory,Out-of-order rooms effect on channel availability,Whether OOO rooms reduce sellable inventory pushed to channels,UNKNOWN,,unknown,BL-B-009,,Our model excludes OOO from physical already
+CM-B-010,B-Inventory,Inventory buffers,Whether a held-back buffer per channel is supported,UNKNOWN,,unknown,BL-B-010,,
+CM-C-001,C-Rates,Per-channel rate adjustment,"Articles for increasing/decreasing prices for a specific OTA and channel-specific markups",DOC,EV-002,partial,BL-C-001,Per-channel markup or delta applied on push,
+CM-C-002,C-Rates,Rate parity maintenance,"""Maintain rate parity or optimize per channel""",VENDOR,EV-003,partial,BL-C-002,Parity mode pushes one rate to all channels,
+CM-C-003,C-Rates,Rate parity reporting,Article for finding rate parities reported by OTAs,DOC,EV-001,partial,BL-C-003,Report shows our rate vs each channel's displayed rate,Implies inbound rate data from channels
+CM-C-004,C-Rates,Copy rates between channels,Article for copying rates from one online channel to another channel or travel portal,DOC,EV-002,partial,BL-C-004,Copy operation is explicit and audited,
+CM-C-005,C-Rates,Per-OTA rate inspection,"Article: ""How to check OTA specific rates?""",DOC,EV-002,partial,BL-C-005,Current pushed rate visible per channel per date,
+CM-C-006,C-Rates,Per-OTA cut-off time,"Article: ""How can I set a cut-off time for a specific OTA?""",DOC,EV-002,partial,BL-C-006,Bookings close for a channel at a configured local time,Timezone handling unknown
+CM-C-007,C-Rates,Restrict a rate plan on OTAs,"Article: ""How do I restrict a specific rate plan on OTAs?""",DOC,EV-002,partial,BL-C-007,Rate plan closed on a chosen channel set,
+CM-C-008,C-Rates,Derived rates per channel,Derived rates and package inclusions manageable per channel,VENDOR,EV-003,partial,BL-C-008,Derived rate recomputes when its parent changes,
+CM-C-009,C-Rates,Occupancy-based pricing,Whether per-occupancy pricing is pushed to channels,UNKNOWN,,unknown,BL-C-009,,Room dependency pricing article exists but channel link unproven
+CM-C-010,C-Rates,Taxes and fees on channel rates,Whether tax/fee is pushed or computed channel-side,UNKNOWN,,unknown,BL-C-010,,Critical for GST correctness; Q-007
+CM-C-011,C-Rates,Promotions,Whether channel promotions are managed from the PMS,UNKNOWN,,unknown,BL-C-011,,
+CM-D-001,D-Sync,Two-way sync,"""True two-way sync with all OTAs""",VENDOR,EV-003,partial,BL-D-001,ARI pushes outbound and reservations arrive inbound,
+CM-D-002,D-Sync,Stated 5-second sync latency,"""Rates, availability, and restrictions update across all channels in just 5 seconds""",VENDOR,EV-003,unverified,BL-D-002,p95 push-to-ack latency measured and reported,"Marketing claim; no methodology published. Do not design to this number"
+CM-D-003,D-Sync,Bulk sync across channels and date ranges,"Article: sync rates across all OTAs/Channels by Room Type Rate Plan Channels and Date Range",DOC,EV-001,partial,BL-D-003,Bulk sync is debounced and ordered per property,
+CM-D-004,D-Sync,Manual refresh / re-sync,Bulk sync article implies an operator-triggered sync,INFER,EV-001,partial,BL-D-004,Manual sync enqueues rather than runs inline,
+CM-D-005,D-Sync,Event-driven vs scheduled updates,Which trigger model is used,UNKNOWN,,unknown,BL-D-005,,Q-008
+CM-D-006,D-Sync,Full vs incremental updates,Whether pushes are deltas or full calendars,UNKNOWN,,unknown,BL-D-006,,Q-009
+CM-D-007,D-Sync,Idempotency of pushes,How duplicate pushes are made safe,UNKNOWN,,unknown,BL-D-007,,Q-010 — where correctness lives
+CM-D-008,D-Sync,Out-of-order event handling,How late or reordered updates are resolved,UNKNOWN,,unknown,BL-D-008,,Q-011 — where correctness lives
+CM-D-009,D-Sync,Conflict resolution,Which side wins when PMS and channel disagree,UNKNOWN,,unknown,BL-D-009,,Q-012 — where correctness lives
+CM-D-010,D-Sync,Reconciliation,Whether a periodic full comparison runs,UNKNOWN,,unknown,BL-D-010,,Q-013 — where correctness lives
+CM-E-001,E-Reservations,Inbound OTA reservations,Bookings stated to flow directly into the PMS,VENDOR,EV-003,partial,BL-E-001,External reservation stored raw before normalisation,Our schema already has otaBookingId with a per-property unique
+CM-E-002,E-Reservations,New/modified/cancelled notifications,Real-time alerts for new modified and cancelled bookings,VENDOR,EV-003,partial,BL-E-002,Each lifecycle event is recorded once,
+CM-E-003,E-Reservations,OTA virtual card processing,"Virtual cards from OTAs ""processed automatically""; ""Fully PCI DSS compliant""",VENDOR,EV-003,partial,BL-E-003,n/a — see note,"Self-stated compliance. We should NOT store card data; our schema deliberately caps at cardLast4"
+CM-E-004,E-Reservations,External identifier handling,How the channel's reservation id is stored and deduplicated,INFER,,partial,BL-E-004,"Inbound reservation idempotent on (channel, external id)",Our reservation_unique_ota_id_per_property already supports this
+CM-E-005,E-Reservations,No-show handling from channels,Whether no-shows are reported to or from channels,UNKNOWN,,unknown,BL-E-005,,
+CM-E-006,E-Reservations,Unmapped inventory on inbound booking,What happens when a booking arrives for unmapped inventory,UNKNOWN,,unknown,BL-E-006,,Q-014 — a real operational edge case
+CM-E-007,E-Reservations,Guest and tax data from channels,Which guest/tax fields channels supply,UNKNOWN,,unknown,BL-E-007,,
+CM-F-001,F-Observability,Channel Status Report,Report listing all connected OTA channels with current sync status,DOC,EV-005,verified-doc,BL-F-001,Every connected channel shows a status,Screen SCR-002
+CM-F-002,F-Observability,Rate/inventory change logs across OTA channels,"Article: ""How can I view detailed logs of rate and inventory changes across OTA channels?""",DOC,EV-005,partial,BL-F-002,Every push attempt logged with request/response,Directly informs our SyncAttempt design
+CM-F-003,F-Observability,Sync confirmation check,"Article: ""How can I check if the rates updated in Stayflexi have synced with the OTAs?""",DOC,EV-005,partial,BL-F-003,Operator can confirm a specific change landed,
+CM-F-004,F-Observability,Close-restriction visibility per OTA,Article for viewing close rate plan restrictions applied to specific OTAs,DOC,EV-002,partial,BL-F-004,Active restrictions listed per channel,
+CM-F-005,F-Observability,Retries and backoff,Retry policy on failed push,UNKNOWN,,unknown,BL-F-005,,Q-015
+CM-F-006,F-Observability,Alerting on persistent failure,Whether failures alert an operator,UNKNOWN,,unknown,BL-F-006,,Q-016
+CM-G-001,G-Access,Multi-property access,Group Dashboard section exists in documentation,DOC,EV-002,partial,BL-G-001,Channel config scoped per property,
+CM-G-002,G-Access,User and access control,"Articles: ""What is User and Access Control"" and ""How to Create Users""",DOC,EV-002,partial,BL-G-002,Channel actions gated by permission,Our Permission enum has CHANNELS_READ and CHANNELS_SYNC already
+CM-G-003,G-Access,Audit history of channel changes,Whether channel config changes are audited,UNKNOWN,,unknown,BL-G-003,,Our audit_log can carry this
+CM-G-004,G-Access,Channel performance reporting,"Article: OTA channels report comparing prices across connected OTAs; ""See which channels drive the most bookings, revenue, and profit""",DOC,EV-002,partial,BL-G-004,Revenue attributable per channel,
+CM-G-005,G-Access,Bulk operations,Bulk sync by room type/rate plan/channel/date range,DOC,EV-001,partial,BL-G-005,Bulk operation is one audited action,

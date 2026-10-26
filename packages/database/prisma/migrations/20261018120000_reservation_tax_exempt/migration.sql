@@ -1,0 +1,50 @@
+-- ===========================================================================
+-- Persist whether a stay was quoted free of tax.
+--
+-- Effect on existing rows: additive, defaulting to false. That is the correct
+-- default and also the honest one — none of the 882 existing reservations was
+-- recorded as exempt, because there was nowhere to record it. Any that truly
+-- were will need correcting by hand, and the flag is what makes that possible.
+--
+-- WHY THIS IS NEEDED NOW
+-- 881 of 882 reservations carry `taxAmountMinor = 0`, almost all because they
+-- predate tax being computed at all rather than because they are exempt. The
+-- folio page therefore derives the GST split from the property's configured
+-- `taxRatePercent` when a booking records none, which is right for an ordinary
+-- stay and wrong for an exempt one.
+--
+-- Without a stored flag those two cases are indistinguishable, so the
+-- derivation would quietly put 5% GST on a diplomatic or SEZ booking and the
+-- first anybody would know is the invoice. `isTaxExempt` already existed on
+-- the create DTO and was used to compute the quote; it was simply never
+-- written down. This writes it down.
+--
+-- NO CHECK CONSTRAINT
+-- "Exempt implies zero tax" looks like an invariant worth enforcing, and is
+-- not: a stay can be quoted with tax and later be established as exempt, and
+-- the correction is a reversing folio line, not a rewrite of the reservation.
+-- A CHECK here would block that correction at the moment it is most needed.
+--
+-- As with every migration since 20261016140000, `prisma migrate diff` again
+-- proposed dropping the tenant-coherence constraints it cannot see in
+-- schema.prisma. They are stripped from the generated SQL below and remain in
+-- the database (CLAUDE.md section 6.2):
+--   * ALTER TABLE "folio" DROP CONSTRAINT "folio_same_property_as_reservation";
+--   * ALTER TABLE "folio_line" DROP CONSTRAINT "folio_line_same_property_as_folio";
+--   * ALTER TABLE "inventory_day" DROP CONSTRAINT "inventory_day_same_property_as_room_type";
+--   * ALTER TABLE "reservation" DROP CONSTRAINT "reservation_same_property_as_company";
+--   * ALTER TABLE "reservation_guest" DROP CONSTRAINT "reservation_guest_same_property_as_reservation";
+--   * ALTER TABLE "reservation_note" DROP CONSTRAINT "reservation_note_same_property_as_reservation";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_reservation";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_room";
+--   * ALTER TABLE "reservation_room" DROP CONSTRAINT "reservation_room_same_property_as_room_type";
+--   * ALTER TABLE "room" DROP CONSTRAINT "room_same_property_as_room_type";
+--   * DROP INDEX "company_property_id_unique_pair";
+--   * DROP INDEX "folio_property_id_unique_pair";
+--   * DROP INDEX "reservation_property_id_unique_pair";
+--   * DROP INDEX "room_property_id_unique_pair";
+--   * DROP INDEX "room_type_property_id_unique_pair";
+-- ===========================================================================
+
+-- AlterTable
+ALTER TABLE "reservation" ADD COLUMN "isTaxExempt" BOOLEAN NOT NULL DEFAULT false;

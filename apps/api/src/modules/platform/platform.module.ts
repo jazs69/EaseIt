@@ -5,6 +5,7 @@ import { PropertyContextService } from '../../common/context/property-context.se
 import { ClockService } from './clock.service.js';
 import { LogMailer } from './mail/log.mailer.js';
 import { MAILER, type Mailer } from './mail/mailer.js';
+import { OutboxModule } from './outbox/outbox.module.js';
 import { SmtpMailer } from './mail/smtp.mailer.js';
 import { RateLimiterService } from './rate-limiter.service.js';
 
@@ -37,12 +38,26 @@ const mailerProvider: Provider = {
 
 @Global()
 @Module({
+  /**
+   * The outbox is imported here, and re-exported, so any module can enqueue a
+   * side effect inside its own transaction without an import line. What is
+   * re-exported is only the enqueue and read half -- OutboxModule does not
+   * export the dispatcher or the consumer, so importing this cannot start
+   * background processing in the API process by accident.
+   */
+  imports: [OutboxModule],
   providers: [
     PropertyContextService,
     ClockService,
     RateLimiterService,
     mailerProvider,
   ],
-  exports: [PropertyContextService, ClockService, RateLimiterService, MAILER],
+  exports: [
+    PropertyContextService,
+    ClockService,
+    RateLimiterService,
+    MAILER,
+    OutboxModule,
+  ],
 })
 export class PlatformModule {}

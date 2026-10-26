@@ -25,7 +25,6 @@
 import { cn } from '@repo/ui';
 import {
   ArrowLeft,
-  BookOpen,
   Check,
   Copy,
   CreditCard,
@@ -41,6 +40,7 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import {
   PAYMENT_METHOD_LABELS,
@@ -50,7 +50,18 @@ import {
   type PaymentMethod,
 } from '@repo/types';
 
-import { postFolioCharge, postFolioDiscount, postFolioPayment } from '@/lib/properties-client';
+import { BookingActionsMenu } from './booking-actions-menu';
+import { useFolioSummaryRows, type FolioSummaryRow } from './use-folio-summary-rows';
+import { EditableFolioCell } from './editable-folio-cell';
+
+import {
+  correctFolioCharge,
+  correctRoomCharges,
+  postFolioCharge,
+  postFolioDiscount,
+  postFolioPayment,
+  postFolioPaymentByBooking,
+} from '@/lib/properties-client';
 
 /** `₹1,234.50` from integer minor units. Never a float (section 3.4). */
 function money(minor: number, currency: string): string {
@@ -105,11 +116,34 @@ export interface FolioViewProps {
 }
 
 export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
-  // Replaced wholesale by each posting's response, which is the recomputed
-  // page — so the KPIs, the table and the summary move together or not at all.
-  const [folio, setFolio] = useState<FolioPage>(initial);
+  /**
+   * The page, tagged with the server payload it was derived from.
+   *
+   * ===========================================================================
+   * A plain `useState(initial)` captures the first server render forever.
+   *
+   * Each posting replaces this wholesale with the server's recomputed page, so
+   * the KPIs, the table and the summary move together or not at all. But a
+   * bare `useState(initial)` then *ignores* every later server render: after a
+   * `router.refresh()` — which is how a room move updates this screen — the
+   * fresh props arrive and the stale state keeps winning. The room moved in
+   * the database and the page went on showing the old room.
+   *
+   * Tagging the local copy with the prop it came from fixes it without an
+   * effect to copy props into state, which is the cascading render
+   * `react-hooks/set-state-in-effect` rejects: when the server sends a new
+   * payload, `from` no longer matches and the fresh one is used.
+   * ===========================================================================
+   */
+  const [local, setLocal] = useState<{ from: FolioPage; value: FolioPage } | null>(null);
+  const folio = local !== null && local.from === initial ? local.value : initial;
+
+  const setFolio = (page: FolioPage): void => {
+    setLocal({ from: initial, value: page });
+  };
   const [tab, setTab] = useState<TabId>('summary');
   const [sheet, setSheet] = useState<'payment' | 'charge' | 'discount' | null>(null);
+  const router = useRouter();
 
   const { reservation, totals, breakdown } = folio;
   const currency = totals.currency;
@@ -157,7 +191,11 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
               value={money(totals.balanceDueMinor, currency)}
               tone={settled ? 'text-emerald-400' : 'text-rose-400'}
             />
-            <Kpi label="Payments" value={money(totals.paidMinor, currency)} />
+            <Kpi
+              label="Payments"
+              value={money(totals.paidMinor, currency)}
+              tone={totals.paidMinor > 0 ? 'text-emerald-400' : undefined}
+            />
             {reservation.canCheckOut ? (
               <button
                 type="button"
@@ -202,7 +240,16 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
 
         {/* ---- Quick actions ------------------------------------------ */}
         <div className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
-          <ActionPill icon={BookOpen} label="Booking actions" needs="the reservations module's modify paths" />
+          <BookingActionsMenu
+            hotelId={hotelId}
+            reservationId={reservation.id}
+            hasRoom={reservation.roomNumber !== null}
+            onMoved={() => {
+              // The move changed the room on the stay, which the whole page is
+              // drawn from, so it is refetched rather than patched.
+              router.refresh();
+            }}
+          />
           <ActionPill icon={IdCard} label="Registration card" needs="the frontdesk module's registration card" />
           <ActionPill icon={Link2} label="Send payment link" needs="the payments module's hosted link" />
           <ActionPill
@@ -226,12 +273,13 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
           <ActionPill icon={Mail} label="Email folio" needs="the platform module's mail outbox" />
           <ActionPill icon={RotateCcw} label="Rollback" needs="reversing entries in the folios module" />
           <ActionPill icon={Printer} label="Print" needs="invoice rendering" />
+          {/* Always live, even with no folio: taking money is a deliberate act
+              by a named clerk, and the server opens the container for it. The
+              charge and discount pills still need a folio, because posting a
+              charge to a stay nobody has arrived at is a different claim. */}
           <button
             type="button"
-            disabled={folio.folioId === null}
-            title={
-              folio.folioId === null ? 'No folio yet — one opens at check-in' : 'Collect payment'
-            }
+            title="Collect payment"
             onClick={() => {
               setSheet('payment');
             }}
@@ -271,7 +319,18 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
 
       {/* ---- Table ----------------------------------------------------- */}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <TransactionTable transactions={folio.transactions} tab={tab} currency={currency} />
+        <TransactionTable
+          transactions={folio.transactions}
+          tab={tab}
+          currency={currency}
+          hotelId={hotelId}
+          folioId={folio.folioId}
+          roomNumber={reservation.roomNumber}
+          onCorrected={setFolio}
+          onOpenItemized={() => {
+            setTab('itemized');
+          }}
+        />
       </div>
 
       {/* ---- Folio summary --------------------------------------------- */}
@@ -281,6 +340,15 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             Charges
           </h2>
           <SummaryRow label="Subtotal (ex. tax)" value={money(breakdown.subtotalMinor, currency)} />
+          {/* The ledger-only figure, shown when part of the stay is still
+              scheduled — that is the number an invoice may be raised from. */}
+          {totals.hasUnpostedCharges ? (
+            <SummaryRow
+              label="Of which posted"
+              value={money(breakdown.postedSubtotalMinor, currency)}
+              hint="Charges in the ledger. The rest is scheduled and posts at check-in or by the night audit."
+            />
+          ) : null}
           {breakdown.taxIsSplit ? (
             <>
               <SummaryRow label="CGST" value={money(breakdown.cgstMinor, currency)} />
@@ -327,11 +395,12 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
         </section>
       </footer>
 
-      {sheet === null || folio.folioId === null ? null : (
+      {sheet === null ? null : (
         <PostingSheet
           kind={sheet}
           hotelId={hotelId}
           folioId={folio.folioId}
+          bookingCode={reservation.bookingCode}
           currency={currency}
           balanceDueMinor={totals.balanceDueMinor}
           onClose={() => {
@@ -355,38 +424,60 @@ function TransactionTable({
   transactions,
   tab,
   currency,
+  hotelId,
+  folioId,
+  roomNumber,
+  onCorrected,
+  onOpenItemized,
 }: {
   transactions: readonly FolioTransaction[];
   tab: TabId;
   currency: string;
+  hotelId: string;
+  folioId: string | null;
+  roomNumber: string | null;
+  onCorrected: (page: FolioPage) => void;
+  onOpenItemized: () => void;
 }) {
   /**
-   * The tabs are filters over the same rows, not separate fetches.
+   * The tabs are projections of one ledger, not separate fetches.
    *
-   * Summary and Itemized show everything — the difference in the reference is
-   * grouping, and grouping an eight-line folio adds a header row per group and
-   * no information. Taxes and Payments narrow to the rows that carry each.
+   * Summary rolls the nightly tariff into a single "Booking Price" and answers
+   * "what is this stay costing?"; Itemized is the night-by-night ledger. Taxes
+   * and Payments narrow to the rows that carry each.
    */
-  const rows = transactions.filter((entry) => {
+  const summaryRows = useFolioSummaryRows(transactions, roomNumber);
+
+  const rows: readonly FolioSummaryRow[] = (
+    tab === 'summary'
+      ? summaryRows
+      : transactions.map((entry) => ({
+          ...entry,
+          rolledUpCount: 1,
+          postedGrossMinor: entry.isPosted ? entry.grossMinor : 0,
+        }))
+  ).filter((entry) => {
     if (tab === 'taxes') return entry.taxMinor !== 0;
     if (tab === 'payments') return entry.kind === 'PAYMENT' || entry.kind === 'REFUND';
     return true;
   });
 
-  if (rows.length === 0) {
-    return (
-      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-10 text-center">
-        <p className="text-xs text-zinc-500">
-          {transactions.length === 0
-            ? 'Nothing posted yet. A folio opens and takes its first charge at check-in.'
-            : 'No rows in this view.'}
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="overflow-hidden rounded-xl border border-white/[0.06]">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] bg-white/[0.02] px-3 py-2">
+        <h2 className="text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">
+          {tab === 'summary' ? 'Summary details' : 'Transactions'}
+        </h2>
+        {tab === 'summary' ? (
+          <button
+            type="button"
+            onClick={onOpenItemized}
+            className="text-[10px] font-medium text-blue-400 transition-colors hover:text-blue-300"
+          >
+            Open transactions
+          </button>
+        ) : null}
+      </div>
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-white/[0.06] bg-white/[0.02] text-[10px] tracking-wider text-zinc-500 uppercase">
@@ -414,13 +505,56 @@ function TransactionTable({
           </tr>
         </thead>
         <tbody>
+          {/* The headers stay even with nothing to show. A table that
+              collapses into an empty panel reads as a broken screen; one
+              explicit row says which of the two situations this is. */}
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={7} className="px-3 py-8 text-center text-[11px] text-zinc-500">
+                {transactions.length === 0
+                  ? 'No charges on this stay yet.'
+                  : 'No rows in this view.'}
+              </td>
+            </tr>
+          ) : null}
+
           {rows.map((entry) => (
-            <tr key={entry.id} className="border-b border-white/[0.04] last:border-0">
+            <tr
+              key={entry.id}
+              className={cn(
+                'border-b border-white/[0.04] last:border-0',
+                // Dimmed, because a scheduled charge is a forecast and a
+                // posted one is a fact.
+                !entry.isPosted && 'bg-white/[0.015]',
+              )}
+            >
               <td className="tabular px-3 py-2 whitespace-nowrap text-zinc-400">
                 {formatDate(entry.date)}
               </td>
               <td className="tabular px-3 py-2 text-zinc-400">{entry.room ?? '—'}</td>
-              <td className="px-3 py-2 text-zinc-200">{entry.description}</td>
+              <td className="px-3 py-2 text-zinc-200">
+                {entry.description}
+                {entry.rolledUpCount > 1 ? (
+                  <span
+                    title={
+                      entry.postedGrossMinor === entry.grossMinor
+                        ? `${String(entry.rolledUpCount)} nights, all posted`
+                        : `${String(entry.rolledUpCount)} nights · ${money(entry.postedGrossMinor, currency)} posted, the rest scheduled`
+                    }
+                    className="ml-2 rounded bg-white/[0.07] px-1.5 py-px text-[9px] font-semibold tracking-wider text-zinc-400 uppercase"
+                  >
+                    {entry.rolledUpCount} nights
+                  </span>
+                ) : null}
+                {entry.isPosted ? null : (
+                  <span
+                    title="Agreed but not yet charged. A night posts at check-in or by the night audit; an invoice may only be raised from posted lines."
+                    className="ml-2 rounded bg-amber-500/15 px-1.5 py-px text-[9px] font-semibold tracking-wider text-amber-300 uppercase"
+                  >
+                    Scheduled
+                  </span>
+                )}
+              </td>
               <td className="px-3 py-2">
                 <span
                   className={cn(
@@ -433,20 +567,74 @@ function TransactionTable({
                   {entry.direction}
                 </span>
               </td>
-              <td className="tabular px-3 py-2 text-right text-zinc-300">
-                {money(entry.netMinor, currency)}
-              </td>
+              <EditableFolioCell
+                valueMinor={entry.netMinor}
+                field="net"
+                direction={entry.direction}
+                // Net is only a separate instruction where there is tax to
+                // compute forward from it. On a credit, or a tax-free charge,
+                // net and gross are the same number and two editable cells
+                // for one value is a way to disagree with yourself.
+                editable={entry.isCorrectable && folioId !== null && entry.taxMinor !== 0}
+                format={(minor) => money(minor, currency)}
+                title="Click to correct the pre-tax amount"
+                onSave={async (magnitudeMinor) => {
+                  if (folioId === null) return;
+                  onCorrected(
+                    // The consolidated row stands for several ledger lines, so
+                    // it corrects them in one transaction rather than N calls
+                    // that could fail half way.
+                    entry.rolledUpCount > 1
+                      ? await correctRoomCharges(hotelId, folioId, {
+                          netAmountMinor: magnitudeMinor,
+                          reason: null,
+                        })
+                      : await correctFolioCharge(hotelId, folioId, entry.id, {
+                          netAmountMinor: magnitudeMinor,
+                          reason: null,
+                        }),
+                  );
+                }}
+              />
               <td className="tabular px-3 py-2 text-right text-zinc-400">
                 {entry.taxMinor === 0 ? '—' : money(entry.taxMinor, currency)}
               </td>
-              <td
-                className={cn(
-                  'tabular px-3 py-2 text-right font-semibold',
-                  entry.direction === 'CREDIT' ? 'text-emerald-300' : 'text-zinc-100',
-                )}
-              >
-                {money(entry.grossMinor, currency)}
-              </td>
+              <EditableFolioCell
+                valueMinor={entry.grossMinor}
+                field="gross"
+                direction={entry.direction}
+                editable={entry.isCorrectable && folioId !== null}
+                format={(minor) => money(minor, currency)}
+                title={
+                  entry.correctionCount === 0
+                    ? 'Click to correct the gross amount'
+                    : `Click to correct. Posted at ${money(entry.originalGrossMinor, currency)}, corrected ${String(entry.correctionCount)} time${entry.correctionCount === 1 ? '' : 's'}.`
+                }
+                onSave={async (magnitudeMinor) => {
+                  if (folioId === null) return;
+                  onCorrected(
+                    entry.rolledUpCount > 1
+                      ? await correctRoomCharges(hotelId, folioId, {
+                          grossAmountMinor: magnitudeMinor,
+                          reason: null,
+                        })
+                      : await correctFolioCharge(hotelId, folioId, entry.id, {
+                          grossAmountMinor: magnitudeMinor,
+                          reason: null,
+                        }),
+                  );
+                }}
+                suffix={
+                  entry.correctionCount > 0 ? (
+                    <span
+                      title={`Originally posted at ${money(entry.originalGrossMinor, currency)}`}
+                      className="ml-1.5 text-[9px] font-normal text-amber-400/80"
+                    >
+                      corrected
+                    </span>
+                  ) : null
+                }
+              />
             </tr>
           ))}
         </tbody>
@@ -463,6 +651,7 @@ function PostingSheet({
   kind,
   hotelId,
   folioId,
+  bookingCode,
   currency,
   balanceDueMinor,
   onClose,
@@ -470,7 +659,9 @@ function PostingSheet({
 }: {
   kind: 'payment' | 'charge' | 'discount';
   hotelId: string;
-  folioId: string;
+  /** Null until a folio exists; a payment opens one server-side. */
+  folioId: string | null;
+  bookingCode: string;
   currency: string;
   balanceDueMinor: number;
   onClose: () => void;
@@ -501,21 +692,27 @@ function PostingSheet({
     setSaving(true);
     setError(null);
     try {
+      const payment = {
+        method,
+        amountMinor,
+        remark: remark.trim() === '' ? null : remark.trim(),
+      };
+
       const page =
         kind === 'payment'
-          ? await postFolioPayment(hotelId, folioId, {
-              method,
-              amountMinor,
-              remark: remark.trim() === '' ? null : remark.trim(),
-            })
+          ? // By booking code when there is no folio, so the server opens one;
+            // by folio id otherwise, which is one fewer lookup.
+            folioId === null
+            ? await postFolioPaymentByBooking(hotelId, bookingCode, payment)
+            : await postFolioPayment(hotelId, folioId, payment)
           : kind === 'charge'
-            ? await postFolioCharge(hotelId, folioId, {
+            ? await postFolioCharge(hotelId, folioId as string, {
                 description: description.trim(),
                 netAmountMinor: amountMinor,
                 taxAmountMinor: Number.isFinite(taxMinor) ? taxMinor : 0,
                 chargeDate: null,
               })
-            : await postFolioDiscount(hotelId, folioId, {
+            : await postFolioDiscount(hotelId, folioId as string, {
                 reason: description.trim(),
                 amountMinor,
               });
@@ -710,7 +907,15 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: string }) {
+function Kpi({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string | undefined;
+}) {
   return (
     <div className="text-right">
       <p className="text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">{label}</p>

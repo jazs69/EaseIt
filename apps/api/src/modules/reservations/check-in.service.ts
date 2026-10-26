@@ -312,6 +312,8 @@ export class CheckInService {
         reservationId: reservation.id,
         staffUserId: userId,
         businessDate,
+        // The arrival night, which is what this charge is for.
+        roomChargeDate: toBusinessDateString(reservation.arrivalDate),
         currency: reservation.currency,
         roomChargeMinor,
         taxMinor,

@@ -47,6 +47,7 @@ import {
   type PropertyId,
   type ReservationQuote,
   type ReservationQuoteRequest,
+  type TaxSlab,
 } from '@repo/types';
 import { Prisma } from '@repo/database';
 
@@ -56,52 +57,16 @@ import {
   TenantScopeViolationError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
+import { isRetryableSqlState, sqlState } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { PropertyTaxService } from '../properties/property-tax.service.js';
 import { postCheckIn } from './check-in-posting.js';
 import { quoteStay, nightsBetween, stayDates } from './reservation-pricing.js';
 
 /** Postgres SQLSTATEs that mean "try again", not "give up". */
-const RETRYABLE_SQLSTATES = new Set(['40001', '23514', '23P01', '23505']);
 const MAX_ATTEMPTS = 3;
 const TRANSACTION_TIMEOUT_MS = 10_000;
 
-/**
- * Digs the Postgres SQLSTATE out of whatever Prisma wrapped it in.
- *
- * Three places, because Prisma reports it differently per call shape and
- * getting this wrong is not cosmetic: a missed SQLSTATE means the retry never
- * engages and a raw constraint violation escapes as a 500 instead of a clean
- * "that room is taken". That is exactly the bug this function was written
- * carelessly enough to cause the first time.
- *
- *   1. `error.code` — already a SQLSTATE on some driver paths.
- *   2. `error.meta.code` — where `$queryRaw` failures put it.
- *   3. The message — `PrismaClientKnownRequestError` for a constraint hit by
- *      the query builder renders it as "Code: `23P01`" and nowhere else.
- *
- * Prisma's own `P2002` is mapped to 23505: it means unique violation, which is
- * retryable here because the booking code is randomly generated.
- */
-function sqlState(error: unknown): string | null {
-  if (typeof error !== 'object' || error === null) return null;
-
-  const code = (error as { code?: unknown }).code;
-  if (typeof code === 'string') {
-    if (/^[0-9A-Z]{5}$/.test(code) && !code.startsWith('P')) return code;
-    if (code === 'P2002') return '23505';
-  }
-
-  const meta = (error as { meta?: { code?: unknown } }).meta;
-  if (typeof meta?.code === 'string') return meta.code;
-
-  const message = (error as { message?: unknown }).message;
-  if (typeof message === 'string') {
-    const match = /Code:\s*`?([0-9A-Z]{5})`?/.exec(message);
-    if (match?.[1] !== undefined) return match[1];
-  }
-
-  return null;
-}
 
 function toUtcMidnight(date: string): Date {
   return new Date(`${date}T00:00:00.000Z`);
@@ -111,7 +76,28 @@ function toUtcMidnight(date: string): Date {
 export class CreateReservationService {
   private readonly logger = new Logger(CreateReservationService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tax: PropertyTaxService,
+  ) {}
+
+  /**
+   * The property's GST bands.
+   *
+   * The legacy flat `taxRatePercent` column is handed over as the fallback
+   * and nothing else: a property with slab rows prices from them. The
+   * precedence lives in `PropertyTaxService`, so this is a pass-through
+   * rather than a second opinion.
+   */
+  private async slabsFor(property: {
+    id: string;
+    taxRatePercent: Prisma.Decimal | null;
+  }): Promise<TaxSlab[]> {
+    return this.tax.slabsFor(
+      property.id,
+      property.taxRatePercent === null ? null : Number(property.taxRatePercent),
+    );
+  }
 
   /* -------------------------------------------------------------------- */
   /*  Quote — advisory only                                               */
@@ -142,10 +128,7 @@ export class CreateReservationService {
       targetTotalMinor: request.targetTotalMinor,
       isTaxExempt: request.isTaxExempt,
       currency: roomType.currency,
-      // Decimal -> number once, here. It is a rate, never an amount, so no
-      // money precision is at stake (CLAUDE.md section 3.4).
-      taxRatePercent:
-        property.taxRatePercent === null ? null : Number(property.taxRatePercent),
+      taxSlabs: await this.slabsFor(property),
     });
   }
 
@@ -195,8 +178,7 @@ export class CreateReservationService {
       targetTotalMinor: command.targetTotalMinor,
       isTaxExempt: command.isTaxExempt,
       currency: roomType.currency,
-      taxRatePercent:
-        property.taxRatePercent === null ? null : Number(property.taxRatePercent),
+      taxSlabs: await this.slabsFor(property),
     });
 
     /**
@@ -345,6 +327,9 @@ export class CreateReservationService {
             mealPlan: command.mealPlan,
             totalAmountMinor: quote.totalMinor,
             taxAmountMinor: quote.taxMinor,
+            // Recorded, so an exempt stay is never taxed later by a derivation
+            // that cannot tell it apart from one whose tax went unrecorded.
+            isTaxExempt: command.isTaxExempt,
             paidAmountMinor: command.payment?.amountMinor ?? 0,
             currency: roomType.currency,
             // An instant check-in really did arrive, so the instant is
@@ -455,6 +440,9 @@ export class CreateReservationService {
          * half-written folio — which is also why `postCheckIn` takes a `tx`
          * and never opens one of its own.
          */
+        // The property's open accounting day, used by both branches below.
+        const businessDate = property.businessDate.toISOString().slice(0, 10);
+
         if (command.isInstantCheckIn) {
           const taxOfNight = Math.round(quote.taxMinor / quote.nights);
           const totalOfNight = Math.round(quote.totalMinor / quote.nights);
@@ -469,7 +457,9 @@ export class CreateReservationService {
             reservationId: reservation.id,
             staffUserId: userId,
             // The property's business date, never `now()` (section 3.3).
-            businessDate: property.businessDate.toISOString().slice(0, 10),
+            businessDate,
+            // The arrival night, which is what the charge is for.
+            roomChargeDate: command.arrivalDate,
             currency: roomType.currency,
             roomChargeMinor: totalOfNight - taxOfNight,
             taxMinor: taxOfNight,
@@ -491,6 +481,78 @@ export class CreateReservationService {
               room !== null &&
               room.status !== 'VACANT_CLEAN' &&
               room.status !== 'INSPECTED',
+          });
+        } else if (command.payment !== null) {
+          /**
+           * An advance taken at booking belongs in the ledger now.
+           *
+           * ===========================================================================
+           * **Money received is a fact the moment it is received.**
+           *
+           * This used to write `paidAmountMinor` on the reservation and stop
+           * there, posting nothing, because the folio was only opened at
+           * check-in. The result was 838 bookings carrying a recorded advance
+           * and not one folio line in the database: the drawer showed the
+           * agreed figures and the billing page showed an empty ledger, which
+           * is the discrepancy that surfaced this.
+           *
+           * It is also an accounting hole rather than a display bug. Cash in
+           * the drawer that the books have never heard of cannot be reconciled
+           * by a night audit, and the guest's own receipt would disagree with
+           * the folio they are handed at check-out.
+           *
+           * Only the payment is posted. The room charges are *not*: a night is
+           * charged when it is consumed, by check-in for the arrival night and
+           * by night audit step 3 for each night after (section 3.3). Posting
+           * the whole stay up front would have to be unwound every time a
+           * guest shortened it, and would collide with
+           * `folio_line_one_room_charge_per_date` the moment the audit ran.
+           * ===========================================================================
+           */
+          const folio = await tx.folio.create({
+            data: {
+              propertyId: property.id,
+              reservationId: reservation.id,
+              currency: roomType.currency,
+              status: 'OPEN',
+            },
+            select: { id: true },
+          });
+
+          await tx.folioLine.create({
+            data: {
+              propertyId: property.id,
+              folioId: folio.id,
+              kind: 'PAYMENT',
+              description: `Advance at booking (${command.payment.method})`,
+              // Negative, so the balance stays one plain sum (section 3.4).
+              amountMinor: -command.payment.amountMinor,
+              currency: roomType.currency,
+              // The business date, never `now()` — an advance taken at 00:30
+              // belongs to the open accounting day (section 3.3).
+              chargeDate: toUtcMidnight(businessDate),
+              paymentMethod: command.payment.method,
+              remark: command.payment.remark,
+              postedById: userId,
+            },
+          });
+
+          // In the same transaction as the money it records (section 3.4).
+          await tx.auditLog.create({
+            data: {
+              propertyId: property.id,
+              actorUserId: userId,
+              event: 'FOLIO_ADVANCE_POSTED',
+              entityType: 'folio',
+              entityId: reservation.id,
+              before: Prisma.JsonNull,
+              after: {
+                method: command.payment.method,
+                amountMinor: command.payment.amountMinor,
+                businessDate,
+              },
+              reason: null,
+            },
           });
         }
 
@@ -544,12 +606,11 @@ export class CreateReservationService {
       } catch (error) {
         if (error instanceof RoomUnavailableError) throw error;
 
-        const state = sqlState(error);
-        if (state === null || !RETRYABLE_SQLSTATES.has(state)) throw error;
+        if (!isRetryableSqlState(error)) throw error;
 
         lastError = error;
         this.logger.warn(
-          `Booking attempt ${String(attempt)} hit SQLSTATE ${state}; retrying.`,
+          `Booking attempt ${String(attempt)} hit SQLSTATE ${String(sqlState(error))}; retrying.`,
         );
 
         if (attempt < MAX_ATTEMPTS) {

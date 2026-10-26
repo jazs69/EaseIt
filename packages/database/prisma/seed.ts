@@ -38,6 +38,7 @@ import {
   type PropertyStatus as PropertyStatusEnum,
 } from '../generated/client/index.js';
 import { createPrismaClient } from '../src/client-factory.js';
+import { seedDemoPortfolio } from './seed-portfolio.js';
 
 /**
  * Load .env before anything reads DATABASE_URL.
@@ -1747,6 +1748,245 @@ async function seedOperations(
   console.log(`  general manager: ${SHUBH_GM_EMAIL} (Property Admin, 2FA enabled)`);
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Property configuration                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The GST slabs for room tariff.
+ *
+ * ===========================================================================
+ * Real Indian bands, in integer minor units, as data rather than a constant.
+ *
+ * Replaces the single `property.taxRatePercent` the platform carried, which
+ * forced every room in a hotel onto one rate. Room tariff is banded: the rate
+ * depends on what the room costs per night. Seeded per property because the
+ * bands are policy the operator confirms, not something the code should assert
+ * on their behalf.
+ *
+ * The rates are the ones in force since 22 September 2025: exempt up to
+ * ₹1,000 a night, 5% **without** input tax credit from ₹1,001 to ₹7,500, and
+ * 18% with ITC above that. The middle band was 12% with ITC before that date,
+ * and seeding 12% today under-collects nothing but over-charges the guest by
+ * seven points — so the figure matters more than most seed data.
+ *
+ * The band is decided on the per-night transaction value. Note that published
+ * guidance is not unanimous on whether the ₹7,500 test applies to the declared
+ * tariff or the value actually billed; a property that discounts a ₹8,000 room
+ * to ₹7,000 should confirm its own treatment before relying on this.
+ *
+ * The components are stored, not halved at read time: halving is right for an
+ * intra-state supply and wrong for inter-state (IGST, not split at all), and
+ * the `property_tax_slab_components_sum_to_rate` CHECK keeps the three numbers
+ * an invoice prints from contradicting each other.
+ * ===========================================================================
+ */
+const TAX_SLABS: readonly {
+  slabName: string;
+  minTariffMinor: number;
+  maxTariffMinor: number | null;
+  taxRatePercent: string;
+  cgstRatePercent: string;
+  sgstRatePercent: string;
+}[] = [
+  {
+    slabName: 'Budget tariff (nil-rated)',
+    minTariffMinor: 0,
+    maxTariffMinor: 100_000,
+    taxRatePercent: '0.00',
+    cgstRatePercent: '0.00',
+    sgstRatePercent: '0.00',
+  },
+  {
+    slabName: 'Standard tariff',
+    minTariffMinor: 100_000,
+    maxTariffMinor: 750_000,
+    taxRatePercent: '5.00',
+    cgstRatePercent: '2.50',
+    sgstRatePercent: '2.50',
+  },
+  {
+    slabName: 'Premium tariff',
+    minTariffMinor: 750_000,
+    maxTariffMinor: null,
+    taxRatePercent: '18.00',
+    cgstRatePercent: '9.00',
+    sgstRatePercent: '9.00',
+  },
+];
+
+/** Amenities every property in the portfolio offers. */
+const CORE_AMENITIES: readonly {
+  slug: string;
+  name: string;
+  groupName: string;
+  iconName: string;
+}[] = [
+  { slug: '24hr-power-backup', name: '24-hour power backup', groupName: 'Essentials', iconName: 'Zap' },
+  { slug: '24hr-front-desk', name: '24-hour front desk', groupName: 'Services', iconName: 'ConciergeBell' },
+  { slug: '24hr-security', name: '24-hour security', groupName: 'Safety & Security', iconName: 'ShieldCheck' },
+  { slug: 'free-wifi', name: 'Free Wi-Fi', groupName: 'Essentials', iconName: 'Wifi' },
+  { slug: 'air-conditioning', name: 'Air conditioning', groupName: 'Essentials', iconName: 'Snowflake' },
+  { slug: 'parking', name: 'On-site parking', groupName: 'Essentials', iconName: 'CircleParking' },
+  { slug: 'cctv', name: 'CCTV in common areas', groupName: 'Safety & Security', iconName: 'Cctv' },
+  { slug: 'first-aid', name: 'First-aid kit', groupName: 'Safety & Security', iconName: 'BriefcaseMedical' },
+  { slug: 'laundry', name: 'Laundry service', groupName: 'Services', iconName: 'Shirt' },
+  { slug: 'airport-transfer', name: 'Airport transfer', groupName: 'Services', iconName: 'Car' },
+];
+
+/** Amenities charged for, with their price in minor units. */
+const PAID_AMENITIES: Record<string, { priceMinor: number; pricingUnit: string }> = {
+  laundry: { priceMinor: 25_000, pricingUnit: 'Per kg' },
+  'airport-transfer': { priceMinor: 150_000, pricingUnit: 'Per trip' },
+};
+
+const POLICIES: readonly {
+  type: 'CANCELLATION' | 'AMENDMENT' | 'TERMS_AND_CONDITIONS' | 'CHECK_IN_CHECK_OUT';
+  title: string;
+  content: string;
+  freeCancellationHours: number | null;
+  retentionChargePercent: string | null;
+}[] = [
+  {
+    type: 'CANCELLATION',
+    title: 'Cancellation policy',
+    content:
+      'Cancel free of charge up to 48 hours before the check-in date. Inside 48 ' +
+      'hours, one night of the tariff is retained. A no-show is charged one night.',
+    freeCancellationHours: 48,
+    retentionChargePercent: '100.00',
+  },
+  {
+    type: 'AMENDMENT',
+    title: 'Amendment policy',
+    content:
+      'Dates may be changed once, free of charge, up to 48 hours before arrival, ' +
+      'subject to availability. The tariff is re-quoted at the rate current for ' +
+      'the new dates.',
+    freeCancellationHours: 48,
+    retentionChargePercent: null,
+  },
+  {
+    type: 'CHECK_IN_CHECK_OUT',
+    title: 'Check-in and check-out',
+    content:
+      'Check-in from 2:00 PM. Check-out by 11:00 AM. Early check-in and late ' +
+      'check-out are subject to availability and may be charged.',
+    freeCancellationHours: null,
+    retentionChargePercent: null,
+  },
+  {
+    type: 'TERMS_AND_CONDITIONS',
+    title: 'Terms and conditions',
+    content:
+      'A valid government photo ID is required at check-in for every guest, as ' +
+      'required by law. The property reserves the right to refuse accommodation ' +
+      'where an ID cannot be produced.',
+    freeCancellationHours: null,
+    retentionChargePercent: null,
+  },
+];
+
+/**
+ * Configuration for every property, idempotently.
+ *
+ * Upserts rather than inserts, and updates on conflict as well as creating —
+ * a seed that only fills the `create` branch stops converging the moment it is
+ * run twice, which is a bug this repository has already had once.
+ */
+async function seedPropertyConfiguration(): Promise<void> {
+  const properties = await prisma.property.findMany({
+    select: { id: true, code: true, checkInTime: true, checkOutTime: true },
+  });
+
+  // Portfolio-wide reference data, so it is seeded once rather than per
+  // property (CLAUDE.md section 3.2 — amenities carry no propertyId).
+  const amenityIds = new Map<string, string>();
+  for (const amenity of CORE_AMENITIES) {
+    const row = await prisma.amenity.upsert({
+      where: { slug: amenity.slug },
+      create: amenity,
+      update: { name: amenity.name, groupName: amenity.groupName, iconName: amenity.iconName },
+      select: { id: true },
+    });
+    amenityIds.set(amenity.slug, row.id);
+  }
+
+  for (const property of properties) {
+    await prisma.propertySettings.upsert({
+      where: { propertyId: property.id },
+      create: {
+        propertyId: property.id,
+        // Taken from the property rather than hardcoded, so the two agree on
+        // day one and the eventual move of these fields is a no-op.
+        standardCheckInTime: property.checkInTime,
+        standardCheckOutTime: property.checkOutTime,
+      },
+      update: {
+        standardCheckInTime: property.checkInTime,
+        standardCheckOutTime: property.checkOutTime,
+      },
+      select: { id: true },
+    });
+
+    for (const slab of TAX_SLABS) {
+      await prisma.propertyTaxSlab.upsert({
+        where: {
+          propertyId_minTariffMinor: {
+            propertyId: property.id,
+            minTariffMinor: slab.minTariffMinor,
+          },
+        },
+        create: { propertyId: property.id, ...slab },
+        update: {
+          slabName: slab.slabName,
+          maxTariffMinor: slab.maxTariffMinor,
+          taxRatePercent: slab.taxRatePercent,
+          cgstRatePercent: slab.cgstRatePercent,
+          sgstRatePercent: slab.sgstRatePercent,
+        },
+        select: { id: true },
+      });
+    }
+
+    for (const amenity of CORE_AMENITIES) {
+      const amenityId = amenityIds.get(amenity.slug);
+      if (amenityId === undefined) continue;
+      const paid = PAID_AMENITIES[amenity.slug];
+
+      await prisma.propertyAmenityLink.upsert({
+        where: { propertyId_amenityId: { propertyId: property.id, amenityId } },
+        create: {
+          propertyId: property.id,
+          amenityId,
+          scope: paid === undefined ? 'FREE' : 'PAID',
+          priceMinor: paid?.priceMinor ?? 0,
+          pricingUnit: paid?.pricingUnit ?? null,
+        },
+        update: {
+          scope: paid === undefined ? 'FREE' : 'PAID',
+          priceMinor: paid?.priceMinor ?? 0,
+          pricingUnit: paid?.pricingUnit ?? null,
+        },
+        select: { id: true },
+      });
+    }
+
+    // No natural key on a policy, so existing ones are replaced wholesale
+    // rather than matched by title — which a reseed would duplicate.
+    await prisma.propertyPolicy.deleteMany({ where: { propertyId: property.id } });
+    await prisma.propertyPolicy.createMany({
+      data: POLICIES.map((policy) => ({ propertyId: property.id, ...policy })),
+    });
+  }
+
+  console.log(
+    `  Configured ${String(properties.length)} properties: settings, ` +
+      `${String(TAX_SLABS.length)} GST slabs, ${String(CORE_AMENITIES.length)} amenities, ` +
+      `${String(POLICIES.length)} policies.`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log('Seeding EaseIt dev portfolio...');
 
@@ -1759,7 +1999,19 @@ async function main(): Promise<void> {
   const customRoleId = await seedCustomRole(goaId, permissionIds);
 
   await seedStaff(roleIds, propertyIds, customRoleId);
+  await seedPropertyConfiguration();
   await seedOperations(propertyIds, roleIds);
+
+  /**
+   * The ten-property demo portfolio, at codes 31346-31355.
+   *
+   * Last, and additive: it owns only its own codes and deletes nothing, so it
+   * runs safely after the reference portfolio has been rebuilt above. On a
+   * database whose existing bookings must survive, run it on its own with
+   * `pnpm db:seed:portfolio` instead of this whole script — the property
+   * rebuilds above drop reservations and inventory by design.
+   */
+  await seedDemoPortfolio(prisma);
 
   console.log(`\nDone. Most dev accounts share the password: ${DEV_PASSWORD}`);
   console.log('Portfolio owner:    owner@easeit.example.com');

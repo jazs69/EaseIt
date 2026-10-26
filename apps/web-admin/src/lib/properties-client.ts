@@ -11,6 +11,8 @@
 import {
   checkInPreflightSchema,
   folioPageSchema,
+  moveRoomOptionsSchema,
+  moveRoomResultSchema,
   reservationDetailSchema,
   reservationNoteSchema,
   checkInResultSchema,
@@ -27,6 +29,9 @@ import {
   propertyDashboardSchema,
   timelineCalendarSchema,
   selectPropertyContextResponseSchema,
+  propertySetupSchema,
+  masterReportResponseSchema,
+  propertyMediaSchema,
   type DashboardMetric,
   type GroupCalendarResponse,
   type GroupPerformance,
@@ -37,6 +42,11 @@ import {
   type PropertyStatusFilter,
   type CompanySummary,
   type CreateCompanyCommand,
+  type CorrectFolioChargeCommand,
+  type CorrectRoomChargesCommand,
+  type MoveRoomCommand,
+  type MoveRoomOptions,
+  type MoveRoomResult,
   type FolioPage,
   type PostFolioChargeCommand,
   type PostFolioDiscountCommand,
@@ -60,6 +70,16 @@ import {
   type TimelineTimeframe,
   type TimelineViewMode,
   type SelectPropertyContextResponse,
+  type CreatePropertyMedia,
+  type PropertyMedia,
+  type MasterReportDimension,
+  type MasterReportResponse,
+  type PropertySetup,
+  type ReplaceAmenities,
+  type ReplaceFees,
+  type ReplacePolicies,
+  type ReplaceTaxSlabs,
+  type UpdatePropertySettings,
 } from '@repo/types';
 
 import { z } from 'zod';
@@ -471,6 +491,25 @@ export function postFolioPayment(
   );
 }
 
+/**
+ * A payment on a booking that may not have a folio yet.
+ *
+ * Addressed by booking code rather than folio id for exactly that reason: the
+ * server opens the container when a clerk deliberately takes money, which a
+ * page load must never do.
+ */
+export function postFolioPaymentByBooking(
+  hotelId: string,
+  bookingCode: string,
+  body: PostFolioPaymentCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/by-booking/${encodeURIComponent(bookingCode)}/payment`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
 export function postFolioCharge(
   hotelId: string,
   folioId: string,
@@ -478,6 +517,41 @@ export function postFolioCharge(
 ): Promise<FolioPage> {
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/charge`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+/**
+ * Correct a posted charge to a new gross.
+ *
+ * The server posts the difference as an adjustment; the original line is never
+ * updated, because a folio line is immutable (CLAUDE.md section 3.4).
+ */
+export function correctFolioCharge(
+  hotelId: string,
+  folioId: string,
+  lineId: string,
+  body: CorrectFolioChargeCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/lines/${encodeURIComponent(lineId)}/correct`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+/**
+ * Correct the whole stay's room charges — what editing the consolidated
+ * "Booking Price" row does. One transaction across every posted night.
+ */
+export function correctRoomCharges(
+  hotelId: string,
+  folioId: string,
+  body: CorrectRoomChargesCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/room-charges/correct`,
     folioPageSchema,
     { method: 'POST', body },
   );
@@ -527,6 +601,35 @@ export function addReservationNote(
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/notes`,
     reservationNoteSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Room assignment and moves                                                  */
+/* -------------------------------------------------------------------------- */
+
+export function fetchRoomMoveOptions(
+  hotelId: string,
+  reservationId: string,
+  signal?: AbortSignal,
+): Promise<MoveRoomOptions> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/room-options`,
+    moveRoomOptionsSchema,
+    signal === undefined ? undefined : { signal },
+  );
+}
+
+/** `roomId: null` returns the stay to the unassigned queue. */
+export function moveReservationRoom(
+  hotelId: string,
+  reservationId: string,
+  body: MoveRoomCommand,
+): Promise<MoveRoomResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/room`,
+    moveRoomResultSchema,
     { method: 'POST', body },
   );
 }
@@ -620,4 +723,184 @@ export function lookupPostalCode(
     postalLookupSchema,
     { ...(signal === undefined ? {} : { signal }) },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Property configuration                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The whole configuration: five tabs, one request.
+ *
+ * Called from the server component so the first paint already has data, and
+ * again from the browser after each save — every write returns the recomputed
+ * configuration, for the same reason a folio posting returns the whole page:
+ * a client that patched one field into local state would drift from the server
+ * the first time a write had a side effect it did not predict.
+ */
+export function fetchPropertySetup(
+  hotelId: string,
+  options?: { signal?: AbortSignal; cookieHeader?: string },
+): Promise<PropertySetup> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/setup`,
+    propertySetupSchema,
+    {
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      ...(options?.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    },
+  );
+}
+
+/** Partial: only the fields present are written, so one tab cannot reset another. */
+export function updatePropertySettings(
+  hotelId: string,
+  body: UpdatePropertySettings,
+): Promise<PropertySetup> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/settings`,
+    propertySetupSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+/**
+ * The whole GST table at once.
+ *
+ * Not slab by slab — a table is only valid as a set, so the server validates
+ * and swaps it in one transaction and a rejected table leaves the live one
+ * untouched.
+ */
+export function replacePropertyTaxSlabs(
+  hotelId: string,
+  body: ReplaceTaxSlabs,
+): Promise<PropertySetup> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/tax-slabs`,
+    propertySetupSchema,
+    { method: 'PUT', body },
+  );
+}
+
+/** Records where an image lives; nothing here uploads bytes. */
+export function addPropertyMedia(
+  hotelId: string,
+  body: CreatePropertyMedia,
+): Promise<PropertyMedia> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/media`,
+    propertyMediaSchema,
+    { method: 'POST', body },
+  );
+}
+
+/**
+ * The amenity links, replaced as a set.
+ *
+ * The catalogue itself is portfolio-wide reference data and is not editable —
+ * only whether this property offers each one, and at what price.
+ */
+export function replacePropertyAmenities(
+  hotelId: string,
+  body: ReplaceAmenities,
+): Promise<PropertySetup> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/amenities`,
+    propertySetupSchema,
+    { method: 'PUT', body },
+  );
+}
+
+/** The policies, replaced as a set — they carry no natural key to match on. */
+export function replacePropertyPolicies(
+  hotelId: string,
+  body: ReplacePolicies,
+): Promise<PropertySetup> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/policies`,
+    propertySetupSchema,
+    { method: 'PUT', body },
+  );
+}
+
+/** The fees and surcharges, replaced as a set. Recorded, not yet billed. */
+export function replacePropertyFees(
+  hotelId: string,
+  body: ReplaceFees,
+): Promise<PropertySetup> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/fees`,
+    propertySetupSchema,
+    { method: 'PUT', body },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Master report                                                              */
+/* -------------------------------------------------------------------------- */
+
+export interface MasterReportParams {
+  startDate?: string | undefined;
+  endDate?: string | undefined;
+  dateDimension?: MasterReportDimension | undefined;
+  page?: number | undefined;
+  limit?: number | undefined;
+  bookingId?: string | undefined;
+  guest?: string | undefined;
+  source?: string | undefined;
+  status?: string | undefined;
+  roomType?: string | undefined;
+  room?: string | undefined;
+  /** Comma-separated column keys. Narrows both the response and the CSV. */
+  columns?: string | undefined;
+}
+
+/** Drops absent and empty filters, so the URL carries only what is set. */
+function masterReportSearch(params: MasterReportParams): URLSearchParams {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text === '') continue;
+    search.set(key, text);
+  }
+  return search;
+}
+
+/**
+ * One page of the master report.
+ *
+ * Filters go to the server rather than being applied to the rows already on
+ * screen. A client-side filter would narrow only the current page and leave
+ * the totals describing a different set — and the totals are the figure
+ * somebody writes down.
+ */
+export function fetchMasterReport(
+  hotelId: string,
+  params: MasterReportParams,
+  options?: { signal?: AbortSignal; cookieHeader?: string },
+): Promise<MasterReportResponse> {
+  const search = masterReportSearch(params);
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reports/master-report?${search.toString()}`,
+    masterReportResponseSchema,
+    {
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      ...(options?.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    },
+  );
+}
+
+/**
+ * The CSV URL for the current filters.
+ *
+ * A URL rather than a fetch, so the browser downloads it with its own
+ * credentials and progress UI instead of the page buffering a file into memory
+ * to hand straight back to it. `limit` is raised to the server's cap: an
+ * export of "page 1 of 40" is not an export.
+ */
+export function masterReportCsvUrl(hotelId: string, params: MasterReportParams): string {
+  const search = masterReportSearch({ ...params, page: 1, limit: 200 });
+  search.set('format', 'csv');
+  return `${API_BASE_URL}/api/v1/properties/${encodeURIComponent(hotelId)}/reports/master-report?${search.toString()}`;
 }

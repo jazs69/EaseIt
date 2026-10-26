@@ -46,6 +46,36 @@ export const envSchema = z
 
     REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
 
+    /* -- Outbox dispatcher and worker -------------------------------------
+     *
+     * Read by the worker process. The API validates them too, so a typo is
+     * caught at API boot rather than only when the worker is next deployed,
+     * and so one `.env` serves both processes.
+     * -------------------------------------------------------------------- */
+
+    /** How often the dispatcher looks for due events. */
+    OUTBOX_POLL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+    /** Rows claimed per poll. Bounds how much work one crash can strand. */
+    OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+    /**
+     * How long a claim is held before another dispatcher may reclaim it.
+     *
+     * Must exceed OUTBOX_HANDLER_TIMEOUT_MS with room to spare, or a slow but
+     * healthy handler gets its row stolen mid-flight and the side effect runs
+     * twice. The refinement below enforces that.
+     */
+    OUTBOX_LEASE_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
+    /** Jobs handled in parallel by one worker process. */
+    OUTBOX_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(4),
+    /** First retry delay; doubles per attempt, with full jitter. */
+    OUTBOX_BACKOFF_BASE_MS: z.coerce.number().int().min(100).max(600_000).default(2_000),
+    /** Ceiling on the backoff window. */
+    OUTBOX_BACKOFF_MAX_MS: z.coerce.number().int().min(1_000).max(86_400_000).default(300_000),
+    /** A handler exceeding this is abandoned and the attempt counted failed. */
+    OUTBOX_HANDLER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(30_000),
+    /** How often the worker logs backlog figures. */
+    OUTBOX_BACKLOG_LOG_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
+
     /**
      * Signs session tokens, and — via a labelled HKDF-style derivation, never
      * directly — peppers the stored OTP hashes. One secret, two
@@ -156,6 +186,25 @@ export const envSchema = z
           `GST_PROVIDER is "${env.GST_PROVIDER}" but GST_API_KEY is unset. ` +
           'Set the key, or use GST_PROVIDER="mock" to work with clearly ' +
           'marked synthetic data.',
+      });
+    }
+
+    /**
+     * A lease shorter than the handler timeout is a duplicate-delivery
+     * generator: the reaper returns the row to PENDING while the first
+     * handler is still running, a second worker claims it, and the external
+     * side effect happens twice. 2x is the margin, not 1x, to leave room for
+     * the poll interval and the write that records the outcome.
+     */
+    if (env.OUTBOX_LEASE_MS < env.OUTBOX_HANDLER_TIMEOUT_MS * 2) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['OUTBOX_LEASE_MS'],
+        message:
+          `OUTBOX_LEASE_MS (${String(env.OUTBOX_LEASE_MS)}) must be at least ` +
+          `twice OUTBOX_HANDLER_TIMEOUT_MS (${String(env.OUTBOX_HANDLER_TIMEOUT_MS)}). ` +
+          'A shorter lease lets a second worker claim a row while the first ' +
+          'handler is still working, which delivers the side effect twice.',
       });
     }
 

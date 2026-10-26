@@ -113,6 +113,45 @@ enum RoomStatus {
   OUT_OF_ORDER
 }
 
+/// Where a photograph was taken.
+enum MediaCategory {
+  EXTERIOR
+  INTERIOR
+  RECEPTION
+  ROOM_BEDROOM
+  ROOM_WASHROOM
+  AMENITY_BANQUET
+  AMENITY_POOL
+  AMENITY_GARDEN
+  PARKING
+  RESTAURANT
+  OTHERS
+}
+
+/// Whether an amenity is included or charged for.
+enum AmenityScope {
+  FREE
+  PAID
+}
+
+/// The kind of policy a property publishes.
+enum PolicyType {
+  CANCELLATION
+  AMENDMENT
+  CHECK_IN_CHECK_OUT
+  HOUSE_RULES
+  TERMS_AND_CONDITIONS
+  CUSTOM
+}
+
+/// How a fee is computed.
+enum FeeType {
+  PERCENTAGE
+  FIXED_PER_NIGHT
+  FIXED_PER_STAY
+  FIXED_PER_GUEST
+}
+
 /// What a folio line represents.
 ///
 /// One table with a discriminator rather than separate charge and payment
@@ -316,6 +355,13 @@ model Property {
   companies      Company[]
   folios         Folio[]
   auditLogs      AuditLog[]
+  outboxEvents   OutboxEvent[]
+  settings       PropertySettings?
+  taxSlabs       PropertyTaxSlab[]
+  media          PropertyMedia[]
+  amenityLinks   PropertyAmenityLink[]
+  policies       PropertyPolicy[]
+  fees           FeeAndSurcharge[]
 
   @@index([status])
   @@map("property")
@@ -627,6 +673,7 @@ model RoomType {
   rooms            Room[]
   inventoryDays    InventoryDay[]
   reservationRooms ReservationRoom[]
+  media            PropertyMedia[]
 
   @@unique([propertyId, code], name: "room_type_unique_code_per_property")
   @@unique([propertyId, name], name: "room_type_unique_name_per_property")
@@ -810,6 +857,17 @@ model Reservation {
   paymentMethod PaymentMethod?
   paymentRemark String?
 
+  /// Whether this stay was quoted free of tax.
+  ///
+  /// Persisted because its absence is indistinguishable from the thing it
+  /// must be distinguished from. 881 of 882 reservations record
+  /// `taxAmountMinor = 0`, almost all because they predate tax being computed
+  /// at all — so the folio derives the split from the property's configured
+  /// rate. Without this flag a genuinely exempt booking (a diplomatic stay, an
+  /// SEZ guest) would be taxed by that same derivation, and the first anyone
+  /// would know is the invoice.
+  isTaxExempt Boolean @default(false)
+
   /// Tax inside `totalAmountMinor`, in minor units.
   ///
   /// Provisional, and knowingly against the grain of section 3.4: tax belongs
@@ -837,6 +895,84 @@ model Reservation {
   /// module when it lands; until then only the seed populates them.
   checkedInAt  DateTime? @db.Timestamptz(6)
   checkedOutAt DateTime? @db.Timestamptz(6)
+
+  /// When the booking was cancelled, for the master report's cancel-date
+  /// column. An instant rather than a date: a cancellation inside the free
+  /// window and one an hour later attract different retention, and only a
+  /// timestamp can tell them apart. Guarded so it is set only on a cancelled
+  /// or no-show booking.
+  cancelledAt DateTime? @db.Timestamptz(6)
+
+  /* -- Commercial attribution ------------------------------------------- */
+
+  /// The operator's own reference, distinct from `confirmationCode`. A group
+  /// booking taken against a tour operator's paperwork carries their number
+  /// here so the two can be reconciled without overloading ours.
+  bookingReferenceId String?
+
+  /// Market segment, e.g. "Corporate", "OTA", "Leisure", "Group". Free text:
+  /// segmentation is a commercial taxonomy that changes without a migration,
+  /// and nothing in the domain branches on it.
+  segment String?
+
+  /// Front-desk flags.
+  ///
+  /// `scantyBaggage` marks a guest who arrived with little or no luggage,
+  /// which most properties treat as a credit-risk signal worth recording at
+  /// check-in. `isComplimentary` marks a stay given free of charge, and the
+  /// remark is why — authorised by whom, against which budget. The remark is
+  /// constrained to complimentary stays, because a reason for something that
+  /// did not happen is a field nobody can interpret.
+  scantyBaggage        Boolean @default(false)
+  isComplimentary      Boolean @default(false)
+  complimentaryRemarks String?
+
+  /* -- OTA settlement ---------------------------------------------------- */
+
+  /// What the channel actually settles, in integer minor units.
+  ///
+  /// ===========================================================================
+  /// Four figures, not one derived from the others.
+  ///
+  /// `otaNetAmountMinor` is what the OTA *remits*, which is not reliably
+  /// `total - commission - tax`: channels withhold differently, settle in
+  /// batches, and adjust for cancellations after the fact. Storing the
+  /// remittance separately is what lets a finance team reconcile a bank credit
+  /// against the bookings it covers — deriving it would make every discrepancy
+  /// invisible.
+  ///
+  /// `otaPrepaidAmountMinor` is the part the guest already paid the channel,
+  /// which the property never touches and must not count as its own takings.
+  ///
+  /// Zero on a direct booking, which is the honest value rather than null: a
+  /// walk-in has no OTA commission, it does not have an unknown one. Written
+  /// by the `channels` module when it lands; until then only the seed sets
+  /// them (CLAUDE.md section 2).
+  /// ===========================================================================
+  otaPrepaidAmountMinor Int @default(0)
+  otaCommissionMinor    Int @default(0)
+  otaTaxMinor           Int @default(0)
+  otaNetAmountMinor     Int @default(0)
+
+  /* -- Promotions -------------------------------------------------------- */
+
+  /// The discount a promotion took off this booking, and the code that did it.
+  /// Integer minor units like every other amount. A promotions module would own
+  /// the catalogue of codes; this records which one was applied and for how
+  /// much, which is what a report has to show either way.
+  promoAmountMinor  Int     @default(0)
+  appliedCouponCode String?
+
+  /* -- Deposits ---------------------------------------------------------- */
+
+  /// A refundable security deposit held against the stay.
+  ///
+  /// Deliberately not a folio payment line. A deposit is not revenue and is
+  /// not a settlement of the bill — it is the property holding the guest's
+  /// money, returnable at checkout. Counting it as a payment would understate
+  /// the balance due and overstate the day's takings, which is why the folio's
+  /// own deposits tab is still unbuilt rather than approximated.
+  depositMinor Int @default(0)
 
   notes String?
 
@@ -1084,6 +1220,222 @@ model ReservationNote {
   @@map("reservation_note")
 }
 
+/// A property's operational configuration.
+///
+/// ===========================================================================
+/// One row per property, holding what the front desk and the night audit need.
+///
+/// Separate from `Property` because these are settings an operator edits,
+/// while `Property` is identity — the name, code and address that other
+/// records point at. Mixing them means every settings change rewrites a row
+/// that half the system joins against.
+///
+/// `checkInTime` and `checkOutTime` stay on `Property` as well, for now: the
+/// calendar, the drawer and the folio all read them from there, and moving
+/// them in one change would touch every one of those paths at once. This row
+/// is the place they will move to, and `PropertyConfigService` already reads
+/// through to it so the eventual move is a one-line change rather than a
+/// migration of every caller.
+/// ===========================================================================
+model PropertySettings {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @unique @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Wall-clock times in the property's own timezone, `HH:MM`.
+  standardCheckInTime  String @default("14:00")
+  standardCheckOutTime String @default("11:00")
+
+  /// Minutes between a departure and the next arrival, for housekeeping.
+  turnaroundGraceMins Int @default(60)
+
+  /// Prefixes for human-facing identifiers.
+  bookingPrefix String @default("SFBOOKING_")
+  folioPrefix   String @default("FOL_")
+  invoicePrefix String @default("INV_")
+
+  /// How long an unconfirmed hold survives before inventory is released.
+  autoHoldReleaseHours Int @default(4)
+
+  /// When the night audit is scheduled, in the property's timezone
+  /// (CLAUDE.md section 3.3 — ten properties, ten independent schedules).
+  nightAuditHour String @default("02:00")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("property_settings")
+}
+
+/// A GST slab: a tariff band and the rate that applies inside it.
+///
+/// ===========================================================================
+/// Tax policy belongs in data, not in a constant.
+///
+/// Indian GST on room tariff is banded — the rate depends on what the room
+/// costs per night, and the bands move when the Council says so. The platform
+/// previously carried a single `property.taxRatePercent`, which forced every
+/// room in a property onto one rate and made a rate change a code change.
+///
+/// `cgstRatePercent` and `sgstRatePercent` are stored rather than derived by
+/// halving. Halving is right for an intra-state supply and wrong for an
+/// inter-state one (which is IGST and is not split at all), and a Council
+/// notification can in principle split a slab unevenly. Storing both means an
+/// invoice prints what the slab says rather than what the code assumed.
+///
+/// `Decimal` here is correct and is not a money column: these are *rates*,
+/// which section 3.4 explicitly permits as Decimal. The tariff bounds are
+/// integer minor units like every other amount in this schema.
+/// ===========================================================================
+model PropertyTaxSlab {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  slabName String
+
+  /// Inclusive lower bound of the nightly tariff, in minor units.
+  minTariffMinor Int
+  /// Exclusive upper bound, or null for the open-ended top band.
+  maxTariffMinor Int?
+
+  taxRatePercent  Decimal @db.Decimal(5, 2)
+  cgstRatePercent Decimal @db.Decimal(5, 2)
+  sgstRatePercent Decimal @db.Decimal(5, 2)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  /// Two slabs of one property must not claim the same floor: which applies
+  /// would then depend on row order, and a tariff would be taxed differently
+  /// depending on how the planner happened to sort. Declared here rather than
+  /// only in SQL so Prisma can use it as an upsert key — a hand-written index
+  /// the client cannot see is an index the seed cannot upsert against.
+  @@unique([propertyId, minTariffMinor], map: "property_tax_slab_unique_floor_per_property")
+  @@map("property_tax_slab")
+}
+
+/// A photograph of the property.
+model PropertyMedia {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  category MediaCategory
+  url      String
+  caption  String?
+
+  sortOrder  Int     @default(0)
+  isFeatured Boolean @default(false)
+
+  /// Set where the photograph is of one room category rather than the property.
+  roomTypeId String?   @db.Uuid
+  roomType   RoomType? @relation(fields: [roomTypeId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([propertyId, category])
+  @@map("property_media")
+}
+
+/// An amenity a property can offer.
+///
+/// Portfolio-wide reference data, so it carries no `propertyId` and is listed
+/// in `global-tables.ts` (CLAUDE.md section 3.2). "Wi-Fi" means the same thing
+/// at all ten hotels; what differs is whether a given hotel offers it and
+/// charges for it, which is `PropertyAmenityLink`.
+model Amenity {
+  id String @id @default(uuid()) @db.Uuid
+
+  slug      String  @unique
+  name      String
+  iconName  String?
+  groupName String
+
+  properties PropertyAmenityLink[]
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("amenity")
+}
+
+/// Whether a property offers an amenity, and at what price.
+model PropertyAmenityLink {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  amenityId String  @db.Uuid
+  amenity   Amenity @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  scope AmenityScope @default(FREE)
+
+  /// Integer minor units, like every other amount (section 3.4). Zero when
+  /// the amenity is free, which the scope already says.
+  priceMinor  Int     @default(0)
+  pricingUnit String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, amenityId])
+  @@index([propertyId])
+  @@map("property_amenity_link")
+}
+
+/// A policy a property publishes to guests.
+model PropertyPolicy {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  type        PolicyType
+  title       String
+  content     String
+  isMandatory Boolean    @default(true)
+
+  /// Structured cancellation terms, where the policy has them. Prose alone
+  /// cannot be enforced by a cancellation path; these can.
+  freeCancellationHours  Int?
+  retentionChargePercent Decimal? @db.Decimal(5, 2)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([propertyId, type])
+  @@map("property_policy")
+}
+
+/// A fee or surcharge a property adds beyond the room tariff.
+model FeeAndSurcharge {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  name String
+  type FeeType @default(FIXED_PER_STAY)
+
+  /// Integer minor units for a fixed fee; basis points are not used — a
+  /// percentage fee carries its rate in `ratePercent` instead, so neither
+  /// field has to mean two things.
+  amountMinor Int      @default(0)
+  ratePercent Decimal? @db.Decimal(5, 2)
+
+  isTaxable    Boolean @default(true)
+  applyToGroup Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([propertyId])
+  @@map("fee_and_surcharge")
+}
+
 /// A guest's bill for one stay.
 ///
 /// ===========================================================================
@@ -1114,8 +1466,18 @@ model Folio {
   openedAt DateTime  @default(now()) @db.Timestamptz(6)
   closedAt DateTime? @db.Timestamptz(6)
 
+  /// The operator's own folio number, where they assign one.
+  ///
+  /// Distinct from `id`, which is a uuid nobody reads aloud, and from the
+  /// property's `folioPrefix`, which only shapes a generated string. This is
+  /// the number written on a paper registration card or quoted down the phone.
+  /// Unique per property so two folios cannot claim the same one, and nullable
+  /// because most properties never assign it.
+  customFolioId String?
+
   lines FolioLine[]
 
+  @@unique([propertyId, customFolioId], name: "folio_unique_custom_id_per_property")
   @@index([propertyId, status])
   @@map("folio")
 }
@@ -1174,6 +1536,34 @@ model FolioLine {
   /// Method and reference, for a PAYMENT or REFUND line.
   paymentMethod PaymentMethod?
   remark        String?
+
+  /// Instrument detail, for a payment taken by card.
+  ///
+  /// ===========================================================================
+  /// The last four digits and the issuer, and deliberately nothing else.
+  ///
+  /// Four digits identify a card to a guest disputing a charge, which is what
+  /// a report column is for. A PAN, an expiry or a CVV would put this database
+  /// in scope for PCI DSS, and nothing here is built to that standard — so the
+  /// schema makes storing them impossible rather than leaving it to a reviewer
+  /// to notice. `@db.Char(4)` plus a digits-only CHECK is the whole guarantee.
+  ///
+  /// `paymentIssuer` is the bank or network as the terminal reported it, e.g.
+  /// "HDFC Bank" or "RuPay". Free text because it comes from whatever the
+  /// gateway hands back, not from a list this repository controls.
+  /// ===========================================================================
+  cardLast4     String? @db.Char(4)
+  paymentIssuer String?
+
+  /// Where the money was taken.
+  ///
+  /// `isExternalSource` marks a payment collected by someone other than the
+  /// property — an OTA or a travel agent passing on what it already holds.
+  /// `isExternalCard` marks one taken on a terminal outside this system, so
+  /// it reconciles against a different settlement file. Both default false,
+  /// which is a payment taken at this desk on this property's own instrument.
+  isExternalSource Boolean @default(false)
+  isExternalCard   Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
@@ -1258,4 +1648,164 @@ model PaymentGatewayConfig {
   @@unique([propertyId, provider], name: "gateway_unique_provider_per_property")
   @@index([propertyId, status])
   @@map("payment_gateway_config")
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Transactional outbox                                                      */
+/* -------------------------------------------------------------------------- */
+
+/// What an outbox row asks to be done.
+///
+/// Explicit, not free text: a worker dispatches on this value, and a typo in a
+/// string would silently route an event to no handler at all. Phase A carries
+/// exactly one type, which is a deliberate self-test and has no business
+/// meaning -- real ARI event types land with the `channels` module, once the
+/// provider contract is known (CLAUDE.md section 2).
+enum OutboxEventType {
+  /// Exercises the outbox end to end. Handled by a fake handler; touches
+  /// nothing outside the outbox tables.
+  OUTBOX_SELF_TEST
+}
+
+/// How a row's `dedupeKey` constrains other rows.
+///
+/// ===========================================================================
+/// The two classes are not interchangeable, and conflating them is a bug in
+/// both directions.
+///
+/// **COALESCE** -- "the latest intent wins". An ARI push for
+/// `(property, roomType, dateRange)` enqueued five times before the worker
+/// drains it should become *one* push carrying the newest state, not five.
+/// Uniqueness therefore applies only while a row is still PENDING: once it has
+/// been processed, the same key may legitimately be enqueued again tomorrow.
+///
+/// **UNIQUE_FOREVER** -- "this must happen at most once, ever". A booking
+/// confirmation email for reservation X must not be sent twice, and must not
+/// become sendable again merely because the first one succeeded. Uniqueness
+/// therefore ignores status and holds for the lifetime of the row.
+///
+/// A PENDING-only constraint is *not* permanent idempotency, which is why the
+/// mode is stored per row and enforced by two different partial unique indexes
+/// rather than one.
+/// ===========================================================================
+enum OutboxDedupeMode {
+  COALESCE
+  UNIQUE_FOREVER
+}
+
+/// Where an outbox row is in its lifecycle.
+///
+/// `IN_FLIGHT` is held under a **lease**, not a lock: see
+/// `OutboxEvent.leaseExpiresAt`. A worker that dies mid-job cannot leave a row
+/// stranded, because the lease expires and the row returns to PENDING.
+enum OutboxStatus {
+  /// Waiting for `availableAt` to pass, then publication.
+  PENDING
+  /// Claimed by a dispatcher or being handled. Lease-bound.
+  IN_FLIGHT
+  /// Handled successfully. Terminal.
+  SUCCEEDED
+  /// Attempts exhausted. Terminal until deliberately requeued. This is the
+  /// dead-letter state CLAUDE.md section 5 requires, and it must alert.
+  DEAD
+}
+
+/// A side effect recorded inside the transaction that caused it.
+///
+/// ===========================================================================
+/// PostgreSQL is the source of truth. Redis is a delivery mechanism.
+///
+/// CLAUDE.md section 3.1 forbids HTTP calls, queue publishes and Redis reads
+/// inside a transaction, and requires side effects to leave through an outbox
+/// drained by a BullMQ worker. This table is that outbox.
+///
+/// Everything needed to rebuild the queue lives here. If Redis is flushed
+/// entirely, the dispatcher re-publishes from these rows and nothing is lost;
+/// there is deliberately **no** attempt at an atomic transaction spanning
+/// PostgreSQL and Redis, because none is available. The consequence is
+/// at-least-once delivery, never exactly-once -- so every handler must be safe
+/// to run twice.
+///
+/// RETRY SCHEDULING LIVES HERE, NOT IN BULLMQ. Jobs are published with
+/// `attempts: 1`, so BullMQ never retries on its own. On failure the worker
+/// writes `attempts`, `availableAt` and `lastError` to this row and returns it
+/// to PENDING. One scheduler, one counter, so the database and the queue
+/// cannot disagree about how many times something has been tried.
+///
+/// PAYLOADS CARRY NO PII AND NO SECRETS. A row is a *reference* to work --
+/// identifiers and a date range -- never a guest's name, email, address,
+/// government ID or card data, and never a credential. The handler re-reads
+/// what it needs from the database under the current tenant scope.
+/// ===========================================================================
+model OutboxEvent {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Tenant scope (CLAUDE.md section 3.2). Every operational row carries it,
+  /// and a handler uses it to re-establish scope when it re-reads data.
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  eventType OutboxEventType
+
+  /// Schema version of `payload`, so a worker deployed before a payload change
+  /// can refuse a shape it does not understand instead of misreading it.
+  /// Validated against a zod schema at enqueue *and* again at handling.
+  payloadVersion Int @default(1)
+
+  /// The event body. Identifiers and scalars only -- see the PII note above.
+  payload Json
+
+  /// Groups rows that mean the same work. Interpreted according to
+  /// `dedupeMode`; see `OutboxDedupeMode`.
+  dedupeKey  String
+  dedupeMode OutboxDedupeMode @default(COALESCE)
+
+  status OutboxStatus @default(PENDING)
+
+  /// Attempts already made. Owned by this table, never by BullMQ.
+  attempts    Int @default(0)
+  maxAttempts Int @default(5)
+
+  /// How many times a stale lease was reclaimed. Distinct from `attempts`: a
+  /// reclaim means a worker died, which is an operational signal rather than a
+  /// handler failure, and must not consume the retry budget.
+  recoveries Int @default(0)
+
+  /// Earliest moment this row may be published. Backoff writes the future here.
+  availableAt DateTime @default(now()) @db.Timestamptz(6)
+
+  /// Lease bookkeeping for IN_FLIGHT rows.
+  claimedAt      DateTime? @db.Timestamptz(6)
+  leaseExpiresAt DateTime? @db.Timestamptz(6)
+  /// Which process holds the lease. For diagnosis only; never authorisation.
+  claimedBy      String?
+
+  /// Safe failure metadata: an error class and a truncated message, scrubbed
+  /// of anything resembling a payload. Never a stack trace, never SQL, never
+  /// a provider response body.
+  lastError   String?   @db.VarChar(500)
+  lastErrorAt DateTime? @db.Timestamptz(6)
+
+  completedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  /// The drain query: due rows, oldest first. Deliberately NOT led by
+  /// `propertyId`, unlike every other composite index in this schema.
+  ///
+  /// CLAUDE.md section 3.2 requires tenant-led indexes on operational data and
+  /// permits cross-property reads for night-audit orchestration. The dispatcher
+  /// is exactly that kind of process: one system loop draining every property,
+  /// which cannot lead with a tenant it does not have. Leading with
+  /// `propertyId` here would make the only hot query in this table unindexed.
+  @@index([status, availableAt])
+
+  /// Lease reaping: find IN_FLIGHT rows whose lease has expired.
+  @@index([status, leaseExpiresAt])
+
+  /// Tenant-led, for the operator-facing view of a property's backlog.
+  @@index([propertyId, status, createdAt])
+
+  @@map("outbox_event")
 }
