@@ -21,7 +21,8 @@
  * releases nothing further; N concurrent cancellations produce exactly one
  * transition and one decrement per night; a status that never consumed
  * inventory does not decrement; a checked-in stay is refused with a typed
- * domain error and leaves no audit row behind; another property's reservation
+ * domain error and leaves no audit row behind; a checked-out stay is refused
+ * and keeps the past night it consumed; another property's reservation
  * 404s rather than 403s; a grant without `reservations:edit` is refused 403 and
  * changes nothing; the audit row and the status change commit together; and no
  * folio or folio line is touched by any of it.
@@ -564,6 +565,86 @@ async function main() {
     where: { entityId: inHouse.id, event: 'RESERVATION_CANCELLED' },
   });
   check('the refusal wrote no audit row — it rolled back whole', refusedAudits === 0);
+
+  /* ------------------------------------------------------------------- 7b */
+  console.log('\n7b. A checked-out stay is refused, and keeps its consumed night.');
+
+  /**
+   * The guard for the M-5 correction.
+   *
+   * `CHECKED_OUT` is now inside `CONSUMES_INVENTORY`, because that is what
+   * `inventory_day.sold` actually holds — nothing releases a night at
+   * check-out. That makes the refusal in `cancelRefusal` the only thing
+   * standing between a checked-out stay and a decrement of a **past** date,
+   * which would oversell history and move the occupancy and ADR figures that
+   * read `sold`. This pins the refusal so a later edit cannot quietly remove
+   * it now that the predicate would say yes.
+   */
+  const outArrival = shiftDays(businessDate, 19);
+  const outDeparture = shiftDays(businessDate, 21);
+  const outType = await findSellableRoomType(property.id, outArrival, outDeparture);
+  if (outType === null) throw new Error('no category has room for the checked-out stay.');
+
+  const outBooking = await createBooking(cookie, outType, outArrival, outDeparture);
+
+  /**
+   * Set directly, for the same reason step 6 sets ON_HOLD: no endpoint
+   * performs a check-out — there is no check-out path in the codebase — so
+   * this is the only way to reach the status, and it is this suite's own row.
+   * A CHECKED_OUT reservation is an ordinary state the seeds also create; the
+   * row is coherent, not malformed.
+   */
+  await prisma.reservation.update({
+    where: { id: outBooking.id },
+    data: { status: 'CHECKED_OUT' },
+  });
+  await prisma.reservationRoom.updateMany({
+    where: { reservationId: outBooking.id },
+    data: { status: 'CHECKED_OUT' },
+  });
+
+  const outSoldBefore = await soldByDate(property.id, outType.id, outArrival, outDeparture);
+  const outRefused = await call(
+    'POST',
+    `/properties/${PROPERTY_CODE}/reservations/${outBooking.id}/cancel`,
+    cookie,
+    { reason: 'Integration suite: checked-out probe' },
+  );
+  const outSoldAfter = await soldByDate(property.id, outType.id, outArrival, outDeparture);
+
+  check('it is refused with 409', outRefused.status === 409, `status ${String(outRefused.status)}`);
+  check(
+    'the code is the typed INVALID_STATE_TRANSITION',
+    outRefused.payload?.code === 'INVALID_STATE_TRANSITION',
+    `code ${String(outRefused.payload?.code)}`,
+  );
+  check(
+    'the refusal names CHECKED_OUT as the state it came from',
+    outRefused.payload?.details?.from === 'CHECKED_OUT',
+    `from ${String(outRefused.payload?.details?.from)}`,
+  );
+
+  const outRow = await prisma.reservation.findUnique({
+    where: { id: outBooking.id },
+    select: { status: true, cancelledAt: true },
+  });
+  check('the stay is still CHECKED_OUT', outRow.status === 'CHECKED_OUT');
+  check('cancelledAt was not set', outRow.cancelledAt === null);
+  check(
+    'the consumed night was NOT given back — no past date was released',
+    [...outSoldBefore.keys()].every(
+      (date) => outSoldAfter.get(date).sold === outSoldBefore.get(date).sold,
+    ),
+    [...outSoldBefore.keys()]
+      .map((date) => `${date}:${String(outSoldBefore.get(date).sold)}->${String(outSoldAfter.get(date).sold)}`)
+      .join(' '),
+  );
+  check(
+    'and it wrote no cancellation audit row',
+    (await prisma.auditLog.count({
+      where: { entityId: outBooking.id, event: 'RESERVATION_CANCELLED' },
+    })) === 0,
+  );
 
   /* -------------------------------------------------------------------- 8 */
   console.log('\n8. Another property’s reservation is not found.');
