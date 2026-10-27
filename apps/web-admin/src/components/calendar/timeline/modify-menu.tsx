@@ -55,13 +55,18 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { CancelBookingDialog } from '@/components/folio/cancel-booking-dialog';
+
 interface ModifyAction {
   label: string;
   icon: LucideIcon;
   /** Rose hover tint: this one ends a booking or forfeits money. */
   destructive?: boolean;
-  /** Which unbuilt module the action waits on. */
-  needs: string;
+  /**
+   * Which unbuilt module the action waits on. `null` means it is built, and
+   * the item is live rather than inert.
+   */
+  needs: string | null;
 }
 
 /**
@@ -74,12 +79,12 @@ interface ModifyAction {
  */
 const ACTIONS: readonly ModifyAction[] = [
   { label: 'Hold booking', icon: Pause, needs: 'the reservation state machine (ON_HOLD)' },
-  {
-    label: 'Cancel booking',
-    icon: Ban,
-    destructive: true,
-    needs: 'cancellation: inventory release, fee policy and a reversing folio line',
-  },
+  /**
+   * Built. Releases inventory and records the cancellation; it does **not**
+   * calculate a fee - the dialog says so, and the retention charge is posted
+   * on the folio by hand until that rule is decided.
+   */
+  { label: 'Cancel booking', icon: Ban, destructive: true, needs: null },
   {
     label: 'Set to no show',
     icon: EyeOff,
@@ -98,10 +103,22 @@ const ACTIONS: readonly ModifyAction[] = [
 export interface ModifyMenuProps {
   /** Named in the menu's accessible label, so it is clear what is being modified. */
   guestName: string;
+  hotelId: string;
+  reservationId: string;
+  bookingCode?: string | null;
+  /** Called after a successful cancellation so the timeline can refetch. */
+  onCancelled?: () => void;
 }
 
-export function ModifyMenu({ guestName }: ModifyMenuProps) {
+export function ModifyMenu({
+  guestName,
+  hotelId,
+  reservationId,
+  bookingCode,
+  onCancelled,
+}: ModifyMenuProps) {
   const [open, setOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
@@ -230,23 +247,49 @@ export function ModifyMenu({ guestName }: ModifyMenuProps) {
               >
                 {ACTIONS.map((action) => {
                   const Icon = action.icon;
+                  const live = action.needs === null;
                   return (
                     <button
                       key={action.label}
                       type="button"
                       role="menuitem"
-                      disabled
-                      title={`Not built yet — needs ${action.needs} (CLAUDE.md section 2)`}
+                      disabled={!live}
+                      title={
+                        live
+                          ? 'Releases the nights and records the cancellation. No fee is calculated.'
+                          : `Not built yet — needs ${String(action.needs)} (CLAUDE.md section 2)`
+                      }
+                      onClick={
+                        live
+                          ? () => {
+                              setOpen(false);
+                              setCancelOpen(true);
+                            }
+                          : undefined
+                      }
                       className={cn(
-                        'group flex w-full cursor-not-allowed items-center gap-2.5 rounded-lg px-3 py-2',
+                        'group flex w-full items-center gap-2.5 rounded-lg px-3 py-2',
                         'text-left text-xs font-medium transition-colors duration-150 outline-none select-none',
-                        action.destructive === true ? 'text-rose-400/50' : 'text-zinc-500',
+                        live
+                          ? action.destructive === true
+                            ? 'cursor-pointer text-rose-300 hover:bg-rose-500/10'
+                            : 'cursor-pointer text-zinc-200 hover:bg-white/[0.06]'
+                          : cn(
+                              'cursor-not-allowed',
+                              action.destructive === true ? 'text-rose-400/50' : 'text-zinc-500',
+                            ),
                       )}
                     >
                       <Icon
                         className={cn(
                           'size-4 shrink-0',
-                          action.destructive === true ? 'text-rose-400/40' : 'text-zinc-600',
+                          live
+                            ? action.destructive === true
+                              ? 'text-rose-400'
+                              : 'text-zinc-300'
+                            : action.destructive === true
+                              ? 'text-rose-400/40'
+                              : 'text-zinc-600',
                         )}
                         aria-hidden="true"
                       />
@@ -256,14 +299,30 @@ export function ModifyMenu({ guestName }: ModifyMenuProps) {
                 })}
 
                 <p className="mt-1 border-t border-white/[0.06] px-3 pt-2 pb-1 text-[10px] leading-snug text-zinc-600">
-                  None of these are wired yet. Each one is a transactional
-                  change to inventory or the folio and ships with the
-                  reservations module.
+                  Only cancellation is wired. The rest are transactional changes
+                  to inventory or the folio and ship with the reservations
+                  module.
                 </p>
               </div>
             </>,
             document.body,
           )}
+
+      {cancelOpen ? (
+        <CancelBookingDialog
+          hotelId={hotelId}
+          reservationId={reservationId}
+          guestName={guestName}
+          confirmationCode={bookingCode ?? null}
+          onClose={() => {
+            setCancelOpen(false);
+          }}
+          onCancelled={() => {
+            setCancelOpen(false);
+            onCancelled?.();
+          }}
+        />
+      ) : null}
     </>
   );
 }

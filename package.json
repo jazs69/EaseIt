@@ -29,7 +29,8 @@
     "test:outbox": "node test/integration/outbox.test.mjs",
     "test:outbox:concurrency": "node test/concurrency/outbox-claim.test.mjs",
     "test:outbox:redis": "node test/integration/outbox-redis.test.mjs",
-    "test:checkin": "node test/integration/check-in.test.mjs"
+    "test:checkin": "node test/integration/check-in.test.mjs",
+    "test:cancellation": "node test/integration/cancel-reservation.test.mjs"
   },
   "devDependencies": {
     "@repo/config": "workspace:*",

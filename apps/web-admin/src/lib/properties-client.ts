@@ -9,6 +9,9 @@
  */
 
 import {
+  cancelReservationResultSchema,
+  type CancelReservationCommand,
+  type CancelReservationResult,
   checkInPreflightSchema,
   folioPageSchema,
   moveRoomOptionsSchema,
@@ -630,6 +633,25 @@ export function moveReservationRoom(
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/room`,
     moveRoomResultSchema,
+    { method: 'POST', body },
+  );
+}
+
+/**
+ * Cancel a booking and release its nights.
+ *
+ * Moves no money: no fee, no refund, no folio line. A retention charge, where
+ * one is due, is posted separately through the folio. Safe to repeat — an
+ * already-cancelled booking comes back with `alreadyCancelled: true`.
+ */
+export function cancelReservation(
+  hotelId: string,
+  reservationId: string,
+  body: CancelReservationCommand,
+): Promise<CancelReservationResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/cancel`,
+    cancelReservationResultSchema,
     { method: 'POST', body },
   );
 }

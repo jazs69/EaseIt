@@ -6,6 +6,18 @@ was changed to produce it.
 **Reviews:** `14-phase-b-rateplan-and-sync-contract.md`
 **Supersedes:** §D.3 and §C.4 of document 14 (see §0 below). Everything else in 14 stands
 unless corrected here.
+**⚠ Itself superseded on two points by `16-phase-b1-implementation-plan.md` and
+`17-phase-b1-pre-implementation-checklist.md` (2026-10-27).** This document carries no such
+notice elsewhere, and it is the *correcting* document, so a reader taking the newest word on each
+point would otherwise take these as current:
+1. **The archive rule.** This document states `isActive = false` ⟺ `archivedAt IS NOT NULL`,
+   enforced by `rate_plan_archive_matches_active`. That biconditional is **replaced** by the
+   one-directional `rate_plan_archived_implies_inactive`: archived ⇒ not sellable, but a plan may
+   be inactive **without** being archived, which is the state every backfilled plan is in until
+   an approved effective cancellation policy exists for its property — its own policy, or the
+   separately defined fallback. See 16 §A.4 and §C.3b.
+2. **`isRefundable`** appears in this document's rate-plan field list. The field is **removed from
+   the design**: cancellation terms stay on `PropertyPolicy`. See 16 §C.3a and 17 §2.
 
 Every claim is labelled:
 
@@ -312,7 +324,9 @@ historical price of a past night is part of why a folio says what it says.
   mapping at a different commercial product. If an operator needs the code back, that is a
   rename of the archived plan, done deliberately.
 - `isActive = false` ⟺ `archivedAt IS NOT NULL`, enforced by
-  `rate_plan_archive_matches_active`.
+  `rate_plan_archive_matches_active`. **[SUPERSEDED 2026-10-27 — see the header: the biconditional
+  is now a one-way `archivedAt IS NOT NULL` ⇒ `isActive = false`, so that a plan can be inactive
+  without being archived. 16 §A.4.]**
 - Archived plans are excluded from ARI projection and from booking, included in historical
   reads.
 - Hard delete is permitted **only** when no `RatePlanDay`, no reservation and no channel

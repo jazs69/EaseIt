@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 
 import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { TokenService } from '../../common/auth/token.service.js';
+import { CancelReservationController } from './cancel-reservation.controller.js';
+import { CancelReservationService } from './cancel-reservation.service.js';
 import { CheckInController } from './check-in.controller.js';
 import { CheckInService } from './check-in.service.js';
 import { CreateReservationController } from './create-reservation.controller.js';
@@ -18,10 +20,11 @@ import { PropertiesModule } from '../properties/properties.module.js';
 /**
  * The `reservations` bounded context.
  *
- * Only search lives here today. The booking lifecycle — create, modify, move,
- * cancel — belongs here too and is not built yet; when it is, it brings the
- * state machine and the transactional write paths with it (CLAUDE.md sections
- * 2 and 3.1).
+ * Search, creation, check-in, room moves and cancellation live here. Modifying
+ * dates is the remaining lifecycle gap. `reservation.state.ts` holds the
+ * transition rules the cancellation path needs; check-in keeps its own blocker
+ * list until a third caller justifies unifying them (CLAUDE.md sections 2 and
+ * 3.1).
  *
  * `TokenService` and `SessionAuthGuard` are provided locally, as every module
  * with a guarded controller must: Nest resolves a controller-level guard's
@@ -40,12 +43,17 @@ import { PropertiesModule } from '../properties/properties.module.js';
     CreateReservationController,
     CheckInController,
     RoomMoveController,
+    // Before the detail controller for the same reason it is: `/cancel` is a
+    // literal segment under `:reservationId`, and the detail route would
+    // otherwise swallow it.
+    CancelReservationController,
     // Registered last: its `:reservationId` route would otherwise shadow the
     // literal sibling paths above it, and `/reservations/quote` would be read
     // as a reservation whose id is "quote".
     ReservationDetailController,
   ],
   providers: [
+    CancelReservationService,
     CheckInService,
     CreateReservationService,
     ReservationDetailService,
@@ -56,6 +64,7 @@ import { PropertiesModule } from '../properties/properties.module.js';
     SessionAuthGuard,
   ],
   exports: [
+    CancelReservationService,
     ReservationSearchService,
     CreateReservationService,
     CheckInService,

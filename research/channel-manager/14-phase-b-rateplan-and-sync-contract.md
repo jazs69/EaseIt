@@ -13,6 +13,20 @@ this document; where they differ, 15 wins.
 credentials, outbound network calls, or changes to reservation, check-in, room-move, folio
 or front-desk flows.
 
+**⚠ Further superseded on three points by `16-phase-b1-implementation-plan.md` and
+`17-phase-b1-pre-implementation-checklist.md` (2026-10-27):**
+1. **`RatePlan.isRefundable` (§B.2) is removed from the design.** `PropertyPolicy` is the source
+   of truth for cancellation terms in the first release and no term is duplicated onto
+   `RatePlan`; no confirmed requirement for a per-plan policy exists. See 16 §C.3a and 17 §2.
+2. **The §H Stage 2 backfill is wrong as written.** A constant `code = 'BAR'` collides —
+   `(propertyId, code)` is unique per property while the backfill inserts one plan per room type,
+   and all 21 properties have several — and `isRefundable = true` asserts a policy the business
+   has not stated. The approved shape is `'BAR-' || room_type.code`, with no refundability value
+   and `isActive = false`. See 16 §C.3.
+3. **`rate_plan_archive_matches_active` (§B.2 DDL, §B.5) is replaced** by the one-directional
+   `rate_plan_archived_implies_inactive`. The biconditional would make the backfilled state —
+   inactive, not archived, not yet activated — illegal. See 16 §A.4.
+
 Everything in §A was read from the working tree at `4acb218` plus uncommitted changes.
 Where this document contradicts `06-data-model-proposal.md` or `07-sync-and-failure-handling.md`,
 the inspected code wins and the difference is called out.
@@ -175,6 +189,11 @@ model RatePlan {
   /// Whether a booking on this plan can be cancelled without charge.
   /// A boolean, not a policy engine: the product has no cancellation-rule
   /// feature, and `PropertyPolicy` already holds prose policy text.
+  ///
+  /// [SUPERSEDED 2026-10-27 - header point 1: this field is REMOVED from the
+  /// design. Cancellation terms stay on PropertyPolicy, which holds structured
+  /// terms (freeCancellationHours, retentionChargePercent) and not only prose.
+  /// See 16 C.3a and 17 section 2.]
   isRefundable Boolean
 
   /// The occupancy this plan's prices are quoted for. Defaults to 2 because
@@ -357,6 +376,9 @@ The requirement is that nothing changes until someone chooses to change it.
   identical. Fully reversible (`DROP TABLE`, no existing data touched).
 - **Stage 2** backfills exactly one plan per existing room type, inside the migration:
   `code = 'BAR'`, `name = 'Best Available Rate'`, `mealPlan = 'EP'`, `isRefundable = true`,
+  — **[SUPERSEDED 2026-10-27 — header point 2: the constant `'BAR'` collides on every property
+  and `isRefundable` no longer exists. The approved backfill is `'BAR-' || room_type.code`,
+  `mealPlan = 'EP'`, `isActive = false`, no refundability value. See 16 §C.3.]** —
   `defaultRateMinor = room_type."baseRateMinor"`, no `RatePlanDay` rows. This is an INSERT
   from existing data — additive, and it makes every room type immediately representable in an
   ARI payload without changing a single price.

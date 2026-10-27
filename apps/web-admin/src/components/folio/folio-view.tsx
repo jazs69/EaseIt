@@ -244,9 +244,16 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             hotelId={hotelId}
             reservationId={reservation.id}
             hasRoom={reservation.roomNumber !== null}
+            guestName={reservation.guestName}
+            confirmationCode={reservation.bookingCode}
             onMoved={() => {
               // The move changed the room on the stay, which the whole page is
               // drawn from, so it is refetched rather than patched.
+              router.refresh();
+            }}
+            onCancelled={() => {
+              // The status, the room and the stay dates on this page all come
+              // from the reservation, so the same refetch covers it.
               router.refresh();
             }}
           />

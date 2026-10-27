@@ -52,6 +52,7 @@ import {
   X,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 import { formatMoney } from '@/lib/money';
@@ -236,6 +237,7 @@ export function ReservationDrawer({
           detail={detail}
           hotelId={hotelId}
           onCheckIn={onCheckIn}
+          onClose={onClose}
         />
         <GuestsCard detail={detail} />
         <PaymentCard block={block} detail={detail} />
@@ -271,14 +273,29 @@ function BookingCard({
   detail,
   hotelId,
   onCheckIn,
+  onClose,
 }: {
   block: TimelineBlock;
   roomNumber: string | null;
   detail: ReservationDetail | null;
   hotelId: string;
   onCheckIn: (reservationId: string) => void;
+  /** Closes the drawer once the stay it describes no longer exists as drawn. */
+  onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+
+  /**
+   * The grid behind this drawer is a server render.
+   *
+   * `calendar/page.tsx` is a server component that fetches the timeline and
+   * passes it to `TimelineContainer` as a prop, so client state cannot move a
+   * block: only a new server render can. `router.refresh()` is what triggers
+   * one, and it is the same mechanism `check-in-modal.tsx` uses to turn a
+   * block from amber to emerald. Closing the drawer alone would leave the
+   * cancelled stay drawn on the grid, with its room still looking occupied.
+   */
+  const router = useRouter();
 
   const status = detail?.status ?? block.status;
   const subStatus = detail?.subStatus ?? block.subStatus;
@@ -305,7 +322,21 @@ function BookingCard({
           </div>
         </div>
 
-        <ModifyMenu guestName={block.guestName} />
+        <ModifyMenu
+          guestName={block.guestName}
+          hotelId={hotelId}
+          reservationId={block.id}
+          bookingCode={block.bookingCode}
+          onCancelled={() => {
+            // Order matters only for the eye: refresh first so the grid is
+            // already correct underneath by the time the drawer gets out of
+            // the way. `reservation_room.status` is now CANCELLED, which is
+            // outside the timeline's OCCUPYING_STATUSES filter, so the block
+            // disappears on the new render.
+            router.refresh();
+            onClose();
+          }}
+        />
       </div>
 
       {/* Meta ribbon */}
