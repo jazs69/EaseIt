@@ -35,11 +35,19 @@ import {
 } from '@repo/types';
 
 import {
+  DomainError,
   ForbiddenError,
   InvalidStateTransitionError,
+  RoomUnavailableError,
   TenantScopeViolationError,
+  TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
+import {
+  isLockTimeout,
+  ROW_LOCK_TIMEOUT_MS,
+  sqlState,
+} from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { ClockService } from '../platform/clock.service.js';
 import {
@@ -272,6 +280,145 @@ export class CheckInService {
       // this is what saves us if a raw query later forgets (section 3.2).
       await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
 
+      /**
+       * Bound the lock wait, before the first statement that can block.
+       *
+       * `true` is `set_config`'s is_local flag — `SET LOCAL` semantics,
+       * reverted at COMMIT or ROLLBACK, so the global configuration and every
+       * other connection are untouched. The reservation row lock below is what
+       * made this necessary: before it existed a check-in never queued behind
+       * a cancellation or a room move, and now it can.
+       *
+       * Exceeding it raises `55P03`, translated to a typed 409 by
+       * `translateWriteFailure` and never retried.
+       */
+      await tx.$executeRaw`SELECT set_config('lock_timeout', ${String(
+        ROW_LOCK_TIMEOUT_MS,
+      )}, true)`;
+
+      /**
+       * The reservation row, locked before anything status-dependent is
+       * written.
+       *
+       * =====================================================================
+       * Every blocker above was evaluated OUTSIDE this transaction, on a row
+       * nothing was holding. By the time the update below runs, that answer
+       * can simply be false: a cancellation committing in between left this
+       * method writing `CHECKED_IN` over a stay that was already cancelled
+       * and whose nights had already gone back.
+       *
+       * What stopped it was the database, not this code —
+       * `reservation_cancelled_at_matches_status` rejects a non-cancelled
+       * status while `cancelledAt` is set, so the write failed with `23514`
+       * and the clerk was shown a 500 and the words "An unexpected error
+       * occurred." The constraint was doing its job (section 3.1); the error
+       * was the bug. A booking cancelled a moment ago is an expected outcome
+       * at a front desk, not an infrastructure fault (section 5).
+       *
+       * Taking the row `FOR UPDATE` here makes check-in and cancellation take
+       * turns on it, and re-reading the status under that lock is what makes
+       * the decision trustworthy rather than merely recent.
+       *
+       * Lock order is deliberately the same one cancellation and room-move
+       * use — the reservation row first, inventory after — so the three
+       * cannot deadlock against each other. Check-in touches no
+       * `inventory_day` row at all, so it only ever takes the first of those.
+       *
+       * Scoped by `propertyId` beside the id, so another property's stay is
+       * not found rather than forbidden (section 3.2).
+       * =====================================================================
+       */
+      const locked = await tx.$queryRaw<{ status: string }[]>`
+        SELECT "status"::text AS status
+        FROM reservation
+        WHERE "id" = ${reservation.id}::uuid
+          AND "propertyId" = ${property.id}::uuid
+        FOR UPDATE
+      `;
+
+      const current = locked[0];
+      if (current === undefined) throw new TenantScopeViolationError('Reservation');
+
+      /**
+       * Any change at all invalidates the check above.
+       *
+       * Compared against the status the blockers actually passed rather than
+       * re-deriving which states are legal, so this cannot drift out of step
+       * with `blockersFor`. The error is the same typed
+       * `InvalidStateTransitionError` that a pre-flight state blocker raises,
+       * so a clerk who loses this race gets the identical 409 they would have
+       * got a moment earlier — only now it is correct rather than lucky.
+       */
+      if (current.status !== reservation.status) {
+        throw new InvalidStateTransitionError(
+          'reservation',
+          current.status,
+          ReservationStatus.CHECKED_IN,
+        );
+      }
+
+      /**
+       * The assignment, re-read under the same lock.
+       *
+       * =====================================================================
+       * Status is not the only thing that can move. A cross-category room
+       * move rewrites `reservation_room.roomTypeId` and shifts the night from
+       * one category's counter to the other, and this method's category check
+       * ran before the transaction opened:
+       *
+       *     targetRoom.roomTypeId !== assignment.roomTypeId   (above)
+       *
+       * A move committing after that check leaves it meaningless. The write
+       * below sets `roomId` and never touches `roomTypeId`, so the stay would
+       * end up pointing at a physical room in the category it just left while
+       * inventory charged the category it moved to — the guest in an A room,
+       * the counter spent on B, and A showing a free room that is occupied.
+       * Observed once in fifteen races before this guard existed.
+       *
+       * So the move's two fields are compared with what the pre-flight check
+       * actually validated. If either changed, the request is refused rather
+       * than retargeted: the clerk chose a specific room for a stay in a
+       * specific category, and that is no longer the stay in front of them.
+       * Silently following the move would check a guest into a room nobody
+       * selected.
+       *
+       * `ValidationFailedError` keyed on `roomId` — the same typed error and
+       * the same key the pre-flight category check uses, and the shape
+       * `room-move.service.ts` uses for its mirror of this guard. No new
+       * error code is needed for a case the taxonomy already covers.
+       *
+       * Scoped by `propertyId` beside the id, like every other read here
+       * (section 3.2). Thrown before any write, so there is nothing to undo.
+       * =====================================================================
+       */
+      const liveAssignment = await tx.$queryRaw<
+        { room_type_id: string; room_id: string | null }[]
+      >`
+        SELECT "roomTypeId" AS room_type_id, "roomId" AS room_id
+        FROM reservation_room
+        WHERE "id" = ${assignment.id}::uuid
+          AND "propertyId" = ${property.id}::uuid
+      `;
+
+      const live = liveAssignment[0];
+      if (live === undefined) {
+        throw new ValidationFailedError({
+          roomId: 'This reservation no longer has the room row it was checked against.',
+        });
+      }
+
+      if (
+        live.room_type_id !== assignment.roomTypeId ||
+        live.room_id !== (assignment.roomId ?? null)
+      ) {
+        throw new ValidationFailedError({
+          roomId:
+            'This stay was moved by someone else a moment ago, so the room chosen for ' +
+            'this check-in no longer matches where it is booked. Review where it is now ' +
+            'and try again.',
+        });
+      }
+
       const checkedInAt = new Date();
 
       await tx.reservation.update({
@@ -344,7 +491,60 @@ export class CheckInService {
         folio,
         roomNotCleanAcknowledged: roomNotClean,
       } satisfies CheckInResult;
-    });
+    })
+      .catch((error: unknown) => this.translateWriteFailure(error));
+  }
+
+  /**
+   * The two database refusals this transaction can raise, given a name.
+   *
+   * =====================================================================
+   * Neither is a fault, and both reached the clerk as
+   * "An unexpected error occurred." before this existed.
+   *
+   * `23P01` is `reservation_room_no_overlap`, the partial exclusion
+   * constraint. Setting `roomId` and `status = CHECKED_IN` puts this stay
+   * into that index, and the constraint refuses if another live stay already
+   * holds the same physical room over overlapping dates. The `ROOM_OCCUPIED`
+   * blocker reads `room.status` **before** the transaction, so two clerks
+   * assigning the same room to two arriving stays can both pass it; the
+   * constraint is what actually stops the double assignment, and it stays
+   * the final authority — this only names what it said. Not retried: the
+   * room is genuinely taken, and running the same write again cannot change
+   * that. `RoomUnavailableError` is the error room-move already uses for this
+   * SQLSTATE, so the two paths answer a double assignment the same way.
+   *
+   * `55P03` is the `ROW_LOCK_TIMEOUT_MS` wait expiring on the reservation
+   * row. Not retried, for the reason in `isLockTimeout`.
+   *
+   * `40P01` is a deadlock, which Postgres has already rolled back. It is
+   * answered rather than retried here on purpose: this transaction opens the
+   * folio and posts the arrival night, and the repository has no
+   * idempotency key on a check-in, so a bounded retry wrapper is a larger
+   * decision than naming the error. A clerk retrying by hand is safe,
+   * because the state and assignment guards above re-run under the lock.
+   *
+   * Everything else propagates untouched. A typed error is returned first,
+   * because `sqlState()` falls back to reading the error *message* and a
+   * domain error mentioning a code must not be reclassified.
+   * =====================================================================
+   */
+  private translateWriteFailure(error: unknown): never {
+    if (error instanceof DomainError) throw error;
+
+    const state = sqlState(error);
+
+    if (state === '23P01') {
+      throw new RoomUnavailableError({
+        reason: 'That room was given to another stay for these dates.',
+      });
+    }
+
+    if (isLockTimeout(error) || state === '40P01') {
+      throw new TransactionConflictError('check-in');
+    }
+
+    throw error;
   }
 
   /* -------------------------------------------------------------------- */

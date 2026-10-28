@@ -43,12 +43,23 @@ import {
 import { Prisma } from '@repo/database';
 
 import {
+  DomainError,
   ForbiddenError,
   InvalidStateTransitionError,
   TenantScopeViolationError,
+  TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
+import { sqlState } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  CANCEL_MAX_ATTEMPTS,
+  cancelBackoffMs,
+  isLockTimeout,
+  isTransactionTimeout,
+  isTransientCancelConflict,
+  ROW_LOCK_TIMEOUT_MS,
+} from './cancel-reservation.retry.js';
 import { cancelRefusal, consumesInventory } from './reservation.state.js';
 
 const DAY_MS = 86_400_000;
@@ -77,6 +88,22 @@ export class CancelReservationService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Authorise once, then run the transaction until it commits or gives up.
+   *
+   * The retry wraps the **whole** transaction, so an attempt that failed
+   * re-reads the reservation under a fresh lock rather than resuming from a
+   * half-finished state. That is what makes retrying safe here: a rolled-back
+   * attempt released nothing and wrote nothing, and an attempt that committed
+   * never reaches this loop. In the one pathological case — a connection lost
+   * *after* COMMIT — the next attempt finds the booking already `CANCELLED`
+   * and returns the idempotent reply with `nightsReleased: 0`, so the nights
+   * are released exactly once either way.
+   *
+   * `authorise` stays outside the loop: a permission answer does not change
+   * between attempts, and re-running it would triple the query cost of a
+   * contended cancellation for nothing.
+   */
   async cancel(
     userId: string,
     hotelId: string,
@@ -85,9 +112,97 @@ export class CancelReservationService {
   ): Promise<CancelReservationResult> {
     const property = await this.authorise(userId, hotelId);
 
+    let lastState: string | null = null;
+
+    for (let attempt = 1; attempt <= CANCEL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.commit(userId, property.id, reservationId, command);
+      } catch (error) {
+        /**
+         * A typed failure is the answer, not a fault.
+         *
+         * Checked first and on purpose: `sqlState()` falls back to reading the
+         * error *message*, so a domain error whose text happened to contain
+         * something like "Code: 40001" could otherwise be misread as a
+         * transient conflict and retried — turning a clean refusal into three
+         * refusals and a wrong status code.
+         */
+        if (error instanceof DomainError) throw error;
+
+        if (isLockTimeout(error)) {
+          /**
+           * Another transaction held the reservation or an inventory row for
+           * longer than `ROW_LOCK_TIMEOUT_MS`, so Postgres cancelled this
+           * statement and rolled the transaction back whole: no night
+           * released, no status changed, no audit row. Not retried — see
+           * `isLockTimeout`. The clerk gets a typed 409 promptly instead of a
+           * spinner bounded by whoever holds the lock.
+           */
+          this.logger.warn(
+            `Cancellation of reservation ${reservationId} gave up after waiting ` +
+              `${String(ROW_LOCK_TIMEOUT_MS)}ms for a lock.`,
+          );
+          throw new TransactionConflictError('reservation cancellation');
+        }
+
+        if (isTransactionTimeout(error)) {
+          // The transaction deadline, not the lock wait — `lock_timeout`
+          // fires first for a blocked lock. Same answer: a typed 409 rather
+          // than the unhandled 500 this used to produce.
+          this.logger.warn(
+            `Cancellation of reservation ${reservationId} exceeded the transaction deadline.`,
+          );
+          throw new TransactionConflictError('reservation cancellation');
+        }
+
+        if (!isTransientCancelConflict(error)) throw error;
+
+        lastState = sqlState(error);
+        this.logger.warn(
+          `Cancellation attempt ${String(attempt)} of ${String(CANCEL_MAX_ATTEMPTS)} for ` +
+            `reservation ${reservationId} hit SQLSTATE ${lastState ?? 'unknown'}; retrying.`,
+        );
+
+        if (attempt < CANCEL_MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, cancelBackoffMs(attempt)));
+        }
+      }
+    }
+
+    this.logger.warn(
+      `Cancellation of reservation ${reservationId} gave up after ` +
+        `${String(CANCEL_MAX_ATTEMPTS)} attempts (last SQLSTATE ${lastState ?? 'unknown'}).`,
+    );
+    throw new TransactionConflictError('reservation cancellation');
+  }
+
+  /** One attempt: the whole cancellation, atomically. */
+  private commit(
+    userId: string,
+    propertyId: string,
+    reservationId: string,
+    command: CancelReservationCommand,
+  ): Promise<CancelReservationResult> {
     return this.prisma.client.$transaction(
       async (tx) => {
-        await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+        await tx.$executeRaw`SELECT set_config('app.current_property_id', ${propertyId}, true)`;
+
+        /**
+         * Bound the lock wait, before the first statement that can block.
+         *
+         * `true` is `set_config`'s is_local flag — the same mechanism as
+         * `SET LOCAL`, scoped to this transaction and reverted at COMMIT or
+         * ROLLBACK, so the global configuration and every other connection are
+         * untouched. It is issued here because the next statement is the one
+         * that blocks: a `FOR UPDATE` that arrives before the setting would
+         * wait with no limit at all.
+         *
+         * Exceeding it raises `55P03`, which rolls the whole transaction back
+         * and is mapped to a typed 409 by `cancel()`.
+         */
+        await tx.$executeRaw`SELECT set_config('lock_timeout', ${String(
+          ROW_LOCK_TIMEOUT_MS,
+        )}, true)`;
 
         /**
          * The reservation row, locked.
@@ -105,7 +220,7 @@ export class CancelReservationService {
                  "cancelledAt" AS cancelled_at
           FROM reservation
           WHERE "id" = ${reservationId}::uuid
-            AND "propertyId" = ${property.id}::uuid
+            AND "propertyId" = ${propertyId}::uuid
           FOR UPDATE
         `;
 
@@ -168,7 +283,7 @@ export class CancelReservationService {
           SELECT "roomTypeId" AS room_type_id
           FROM reservation_room
           WHERE "reservationId" = ${stay.id}::uuid
-            AND "propertyId" = ${property.id}::uuid
+            AND "propertyId" = ${propertyId}::uuid
         `;
 
         const heldPerType = new Map<string, number>();
@@ -212,7 +327,7 @@ export class CancelReservationService {
           >`
             SELECT "stayDate" AS stay_date, "roomTypeId" AS room_type_id, "sold"
             FROM inventory_day
-            WHERE "propertyId" = ${property.id}::uuid
+            WHERE "propertyId" = ${propertyId}::uuid
               AND "roomTypeId" = ANY(${roomTypeIds}::uuid[])
               AND "stayDate" IN (${Prisma.join(dates)})
             ORDER BY "stayDate" ASC, "roomTypeId" ASC
@@ -262,7 +377,7 @@ export class CancelReservationService {
           for (const [roomTypeId, held] of heldPerType) {
             const released = await tx.inventoryDay.updateMany({
               where: {
-                propertyId: property.id,
+                propertyId,
                 roomTypeId,
                 stayDate: { in: dates },
                 sold: { gte: held },
@@ -308,14 +423,14 @@ export class CancelReservationService {
          * free while the room number said taken.
          */
         await tx.reservationRoom.updateMany({
-          where: { reservationId: stay.id, propertyId: property.id },
+          where: { reservationId: stay.id, propertyId },
           data: { status: ReservationStatus.CANCELLED },
         });
 
         // In the same transaction as the change it records (section 3.4).
         await tx.auditLog.create({
           data: {
-            propertyId: property.id,
+            propertyId,
             actorUserId: userId,
             event: 'RESERVATION_CANCELLED',
             entityType: 'reservation',

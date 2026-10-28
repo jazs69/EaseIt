@@ -27,6 +27,31 @@ export abstract class DomainError extends Error {
 }
 
 /**
+ * A write could not commit because another transaction held what it needed.
+ *
+ * Uses the `CONFLICT` code, which already existed in the `ErrorCode` taxonomy
+ * with no class behind it. The alternative was to reuse `RoomUnavailableError`
+ * for a cancellation, which would tell a clerk a room is unavailable when
+ * nothing is unavailable and nothing is being sold — so a thin class on an
+ * existing code is the smaller lie-free option.
+ *
+ * Carries no SQLSTATE, Prisma code or driver text: the client is told to try
+ * again, not how the database failed (CLAUDE.md section 5).
+ */
+export class TransactionConflictError extends DomainError {
+  readonly code = ErrorCode.CONFLICT;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(operation: string) {
+    super(
+      'That change could not be completed because the booking was being ' +
+        'changed at the same time. Try again.',
+      { operation },
+    );
+  }
+}
+
+/**
  * The room, or the room type on those dates, cannot be sold. Thrown when the
  * oversell CHECK constraint or the room-overlap exclusion constraint rejects a
  * write and the retries are exhausted (CLAUDE.md section 3.1).

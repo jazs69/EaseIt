@@ -37,12 +37,19 @@ import {
 import { Prisma } from '@repo/database';
 
 import {
+  DomainError,
   ForbiddenError,
   RoomUnavailableError,
   TenantScopeViolationError,
+  TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
-import { isRetryableSqlState, sqlState } from '../../common/errors/sql-state.js';
+import {
+  isLockTimeout,
+  isRetryableSqlState,
+  ROW_LOCK_TIMEOUT_MS,
+  sqlState,
+} from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 
 const DAY_MS = 86_400_000;
@@ -248,6 +255,119 @@ export class RoomMoveService {
         await tx.$executeRaw`SELECT set_config('app.current_property_id', ${propertyId}, true)`;
 
         /**
+         * Bound the lock wait, before the first statement that can block.
+         *
+         * `true` is `set_config`'s is_local flag — `SET LOCAL` semantics,
+         * reverted at COMMIT or ROLLBACK, so the global configuration and
+         * every other connection are untouched. Taking the reservation row
+         * below is what made this necessary: before that lock existed a move
+         * never queued behind a cancellation, and now it can.
+         *
+         * Exceeding it raises `55P03`, which rolls the whole move back and is
+         * mapped to a typed 409 by `withRetry`, never retried.
+         */
+        await tx.$executeRaw`SELECT set_config('lock_timeout', ${String(
+          ROW_LOCK_TIMEOUT_MS,
+        )}, true)`;
+
+        /**
+         * The reservation row, locked FIRST.
+         *
+         * =====================================================================
+         * This is the lock that makes a move and a cancellation take turns.
+         *
+         * Without it the two overlapped: cancellation locks this row, reads
+         * `reservation_room` under that lock and then locks inventory, while a
+         * move went straight to the inventory rows and rewrote
+         * `reservation_room.roomTypeId` underneath it. A move committing in
+         * that window left the cancellation releasing the category the stay
+         * had just left, so the old category was decremented twice and the new
+         * one stayed incremented. Nothing caught it: the oversell CHECK only
+         * looks upward, and a counter that is too LOW means a room gets sold
+         * twice (section 3.1).
+         *
+         * The protocol is now the same on both sides, in the same order:
+         *
+         *   1. the reservation row, `FOR UPDATE`;
+         *   2. `inventory_day`, ascending stay date then room type.
+         *
+         * Identical order on both paths, so the added lock cannot deadlock
+         * against cancellation. It is also the narrowest lock that works: one
+         * row, held only for the moment the move takes, and no broader than
+         * the aggregate being changed.
+         *
+         * Scoped by `propertyId` in the same predicate as the id, so another
+         * property's reservation is simply not found (section 3.2).
+         * =====================================================================
+         */
+        const locked = await tx.$queryRaw<{ status: string }[]>`
+          SELECT "status"::text AS status
+          FROM reservation
+          WHERE "id" = ${stay.id}::uuid
+            AND "propertyId" = ${propertyId}::uuid
+          FOR UPDATE
+        `;
+
+        const current = locked[0];
+        if (current === undefined) throw new TenantScopeViolationError('Reservation');
+
+        /**
+         * Status, re-read under the lock.
+         *
+         * `move()` checked this before the transaction opened, which is no
+         * longer true by the time we get here if a cancellation committed in
+         * between. Same refusal as the pre-flight check, so the API contract
+         * does not change — only its timing becomes trustworthy.
+         */
+        if (
+          current.status === ReservationStatus.CANCELLED ||
+          current.status === ReservationStatus.NO_SHOW ||
+          current.status === ReservationStatus.CHECKED_OUT
+        ) {
+          throw new ValidationFailedError({
+            status: `A ${current.status
+              .toLowerCase()
+              .replace(/_/g, ' ')} reservation cannot be moved.`,
+          });
+        }
+
+        /**
+         * The assignment, re-read under the same lock.
+         *
+         * `categoryChanged`, the acknowledgement the operator gave and the
+         * counters moved below were all decided from a read taken before the
+         * transaction. If another move has since changed where this stay
+         * lives, every one of those decisions is about a room it is no longer
+         * in — so the move is refused rather than re-decided, because the
+         * operator acknowledged a specific category change and this is no
+         * longer that move.
+         */
+        const live = await tx.$queryRaw<{ room_type_id: string; room_id: string | null }[]>`
+          SELECT "roomTypeId" AS room_type_id, "roomId" AS room_id
+          FROM reservation_room
+          WHERE "id" = ${assignment.id}::uuid
+            AND "propertyId" = ${propertyId}::uuid
+        `;
+
+        const liveAssignment = live[0];
+        if (liveAssignment === undefined) {
+          throw new ValidationFailedError({
+            reservationId: 'This reservation has no room row and cannot be moved.',
+          });
+        }
+
+        if (
+          liveAssignment.room_type_id !== assignment.roomTypeId ||
+          liveAssignment.room_id !== assignment.roomId
+        ) {
+          throw new ValidationFailedError({
+            roomId:
+              'This stay was moved by someone else a moment ago, so this move no longer ' +
+              'applies to the room it was confirmed for. Review where it is now and try again.',
+          });
+        }
+
+        /**
          * A category change is a re-sale, so the counters move with it.
          *
          * Locked in stay-date order, matching every other inventory write, so
@@ -355,6 +475,25 @@ export class RoomMoveService {
       try {
         return await work();
       } catch (error) {
+        /**
+         * A typed refusal is the answer, not a fault.
+         *
+         * First, because `sqlState()` falls back to reading the error
+         * *message*: the in-transaction status and assignment guards above
+         * throw `ValidationFailedError`, and one whose text happened to
+         * contain something like "Code: 23514" would otherwise be retried and
+         * returned with the wrong status.
+         */
+        if (error instanceof DomainError) throw error;
+
+        /**
+         * The lock wait hit `ROW_LOCK_TIMEOUT_MS`. Not retried: the wait
+         * already happened, and three more would spend nine seconds to report
+         * what the first three established. Postgres rolled the move back
+         * whole, so nothing was changed.
+         */
+        if (isLockTimeout(error)) throw new TransactionConflictError('room move');
+
         if (!isRetryableSqlState(error)) throw error;
 
         last = error;
@@ -367,10 +506,30 @@ export class RoomMoveService {
       }
     }
 
-    this.logger.warn(`Room move gave up after ${String(MAX_ATTEMPTS)} attempts.`);
+    const lastState = last === null ? null : sqlState(last);
+    this.logger.warn(
+      `Room move gave up after ${String(MAX_ATTEMPTS)} attempts ` +
+        `(last SQLSTATE ${lastState ?? 'unknown'}).`,
+    );
+
+    /**
+     * A serialization failure or a deadlock says nothing about availability.
+     *
+     * Both mean the move collided with another write and lost the coin toss,
+     * not that any room is taken — so answering `RoomUnavailableError` would
+     * tell a clerk "that room was taken for these nights" when nothing of the
+     * sort happened, and send them hunting for a room that is free. The
+     * conflict error says what is true: try it again.
+     */
+    if (lastState === '40001' || lastState === '40P01') {
+      throw new TransactionConflictError('room move');
+    }
+
+    // A real availability refusal: the oversell CHECK, the room-overlap
+    // exclusion constraint, or a unique collision on the same assignment.
     throw new RoomUnavailableError({
       reason:
-        last !== null && sqlState(last) === '23514'
+        lastState === '23514'
           ? 'That category is fully sold for these nights.'
           : 'That room was taken for these nights while the move was being made.',
     });

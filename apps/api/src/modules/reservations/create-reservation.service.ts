@@ -52,6 +52,7 @@ import {
 import { Prisma } from '@repo/database';
 
 import {
+  DomainError,
   EntityNotFoundError,
   RoomUnavailableError,
   TenantScopeViolationError,
@@ -604,7 +605,16 @@ export class CreateReservationService {
       try {
         return await work();
       } catch (error) {
-        if (error instanceof RoomUnavailableError) throw error;
+        /**
+         * Any typed refusal is the answer, not a fault.
+         *
+         * Widened from `RoomUnavailableError` because `sqlState()` falls back
+         * to reading the error *message*: a domain error whose text happened
+         * to contain something like "Code: 23514" would otherwise be
+         * classified as retryable, turning one clean refusal into three and
+         * reporting the wrong status.
+         */
+        if (error instanceof DomainError) throw error;
 
         if (!isRetryableSqlState(error)) throw error;
 
