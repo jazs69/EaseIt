@@ -153,19 +153,40 @@ jobs:
       # Backgrounded with its readiness waited on explicitly. `pnpm start` would
       # resolve the workspace script; calling node directly keeps the process
       # tree flat so the kill at the end is reliable.
+      # `working-directory` is load-bearing, not tidiness.
+      #
+      # `apps/api/src/config/load-env.ts` resolves `.env` against
+      # `process.cwd()`, and `ConfigModule`'s `envFilePath` is cwd-relative
+      # too. Started from the repository root, the API looked for a root
+      # `.env` that this workflow never writes -- it writes `apps/api/.env` --
+      # so DATABASE_URL was absent, `@repo/database` threw at module scope and
+      # the process exited before binding a port. The readiness loop then
+      # spent 60 s on a process that was already dead, which is how run
+      # 40820963243 failed at this step.
+      #
+      # Running from `apps/api` is also what `pnpm start` does, so CI and a
+      # developer's machine now load env the same way.
       - name: Start the API against the ephemeral database
+        working-directory: apps/api
         run: |
           set -euo pipefail
-          node apps/api/dist/main.js > /tmp/api.log 2>&1 &
+          node dist/main.js > /tmp/api.log 2>&1 &
           echo $! > /tmp/api.pid
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:4100/api/v1/health > /dev/null 2>&1; then
               echo "API ready after ${i}s"
               exit 0
             fi
+            # Fail fast if the process is already gone, instead of waiting out
+            # the full minute for something that cannot recover.
+            if ! kill -0 "$(cat /tmp/api.pid)" 2>/dev/null; then
+              echo "API process exited during startup; log follows:" >&2
+              cat /tmp/api.log >&2
+              exit 1
+            fi
             sleep 1
           done
-          echo "API did not become ready; last 50 log lines:" >&2
+          echo "API did not become ready within 60s; last 50 log lines:" >&2
           tail -50 /tmp/api.log >&2
           exit 1
 

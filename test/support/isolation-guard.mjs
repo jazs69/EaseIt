@@ -70,14 +70,37 @@ export function describeTarget(url) {
 }
 
 /**
- * Database names belonging to shared development, read from the env files the
- * suites themselves default to. Always refused.
+ * Shared database names that are refused even when no `.env` file exists.
+ *
+ * ===========================================================================
+ * Discovery from `.env` is necessary but not sufficient, and CI proved it.
+ *
+ * `.env` files are gitignored, so a fresh checkout has none — and on GitHub
+ * Actions run 40820963243 the `fast` job therefore discovered **zero**
+ * development names. That broke a unit test, which is how it was found, but
+ * the real problem was worse than a red check: with an empty discovered set,
+ * `EASEIT_TEST_DBS=easeit` would have *authorised* the shared development
+ * database, because the denylist that is supposed to override the allowlist
+ * was empty.
+ *
+ * So the known shared names are seeded unconditionally. Discovery still runs
+ * and still adds whatever a developer's own files name, but the floor no
+ * longer depends on a file that version control deliberately does not carry.
+ * ===========================================================================
+ */
+const ALWAYS_FORBIDDEN = ['easeit'];
+
+/**
+ * Database names belonging to shared development. Always refused.
+ *
+ * The union of `ALWAYS_FORBIDDEN` and whatever the repository's env files
+ * name, so the set is never empty.
  */
 export function developmentDatabaseNames({
   readFile = (path) => readFileSync(path, 'utf8'),
   files = ['packages/database/.env', '.env', 'apps/api/.env'],
 } = {}) {
-  const names = new Set();
+  const names = new Set(ALWAYS_FORBIDDEN);
   for (const file of files) {
     let text;
     try {
@@ -124,9 +147,10 @@ export function classifyTarget({ url, allowExtra = '', developmentNames = new Se
    */
   if (developmentNames.has(target.name)) {
     reasons.push(
-      `"${target.name}" is a shared development database (named in this repository's ` +
-        '.env files). It can never be a destructive-test target, and no environment ' +
-        'variable can authorise it.',
+      `"${target.name}" is a shared development database. It can never be a ` +
+        'destructive-test target, and no environment variable can authorise it. ' +
+        "(Source: the built-in forbidden list, plus any name this repository's " +
+        '.env files carry.)',
     );
   } else if (!allowed.has(target.name)) {
     reasons.push(

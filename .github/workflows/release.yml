@@ -100,15 +100,24 @@ jobs:
           pnpm exec prisma migrate deploy
           pnpm exec tsx prisma/seed.ts
 
+      # Started from `apps/api` for the same reason as pr.yml: load-env.ts and
+      # ConfigModule both resolve `.env` against cwd, and this workflow writes
+      # `apps/api/.env`, not a root one. Run 40820963243 failed this way.
       - name: Start the API
+        working-directory: apps/api
         run: |
           set -euo pipefail
-          node apps/api/dist/main.js > /tmp/api.log 2>&1 &
+          node dist/main.js > /tmp/api.log 2>&1 &
           echo $! > /tmp/api.pid
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:4100/api/v1/health > /dev/null 2>&1; then
               echo "API ready after ${i}s"
               exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/api.pid)" 2>/dev/null; then
+              echo "API process exited during startup; log follows:" >&2
+              cat /tmp/api.log >&2
+              exit 1
             fi
             sleep 1
           done
@@ -139,8 +148,31 @@ jobs:
           PGPASSWORD: easeit_ci_local_only
         run: |
           set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17 || \
-            sudo apt-get install -y -qq postgresql-client
+          # PostgreSQL 17 client, from PGDG.
+          #
+          # `postgresql-client-17` is not in Ubuntu's default repositories, and
+          # the previous fallback to `postgresql-client` installed version 16 --
+          # which `pg_dump` refuses to run against a 17 server ("server version
+          # mismatch"), so this step would have failed the first time it ran.
+          # PGDG carries 17, and the assertion below turns a silent major-version
+          # drift into an immediate, legible failure instead of a confusing dump
+          # error. Not yet observed in CI: release.yml has never been executed.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl ca-certificates lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+          CLIENT_MAJOR="$(pg_dump --version | grep -oE '[0-9]+' | head -1)"
+          echo "pg_dump major version: ${CLIENT_MAJOR}"
+          if [ "${CLIENT_MAJOR}" -lt 17 ]; then
+            echo "pg_dump ${CLIENT_MAJOR} cannot dump a PostgreSQL 17 server." >&2
+            exit 1
+          fi
           pg_dump -h 127.0.0.1 -U easeit -d easeit_ci -Fc -f /tmp/easeit_ci.dump
           createdb -h 127.0.0.1 -U easeit -O easeit easeit_restore_verify
           pg_restore -h 127.0.0.1 -U easeit -d easeit_restore_verify \

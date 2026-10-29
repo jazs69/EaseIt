@@ -439,6 +439,22 @@ pnpm typecheck               # tsc --noEmit everywhere; must be clean before any
 pnpm format                  # prettier
 ```
 
+**Every process loads `.env` relative to its own working directory.** Prisma 7 removed implicit
+`.env` loading, so each entry point loads its own — `apps/api/src/config/load-env.ts` for the API and
+worker, the same block at the top of `prisma/seed.ts`, and `prisma.config.ts` for the CLI. All of
+them resolve against `process.cwd()`, and `ConfigModule`'s `envFilePath` is cwd-relative too.
+
+So **run a process from its own package directory**, or pass the variables explicitly. `node
+apps/api/dist/main.js` from the repository root does _not_ read `apps/api/.env`: it looks for a root
+`.env`, finds none, and the process exits at module scope on "DATABASE_URL is not set" before it
+binds a port. This is not hypothetical — it is how GitHub Actions run 40820963243 failed, with the
+readiness loop waiting sixty seconds on a process that was already dead. CI now sets
+`working-directory: apps/api` for that reason.
+
+Note also that an already-set environment variable always beats a file on disk (both
+`process.loadEnvFile` and `ConfigModule` behave this way), which is what makes `DATABASE_URL=… pnpm
+…` a safe way to redirect a command at an isolated database.
+
 ### Database
 
 ```bash

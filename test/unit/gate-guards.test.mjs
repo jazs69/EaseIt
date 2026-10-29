@@ -301,7 +301,47 @@ console.log('\n10. Development names are discovered from the repo, not hard-code
       throw new Error('ENOENT');
     },
   });
-  check('a missing env file is tolerated, not fatal', missing.size === 0);
+  check(
+    'a missing env file is tolerated, not fatal',
+    missing.size >= 1,
+    `${String(missing.size)} name(s)`,
+  );
+  check(
+    'and the floor still forbids the shared development database',
+    missing.has('easeit'),
+    [...missing].join(','),
+  );
+
+  /**
+   * The regression test for GitHub Actions run 40820963243.
+   *
+   * `.env` files are gitignored, so CI discovered zero development names and
+   * the denylist that overrides the allowlist was empty -- meaning
+   * `EASEIT_TEST_DBS=easeit` would have authorised the shared development
+   * database on any machine without a `.env`. The floor must hold with no
+   * files present at all.
+   */
+  const noFiles = developmentDatabaseNames({
+    files: [],
+    readFile: () => {
+      throw new Error('should not be called');
+    },
+  });
+  check(
+    'with NO env files at all the forbidden set is still non-empty',
+    noFiles.size >= 1,
+    [...noFiles].join(','),
+  );
+  const ciShaped = classifyTarget({
+    url: 'postgresql://u:p@127.0.0.1:5432/easeit',
+    allowExtra: 'easeit',
+    developmentNames: noFiles,
+  });
+  check(
+    'and EASEIT_TEST_DBS=easeit is refused even with no .env present',
+    !ciShaped.ok,
+    ciShaped.reasons[0]?.slice(0, 70),
+  );
 
   // The real repository: whatever it names must be refused.
   const real = developmentDatabaseNames();
