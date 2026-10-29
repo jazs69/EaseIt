@@ -200,6 +200,150 @@ A double booking is the single worst failure this system can produce. Two layers
 against the last available room and asserts exactly one succeeds. Deleting or weakening these tests is
 not permitted.
 
+### 3.1.1 Reservation-row locking — the implemented protocol
+
+§3.1 states the two defence layers. This subsection records the protocol the reservation code
+**actually implements** today, because §3.1's lock order alone (property → room type → stay dates)
+is insufficient on its own: it says nothing about the `reservation` row, and three separate defects
+came from operations deciding things from reads taken before their transaction opened. Treat this as
+binding on anything that writes `reservation`, `reservation_room` or `inventory_day`.
+
+**Reservation row first, then inventory.** Any operation that mutates an existing stay takes
+`SELECT … FROM reservation WHERE "id" = … AND "propertyId" = … FOR UPDATE` as its first blocking
+statement, and only then locks `inventory_day`. This holds in
+`cancel-reservation.service.ts:224`, `room-move.service.ts:308` and `check-in.service.ts:336`.
+`create-reservation.service.ts:271` is the one path that locks inventory first, and it is safe
+precisely because it has no existing reservation row to contend for — it creates one. Do not
+introduce a second path that takes inventory before the reservation row.
+
+- The lock is **always scoped by `propertyId` in the same predicate as the id**, so another
+  property's stay is _not found_ rather than forbidden (§3.2). A row lock taken on id alone is a
+  tenancy bug even when the subsequent read is scoped.
+- Check-in never touches `inventory_day`, so it only ever takes the first lock of the pair.
+
+**A pre-flight read is not a decision.** Every blocker evaluated before `$transaction` opens may be
+false by the time the write runs, so after acquiring the row lock the transaction **re-reads and
+re-validates every fact it is about to rely on**:
+
+- **Status**, compared against the status the pre-flight blockers actually passed, not re-derived
+  (`check-in.service.ts`, `room-move.service.ts`, and `cancel-reservation.service.ts` via
+  `cancelRefusal`). Re-deriving legality in two places lets them drift apart.
+- **Room assignment** — `reservation_room.roomTypeId` _and_ `roomId` — compared with the
+  pre-transaction values in both `check-in.service.ts` and `room-move.service.ts`. A cross-category
+  move rewrites `roomTypeId` and shifts the night between counters; a check-in that validated the old
+  category would leave the guest in one category while inventory charged the other.
+- A changed fact is **refused with the existing typed error that the pre-flight check raises** —
+  `InvalidStateTransitionError` for status, `ValidationFailedError` keyed on `roomId` for a moved
+  assignment. Never silently retarget the request to wherever the stay ended up: the operator chose a
+  specific room for a specific stay, and that is no longer the stay in front of them.
+
+**Inventory lock ordering.** Every path that locks `inventory_day` does so with
+`ORDER BY "stayDate" ASC, "roomTypeId" ASC FOR UPDATE` — `cancel-reservation.service.ts:333`,
+`room-move.service.ts:385`, `create-reservation.service.ts:270`. Ordering is what stops two
+operations each holding half of what the other needs. **It reduces deadlocks; it does not eliminate
+them**: a deterministic order over `inventory_day` says nothing about lock pairs involving other
+tables, and `40P01` remains possible. Any new inventory lock uses this exact order.
+
+**Consistency between the three tables.** `reservation.status`, the `reservation_room` rows and the
+`inventory_day.sold` counters must agree, and the dangerous direction is _release_, not sale:
+`inventory_day_not_oversold` only looks upward, so a decrement that runs twice silently invents a
+room. As implemented:
+
+- Which statuses consume inventory lives in exactly one place,
+  `reservation.state.ts:56` (`CONFIRMED`, `CHECKED_IN`, `CHECKED_OUT`); `TENTATIVE` and `ON_HOLD`
+  hold a room _without_ consuming it.
+- The release is driven by the **actual `reservation_room` rows**, counted per room type, not by an
+  assumed single room — a group booking holds several nights per date.
+- A stay that consumes inventory but has **no** room rows is **refused**, not released: there is no
+  category to credit, and answering 200 would leave the counter permanently high.
+- Before decrementing, the transaction verifies **one locked row per night per held category** and
+  that each `sold` is at least what the stay holds. Either mismatch means counters and bookings
+  already disagree, and the whole cancellation is refused rather than half-applied.
+- **`CHECKED_OUT` is refused by `cancelRefusal` (`reservation.state.ts:86`)** even though it consumes
+  inventory, because releasing a past night would oversell history and corrupt the occupancy/ADR
+  figures that read `sold`. `CHECKED_IN` is refused as well — a guest in the room is an early
+  departure, a different operation with different money attached. `CANCELLED` is a refusal in the
+  state machine and an **idempotent success** at the service boundary, returning the existing
+  cancellation without touching inventory.
+
+**Bounded lock waits and typed conflicts.** Prisma's `$transaction({ timeout })` cannot interrupt a
+`SELECT … FOR UPDATE` already blocked inside Postgres — it is a deadline Prisma enforces when it next
+gets control. A contended cancellation was measured waiting **39,969 ms** against a 10,000 ms
+transaction timeout. So each of the three paths sets
+`set_config('lock_timeout', ROW_LOCK_TIMEOUT_MS, true)` **before its first blocking statement**
+(`cancel-reservation.service.ts:203`, `room-move.service.ts:269`, `check-in.service.ts:295`). The
+`true` is `is_local` — `SET LOCAL` semantics, reverted at COMMIT/ROLLBACK. **Never change the global
+`lock_timeout`**; a transaction bounds only itself. The value is one shared constant,
+`ROW_LOCK_TIMEOUT_MS` in `common/errors/sql-state.ts` (3 s), because the three paths take the same row
+and a caller must not get a different answer depending on which they called.
+
+- Exceeding it raises **`55P03`**, mapped to the typed `TransactionConflictError` → **409**. SQLSTATEs,
+  SQL text and Prisma internals never reach the client (§5).
+- **`55P03` is never retried**, and it is deliberately _not_ in `RETRYABLE_SQLSTATES`. It is not a
+  deadlock: Postgres did not pick a victim and roll anyone back — this transaction _chose_ to stop
+  waiting. The wait already cost `ROW_LOCK_TIMEOUT_MS`, so retrying would spend that again to report
+  what the first attempt established. Deadlock (`40P01`) and serialization failure (`40001`) are the
+  opposite case: Postgres has already aborted the transaction, so a retry starts clean and costs
+  milliseconds.
+- Retries are bounded at **3 attempts** with short jittered backoff on every path. A **typed
+  `DomainError` is rethrown before any SQLSTATE classification** in each retry wrapper, and this is
+  load-bearing rather than tidy: `sqlState()` falls back to regexing the error _message_, so a domain
+  error whose text happened to contain something like `Code: 23514` would otherwise be reclassified as
+  retryable and returned with the wrong status.
+- Cancellation deliberately uses a **narrower** retryable set (`40001`, `40P01` only) than the shared
+  booking set. On a booking, `23514`/`23P01`/`23505` usually mean a concurrent sale took the last room
+  and a second attempt reads the new truth; on a cancellation they mean the counters and the bookings
+  genuinely disagree, which a retry cannot fix and would turn a visible data problem into a slow one.
+- Exhausting the budget on a room move answers `TransactionConflictError` for `40001`/`40P01` and
+  `RoomUnavailableError` only for a genuine availability refusal. A transient collision must not be
+  reported as "that room was taken", which sends a clerk hunting for a room that is free.
+
+**What is demonstrated by tests, and what is not.** Do not read a green suite as proof of more than
+it covers. `test/integration/cancel-reservation.test.mjs` and `test/integration/cancel-retry.test.mjs`
+demonstrate, with runtime evidence: single and repeated cancellation releasing each night exactly once;
+8-way concurrent cancellation producing exactly one transition and one decrement; refusal of
+`CHECKED_IN`, `CHECKED_OUT` and the no-room-rows state; a contended request becoming a typed 409 within
+a bounded elapsed time rather than a 500; cancellation racing check-in; cancellation racing a
+cross-category move, asserted **per date and per category** against live `reservation_room` rows
+(aggregate totals matched while individual categories were corrupt, so only the per-category assertion
+caught it); check-in racing a cross-category move, both as an opportunistic probe and as a
+deterministic harness pinning both orderings; and bounded lock waits for room move and check-in.
+
+**Explicitly NOT verified at runtime — do not claim otherwise:**
+
+- The **`40P01` and `40001` retry paths**. Both are classified by unit-level tests over the classifier,
+  but no deadlock or serialization failure has been _induced_ against the running system. The
+  lock-ordering audit found no two-party cycle among the five writers of these tables; that is an
+  argument, not a proof.
+- **Three-way races** (any interleaving of three or more of cancel / check-in / move / book).
+- **Folio interleavings.** `folios.service.ts` writes `reservation.paidAmountMinor` with an atomic
+  `{ increment }` and takes no row lock, no `lock_timeout` and no retry. It holds nothing the other
+  paths want, but its interaction with them is untested. There is deliberately **no retry wrapper
+  around folio payments**: a check-in opens the folio and posts the arrival night with no idempotency
+  key, so retrying could double-post.
+- **Create-reservation racing cancellation or a room move** on the same room type and dates.
+
+**Requirements for any future module writing these tables.** `nightaudit`, `housekeeping` and
+`channels` do not exist yet; when they write `reservation`, `reservation_room` or `inventory_day` they
+inherit all of the above, and specifically:
+
+1. Take the **reservation row `FOR UPDATE` first**, scoped by `propertyId` in the same predicate, then
+   `inventory_day` in ascending `stayDate`, `roomTypeId` order.
+2. **Re-validate status and room assignment under the lock.** A pre-flight read is advisory.
+3. Set the transaction-local `lock_timeout` from the shared `ROW_LOCK_TIMEOUT_MS` before the first
+   blocking statement, and map `55P03` to the existing typed conflict error — unretried.
+4. Rethrow `DomainError` before classifying any SQLSTATE, and keep retries bounded and small.
+5. Derive inventory effects from the **actual `reservation_room` rows**, and refuse rather than guess
+   when they are missing or disagree with the counters.
+6. Ship a **concurrency integration test** in the same change (§3.1's required test), asserting
+   `inventory_day.sold` **per date and per category** against live `reservation_room` rows — not merely
+   aggregate totals — plus a **tenant-isolation test** asserting not-found, never 403, for another
+   property's row (§3.2).
+7. Use **suite-owned, isolated fixtures** created and torn down by the test. Never mutate shared
+   seeded reservations or hand-adjust inventory counters to reach a branch. Honour the schema's
+   deletion order (stays → rooms → room types), and print fixture ids so an interrupted run can be
+   recovered.
+
 ### 3.2 Multi-tenancy — no cross-property leaks
 
 - Every transactional/operational table carries a non-nullable `propertyId`. Reference tables shared

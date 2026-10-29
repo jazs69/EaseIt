@@ -2,7 +2,7 @@
   "name": "easeit",
   "version": "0.1.0",
   "private": true,
-  "description": "EaseIt \u2014 multi-tenant Hotel PMS, Channel Manager and Direct Booking Engine",
+  "description": "EaseIt — multi-tenant Hotel PMS, Channel Manager and Direct Booking Engine",
   "packageManager": "pnpm@9.14.4",
   "engines": {
     "node": ">=20.11.0",
@@ -15,7 +15,8 @@
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint:fix",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "node scripts/gate.mjs --no-format",
+    "test:turbo": "turbo run test",
     "clean": "turbo run clean",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,yaml,yml,css}\" --ignore-path .gitignore",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,yaml,yml,css}\" --ignore-path .gitignore",
@@ -31,7 +32,13 @@
     "test:outbox:redis": "node test/integration/outbox-redis.test.mjs",
     "test:checkin": "node test/integration/check-in.test.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
-    "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs"
+    "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",
+    "test:unit": "node test/unit/gate-guards.test.mjs",
+    "test:races": "node test/integration/create-race.test.mjs",
+    "gate": "node scripts/gate.mjs",
+    "gate:integration": "node scripts/gate-integration.mjs",
+    "gate:resilience": "node scripts/gate-resilience.mjs",
+    "require:services": "node scripts/require-services.mjs"
   },
   "devDependencies": {
     "@repo/config": "workspace:*",

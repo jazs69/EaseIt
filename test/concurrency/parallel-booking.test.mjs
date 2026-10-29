@@ -71,6 +71,15 @@ const PARALLEL = Number(process.env.EASEIT_PARALLEL ?? 8);
 const PROPERTY_CODE = process.env.EASEIT_PROPERTY ?? '31336';
 
 const prisma = createPrismaClient();
+
+/**
+ * The isolation guard, shared with every other destructive suite.
+ *
+ * Imported here rather than relied upon from the release gate: this file is
+ * reachable directly through its own npm script, and run that way the gate's
+ * preflight never executes. See `test/support/isolation-guard.mjs`.
+ */
+const { assertIsolatedDatabase, assertApiSharesDatabase } = await import('../support/isolation-guard.mjs');
 const created = [];
 let failures = 0;
 
@@ -278,6 +287,9 @@ async function raceForSameRoom(cookie, property, roomType, room, arrival, depart
 /* -------------------------------------------------------------------------- */
 
 async function main() {
+  // Before any fixture is created, mutated or deleted.
+  await assertIsolatedDatabase({ prisma, suite: 'the parallel-booking stress suite' });
+
   const property = await prisma.property.findFirst({
     where: { code: PROPERTY_CODE },
     select: { id: true, code: true, name: true, businessDate: true },
@@ -301,6 +313,42 @@ async function main() {
   });
 
   const cookie = `easeit_session=${mintSession(grant.user.id, grant.user.email)}`;
+
+  /**
+   * Prove the API reached the same database before anything is written.
+   *
+   * Without this the suite could assert against the isolated database while
+   * the endpoints quietly wrote to development -- every counter check passing
+   * for the wrong reason. The probe is a reservation id read from THIS
+   * database; seeded ids are random uuids, so an API on any other database
+   * answers 404 for it. Read-only, and it runs before the first fixture.
+   */
+  {
+    const probeRow = await prisma.reservation.findFirst({
+      where: { propertyId: grant.property.id },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    await assertApiSharesDatabase({
+      suite: 'the parallel-booking stress suite',
+      api: API,
+      probe: async () => {
+        if (probeRow === null) {
+          return { ok: false, detail: 'no seeded reservation to probe with' };
+        }
+        // Raw `fetch`: this suite has no `call()` helper, unlike the
+        // integration suites.
+        const probe = await fetch(
+          `${API}/properties/${PROPERTY_CODE}/reservations/${probeRow.id}`,
+          { headers: { cookie } },
+        );
+        return probe.status === 200
+          ? { ok: true, detail: 'probe reservation visible' }
+          : { ok: false, detail: `probe reservation returned HTTP ${String(probe.status)}` };
+      },
+    });
+  }
+
 
   // Far enough out that no seeded booking already occupies the room, but
   // still inside the seeded inventory window.

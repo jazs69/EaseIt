@@ -66,6 +66,15 @@ const PROPERTY_CODE = process.env.EASEIT_PROPERTY ?? '31001';
 
 const prisma = createPrismaClient();
 
+/**
+ * The isolation guard, shared with every other destructive suite.
+ *
+ * Imported here rather than relied upon from the release gate: this file is
+ * reachable directly through its own npm script, and run that way the gate's
+ * preflight never executes. See `test/support/isolation-guard.mjs`.
+ */
+const { assertIsolatedDatabase, assertApiSharesDatabase } = await import('../support/isolation-guard.mjs');
+
 /** Everything this suite made, for teardown. */
 const created = [];
 /** Reservations whose nights a cancellation already gave back. */
@@ -243,6 +252,9 @@ async function findSellableRoomType(propertyId, arrival, departure, headroom = 1
 /* -------------------------------------------------------------------------- */
 
 async function main() {
+  // Before any fixture is created, mutated or deleted.
+  await assertIsolatedDatabase({ prisma, suite: 'the cancellation suite' });
+
   // `reservations:edit` is what the endpoint requires; the grant alone is not
   // enough, which is the same shape the check-in suite uses.
   const grant = await prisma.userPropertyRole.findFirst({
@@ -262,6 +274,37 @@ async function main() {
 
   const { user, property } = grant;
   const cookie = `easeit_session=${mintSession(user.id, user.email)}`;
+
+  /**
+   * Prove the API reached the same database before anything is written.
+   *
+   * Without this the suite could assert against the isolated database while
+   * the endpoints quietly wrote to development -- every counter check passing
+   * for the wrong reason. The probe is a reservation id read from THIS
+   * database; seeded ids are random uuids, so an API on any other database
+   * answers 404 for it. Read-only, and it runs before the first fixture.
+   */
+  {
+    const probeRow = await prisma.reservation.findFirst({
+      where: { propertyId: property.id },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    await assertApiSharesDatabase({
+      suite: 'the cancellation suite',
+      api: API,
+      probe: async () => {
+        if (probeRow === null) {
+          return { ok: false, detail: 'no seeded reservation to probe with' };
+        }
+        const probe = await call('GET', `/properties/${PROPERTY_CODE}/reservations/${probeRow.id}`, cookie);
+        return probe.status === 200
+          ? { ok: true, detail: 'probe reservation visible' }
+          : { ok: false, detail: `probe reservation returned HTTP ${String(probe.status)}` };
+      },
+    });
+  }
+
   const businessDate = isoDate(property.businessDate);
 
   console.log(`Property ${property.code} (${property.name})`);
@@ -275,14 +318,47 @@ async function main() {
   const roomType = await findSellableRoomType(property.id, arrival, departure);
   if (roomType === null) throw new Error('no category has room for the probe stay.');
 
-  // A room number, so the exclusion constraint is exercised rather than
-  // skipped: an unassigned stay has a NULL roomId and never conflicts.
-  const room = await prisma.room.findFirst({
-    where: { propertyId: property.id, roomTypeId: roomType.id, status: { not: 'OUT_OF_ORDER' } },
-    select: { id: true, number: true },
-    orderBy: { number: 'asc' },
-  });
-  if (room === null) throw new Error('no room to assign for the re-sell check.');
+  /**
+   * A room number, so the exclusion constraint is exercised rather than
+   * skipped: an unassigned stay has a NULL roomId and never conflicts.
+   *
+   * It must be a room that is actually FREE for this window, not merely the
+   * lowest-numbered one in a category with headroom. `findSellableRoomType`
+   * guarantees the *category* has a unit spare; it says nothing about which
+   * physical room that unit is. Picking `ORDER BY number ASC` blindly worked
+   * against the long-lived development database by luck and failed on a
+   * freshly seeded one, where a seeded stay already held the first room for
+   * these dates -- the booking was refused 409 ROOM_UNAVAILABLE by
+   * `reservation_room_no_overlap` before the suite had asserted anything.
+   *
+   * The predicate below is the constraint's own: live statuses only, half-open
+   * date range. So this asks the same question the database will ask.
+   */
+  const freeRooms = await prisma.$queryRaw`
+    SELECT rm."id"::text AS id, rm."number" AS number
+    FROM room rm
+    WHERE rm."propertyId" = ${property.id}::uuid
+      AND rm."roomTypeId" = ${roomType.id}::uuid
+      AND rm."status" <> 'OUT_OF_ORDER'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM reservation_room rr
+        JOIN reservation r ON r."id" = rr."reservationId"
+        WHERE rr."roomId" = rm."id"
+          AND r."status" NOT IN ('CANCELLED', 'NO_SHOW')
+          AND daterange(rr."arrivalDate", rr."departureDate", '[)')
+              && daterange(${arrival}::date, ${departure}::date, '[)')
+      )
+    ORDER BY rm."number" ASC
+    LIMIT 1`;
+
+  const room = freeRooms[0];
+  if (room === undefined) {
+    throw new Error(
+      `no room in ${roomType.name} is free for ${arrival}..${departure}; ` +
+        'the category has headroom but every physical room is taken.',
+    );
+  }
 
   const soldBefore = await soldByDate(property.id, roomType.id, arrival, departure);
   const booking = await createBooking(cookie, roomType, arrival, departure, { roomId: room.id });

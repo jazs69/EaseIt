@@ -1,0 +1,194 @@
+# Pre-release and nightly checks: the slow, destructive and service-heavy ones.
+#
+# Kept out of the PR workflow on purpose. These bring up Redis as well as
+# PostgreSQL, run a stress suite that mutates shared inventory fixtures, and
+# obliterate BullMQ queue state. All of that is safe here because every service
+# is an ephemeral container that dies with the runner — and unsafe anywhere a
+# human is also working, which is why the local equivalents refuse to touch the
+# default Redis port or any database outside an explicit allowlist.
+#
+# Run it manually before cutting a release, and nightly so a regression surfaces
+# within a day rather than at release time.
+
+name: Release checks
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 02:30 UTC daily. Cron here is UTC regardless of property timezones.
+    - cron: '30 2 * * *'
+
+concurrency:
+  group: release-checks
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24.14.1'
+  PNPM_VERSION: '9.14.4'
+
+jobs:
+  resilience:
+    name: resilience (PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: easeit
+          POSTGRES_PASSWORD: easeit_ci_local_only
+          POSTGRES_DB: easeit_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U easeit -d easeit_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        # Matches the version the README prescribes for local development.
+        # Mapped to 6380, not 6379: the preflight refuses the default port so a
+        # developer running this locally cannot point queue obliteration at
+        # their own Redis. Keeping CI on the same port keeps the two honest.
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Write ephemeral env files
+        run: |
+          set -euo pipefail
+          DB_URL="postgresql://easeit:easeit_ci_local_only@127.0.0.1:5432/easeit_ci?schema=public"
+          printf 'DATABASE_URL=%s\nDIRECT_URL=%s\n' "$DB_URL" "$DB_URL" > packages/database/.env
+          {
+            printf 'NODE_ENV=development\n'
+            printf 'PORT=4100\n'
+            printf 'DATABASE_URL=%s\n' "$DB_URL"
+            printf 'DIRECT_URL=%s\n' "$DB_URL"
+            printf 'REDIS_URL=redis://127.0.0.1:6380\n'
+            printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)"
+            printf 'AUTH_COOKIE_NAME=easeit_session\n'
+          } > apps/api/.env
+
+      - name: Build
+        run: pnpm build
+
+      - name: Migrate and seed
+        run: |
+          set -euo pipefail
+          cd packages/database
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed.ts
+
+      - name: Start the API
+        run: |
+          set -euo pipefail
+          node apps/api/dist/main.js > /tmp/api.log 2>&1 &
+          echo $! > /tmp/api.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4100/api/v1/health > /dev/null 2>&1; then
+              echo "API ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          tail -50 /tmp/api.log >&2
+          exit 1
+
+      # Integration first: if the ordinary behaviour is broken there is no point
+      # asking whether it recovers from Redis loss.
+      - name: Integration gate
+        env:
+          EASEIT_TEST_DBS: easeit_ci
+          EASEIT_API_URL: http://127.0.0.1:4100/api/v1
+        run: pnpm gate:integration
+
+      - name: Resilience gate
+        env:
+          EASEIT_TEST_DBS: easeit_ci
+          EASEIT_API_URL: http://127.0.0.1:4100/api/v1
+          REDIS_URL: redis://127.0.0.1:6380
+        run: pnpm gate:resilience
+
+      # The one layer with no automated coverage. Running it here proves the
+      # dump/restore path works on a real database and that a restored copy
+      # still satisfies the business invariants, which is the part a count
+      # comparison alone would miss.
+      - name: Backup and restore verification
+        env:
+          PGPASSWORD: easeit_ci_local_only
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17 || \
+            sudo apt-get install -y -qq postgresql-client
+          pg_dump -h 127.0.0.1 -U easeit -d easeit_ci -Fc -f /tmp/easeit_ci.dump
+          createdb -h 127.0.0.1 -U easeit -O easeit easeit_restore_verify
+          pg_restore -h 127.0.0.1 -U easeit -d easeit_restore_verify \
+            --no-owner --exit-on-error /tmp/easeit_ci.dump
+
+          echo "--- object and constraint parity ---"
+          for db in easeit_ci easeit_restore_verify; do
+            psql -h 127.0.0.1 -U easeit -d "$db" -At -c \
+              "SELECT 'tables='||count(*) FROM information_schema.tables WHERE table_schema='public';"
+            psql -h 127.0.0.1 -U easeit -d "$db" -At -c \
+              "SELECT 'guards='||count(*) FROM pg_constraint WHERE conname IN
+               ('inventory_day_not_oversold','reservation_room_no_overlap',
+                'inventory_day_counters_non_negative','reservation_cancelled_at_matches_status');"
+            psql -h 127.0.0.1 -U easeit -d "$db" -At -c \
+              "SELECT 'reservations='||count(*) FROM reservation;"
+            psql -h 127.0.0.1 -U easeit -d "$db" -At -c \
+              "SELECT 'inventory_days='||count(*) FROM inventory_day;"
+          done
+
+          echo "--- business invariants in the RESTORED copy ---"
+          # Four guards must be present, no counter may violate the oversell
+          # invariant, and no reservation_room may point at a missing parent.
+          psql -h 127.0.0.1 -U easeit -d easeit_restore_verify -v ON_ERROR_STOP=1 -At -c "
+            DO \$\$
+            DECLARE guards int; oversold int; orphans int;
+            BEGIN
+              SELECT count(*) INTO guards FROM pg_constraint WHERE conname IN
+                ('inventory_day_not_oversold','reservation_room_no_overlap',
+                 'inventory_day_counters_non_negative','reservation_cancelled_at_matches_status');
+              IF guards <> 4 THEN RAISE EXCEPTION 'restored copy has % of 4 guards', guards; END IF;
+
+              SELECT count(*) INTO oversold FROM inventory_day
+                WHERE sold < 0 OR blocked < 0
+                   OR sold + blocked > physical + \"overbookingAllowance\";
+              IF oversold <> 0 THEN RAISE EXCEPTION '% oversold inventory row(s)', oversold; END IF;
+
+              SELECT count(*) INTO orphans FROM reservation_room rr
+                LEFT JOIN reservation r ON r.id = rr.\"reservationId\" WHERE r.id IS NULL;
+              IF orphans <> 0 THEN RAISE EXCEPTION '% orphaned reservation_room row(s)', orphans; END IF;
+
+              RAISE NOTICE 'restored copy passed: 4 guards, 0 oversold, 0 orphans';
+            END \$\$;"
+
+      - name: API log (on failure)
+        if: failure()
+        run: tail -200 /tmp/api.log
+
+      - name: Stop the API
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then kill "$(cat /tmp/api.pid)" 2>/dev/null || true; fi

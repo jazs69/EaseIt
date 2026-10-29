@@ -133,6 +133,15 @@ const { Queue } = await import(
 const { OUTBOX_QUEUE_NAME } = await load('outbox.queue.js');
 
 const prisma = createPrismaClient();
+
+/**
+ * The isolation guard, shared with every other destructive suite.
+ *
+ * Imported here rather than relied upon from the release gate: this file is
+ * reachable directly through its own npm script, and run that way the gate's
+ * preflight never executes. See `test/support/isolation-guard.mjs`.
+ */
+const { assertIsolatedDatabase } = await import('../support/isolation-guard.mjs');
 const prismaStub = { client: prisma, ping: async () => true };
 
 const RUN = randomUUID().slice(0, 8);
@@ -210,6 +219,9 @@ async function waitForStatus(id, wanted, timeoutMs = 15_000) {
 const runtimes = [];
 
 async function main() {
+  // Before any fixture is created, mutated or deleted.
+  await assertIsolatedDatabase({ prisma, suite: 'the outbox end-to-end suite' });
+
   const property = await prisma.property.findFirst({
     select: { id: true, code: true, name: true },
     orderBy: { code: 'asc' },

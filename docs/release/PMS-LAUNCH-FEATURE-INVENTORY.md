@@ -1,0 +1,770 @@
+# EaseIt PMS — Launch Feature Inventory
+
+**This is a living document, not a report.** It is the persistent release-readiness record for
+EaseIt PMS. Consult it at the start of every feature task and update it at the end of the same task.
+
+|                             |                                                                                               |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| Document created            | 2026-10-29                                                                                    |
+| Last full audit             | 2026-10-29                                                                                    |
+| Repository                  | `D:\EaseIt`                                                                                   |
+| Branch / HEAD at last audit | `master` / `f93f815`                                                                          |
+| Working tree at last audit  | dirty — 8 modified, 12 untracked (release-gate and concurrency-test workstreams, uncommitted) |
+
+---
+
+## 0. How to use and maintain this document
+
+### Mandatory update rule
+
+When asked to implement a feature, continue a feature, fix a bug affecting a feature, or finish a
+module:
+
+1. **Read this file first.** Identify the affected feature IDs and their current statuses.
+2. Implement the work.
+3. Run the applicable **safe** tests (never destructive suites against a shared database or Redis).
+4. **Update this same file in the same task** — evidence paths, test commands and actual results,
+   remaining work, last-verified date, summary counts, launch blockers, and the change history.
+5. Mark an item `COMPLETE AND VERIFIED` **only** when its documented acceptance criterion is met
+   _and_ a test proves it. Implementation without tests is `PARTIALLY IMPLEMENTED` or
+   `BLOCKED / UNKNOWN`, with the reason stated.
+6. Recompute parent status from children. **A parent is never complete while a required child is
+   incomplete.**
+7. On regression, downgrade immediately and record it.
+8. Never delete a feature ID or a history entry to make progress look better. Deprecated or
+   out-of-scope items are marked explicitly, with a reason.
+9. Do not claim this document was updated unless the file actually changed.
+
+### Status vocabulary
+
+| Code | Status                    | Meaning                                                                              |
+| ---- | ------------------------- | ------------------------------------------------------------------------------------ |
+| `CV` | **COMPLETE AND VERIFIED** | Implemented _and_ proven by a test whose command and result are recorded here.       |
+| `PI` | **PARTIALLY IMPLEMENTED** | Code exists and is plausibly wired, but behaviour is unproven, or parts are missing. |
+| `NI` | **NOT IMPLEMENTED**       | Absent, or a deliberate placeholder.                                                 |
+| `BU` | **BLOCKED / UNKNOWN**     | Cannot be verified in the current environment. The required isolated setup is named. |
+
+**Code presence is never evidence of function.** A page, endpoint, schema model, DTO, removed TODO
+or successful build does not move an item to `CV`.
+
+### Column codes
+
+- **U/A/L/D/I** — UI / API / business-Logic / Database / Integration. `✔` present, `~` partial,
+  `✖` absent, `–` not applicable, `⚠` present with a known defect.
+- **Launch** — `M` mandatory for core PMS launch · `A` mandatory only if advertised / in scope ·
+  `P` post-launch.
+- **Pri** — severity 1 (critical) … 4 (cosmetic).
+- **Method** — `SI` static inspection · `TR` test run (command recorded) · `NV` not verified.
+
+### Standing assumptions
+
+1. "Core PMS launch" means a single property can be configured, sold, booked, checked in, billed,
+   checked out, and closed for the night without leaving the product. Booking engine and channel
+   manager are **optional modules**, mandatory only because CLAUDE.md §1 advertises them.
+2. CLAUDE.md is treated as the product specification. Where the repository and CLAUDE.md disagree,
+   CLAUDE.md §0 says the file wins and the code is a bug worth reporting — so gaps against it are
+   recorded as gaps, not as scope changes.
+3. Tests run earlier in a session against an isolated database are recorded with their provenance
+   and are **not** re-asserted as current unless re-run.
+
+---
+
+## 1. Executive summary
+
+### Counts by status
+
+Counted mechanically from the status column of the inventory tables in §2, not estimated:
+
+| Status                     | Count   | Share |
+| -------------------------- | ------- | ----- |
+| `CV` COMPLETE AND VERIFIED | 28      | 13.7% |
+| `PI` PARTIALLY IMPLEMENTED | 96      | 46.8% |
+| `NI` NOT IMPLEMENTED       | 73      | 35.6% |
+| `BU` BLOCKED / UNKNOWN     | 8       | 3.9%  |
+| **Total feature IDs**      | **205** |       |
+
+Verification command and result (2026-10-29):
+
+```
+$ grep -oE '^\| [A-Z]{2}-[0-9]{2} \| [^|]+ \| `(CV|PI|NI|BU)`' docs/release/PMS-LAUNCH-FEATURE-INVENTORY.md     | grep -oE '`(CV|PI|NI|BU)`' | sort | uniq -c
+      8 `BU`
+     28 `CV`
+     73 `NI`
+     96 `PI`
+$ grep -oE '^\| [A-Z]{2}-[0-9]{2} \|' …  | sort -u | wc -l
+205
+```
+
+Note that `CV` counts _subfeature rows_, and most of the 28 are concentrated in two areas —
+reservation write paths and the release gate. Read §3.1 before treating 13.7% as broad coverage.
+
+### The structural finding
+
+CLAUDE.md §2 specifies **13 API modules**. The repository implements 8 of that set plus 6 unplanned
+ones. Absent as module, schema **and** endpoints:
+
+`inventory` · `rates` · `frontdesk` · `housekeeping` · `nightaudit` · `channels` · `booking-engine`
+
+What exists is a **reservations-and-folio core with group reporting**, not yet a hotel PMS.
+
+### Launch blockers
+
+- [ ] **FD-04 — No check-out exists.** `CHECKED_OUT` is read by reports, folios and the state
+      machine, but no endpoint, service or UI transitions a stay into it. Zero matches for
+      `@Post(...check-out)` in `apps/api/src`.
+- [ ] **AV-04 / AV-05 / AV-06 / AV-07 — No inventory or rates management.** `InventoryDay` is
+      decremented but never authored outside the seed; no `RatePlan`/`Rate`/`Restriction` model
+      exists. A hotel cannot price or open inventory.
+- [ ] **HK-01 — No housekeeping module.** Permissions exist; table, endpoint and screen do not.
+- [ ] **NA-01 / NA-05 — No night audit, no business-date roll.** `property.businessDate` is read
+      everywhere and advanced by nothing. The books never close.
+- [ ] **FO-03 / FO-04 — Folio payments have no idempotency key.** A retried POST can double-post
+      against real money.
+- [ ] **RM-02 / RM-04 — No room-type or room CRUD.**
+- [ ] **MT-02 / MT-03 / MT-04 — Tenancy context, Prisma tenancy extension and RLS all absent**,
+      against CLAUDE.md §3.2.
+- [ ] **CI-14 — No deployment configuration of any kind.**
+- [ ] **AU-08 — No password reset.**
+- [ ] **AU-13 — RBAC grants authority for features that do not exist.**
+
+### Critical risks
+
+| Risk                             | Finding                                                                                                                                                | ID       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| Payment double-post              | No idempotency on folio payment endpoints                                                                                                              | FO-03/04 |
+| Unbounded lock wait when booking | `create-reservation.service.ts` is the only writer with no `lock_timeout`                                                                              | RS-17    |
+| Deadlock retries unproven        | `40001`/`40P01` classified but never induced at runtime                                                                                                | RS-18    |
+| Synthetic company data           | `gst.service.ts:60` defaults `GST_PROVIDER=mock`; `:68` warns lookups return synthetic names                                                           | GP-04    |
+| Dead payment schema              | `PaymentGatewayConfig` model has **zero** references in `apps/api/src`                                                                                 | FO-15    |
+| RBAC over-promises               | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND/SETTLE`, `NIGHT_AUDIT_*`, `HOUSEKEEPING_*` grantable and inert                                                  | AU-13    |
+| Release CI will likely fail      | `release.yml:142` installs `postgresql-client-17`, absent from Ubuntu default repos; the `\|\|` fallback gives client 16, which refuses a PG 17 server | CI-12    |
+| No backup automation             | No script in the repository; two unexecuted CI references only                                                                                         | BR-01    |
+| Reports precede closed books     | Occupancy/ADR/RevPAR computed from live aggregates, against CLAUDE.md §3.3                                                                             | RP-08    |
+
+### Confidence and limitations
+
+- **High** — code presence/absence, schema, routes, endpoints, CI configuration. Directly inspected.
+- **Medium** — reservation write paths. Extensively tested against an isolated database on
+  2026-10-29, recorded below with commands and counts; not re-run since.
+- **Low / unverifiable** — everything requiring a running service. During the 2026-10-29 audit no
+  endpoint was invoked, no UI was rendered and no worker was started. PostgreSQL was stopped,
+  nothing listened on 6379, and the Docker daemon was down.
+
+---
+
+## 2. Feature inventory
+
+### 2.1 Multi-tenancy and organizations
+
+Parent status: **`PI`** — row-level scoping exists; the three controls CLAUDE.md §3.2 names as
+primary are absent.
+
+| ID    | Subfeature                                        | St   | Evidence                                                                                                         | U/A/L/D/I | Tests and actual result                                      | Acceptance criterion                                                                                          | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| MT-01 | `propertyId` on operational tables                | `PI` | `packages/database/prisma/schema.prisma` — 27 models                                                             | –/–/~/✔/– | none                                                         | Every operational table carries non-nullable `propertyId`; composite indexes lead with it; audit documented   | —     | 2   | M      | 2026-10-29 | SI     |
+| MT-02 | Request-scoped tenant context (AsyncLocalStorage) | `NI` | no `platform/request-context` exists                                                                             | ✖/✖/✖/–/– | none                                                         | Property resolved per request from session or slug, never from a client header/body/query                     | MT-03 | 1   | M      | 2026-10-29 | SI     |
+| MT-03 | Prisma tenancy client extension                   | `NI` | `packages/database/src/client-factory.ts` builds a raw client; no `$extends`                                     | ✖/✖/✖/✖/– | none                                                         | Extension injects `where: { propertyId }` on every find/update/delete/count/aggregate and stamps it on create | MT-02 | 1   | M      | 2026-10-29 | SI     |
+| MT-04 | Postgres RLS backstop                             | `NI` | no RLS policy in any migration; services call `set_config('app.current_property_id', …)` with nothing reading it | ✖/✖/✖/✖/– | none                                                         | RLS enabled on tenant tables; a query without the setting returns zero rows                                   | MT-03 | 1   | M      | 2026-10-29 | SI     |
+| MT-05 | Cross-tenant reads return 404 not 403             | `PI` | `apps/api/src/common/guards/active-property.guard.ts` throws `TenantScopeViolationError`                         | –/✔/✔/–/– | cancellation suite step 8 (2026-10-29, isolated DB) — passed | Per-module test asserts read/update/delete of another property's row returns not-found                        | MT-03 | 2   | M      | 2026-10-29 | TR     |
+| MT-06 | Property access allowlist                         | `PI` | `UserPropertyRole` model                                                                                         | ✔/✔/✔/✔/– | none                                                         | Switching property re-authorizes; a user without a grant is refused                                           | —     | 2   | M      | 2026-10-29 | SI     |
+| MT-07 | Property switch / select-context                  | `PI` | `apps/api/src/modules/properties/properties.controller.ts:78`                                                    | ✔/✔/✔/✔/– | none                                                         | Context switch re-signs the session and is rejected without a grant                                           | MT-06 | 3   | M      | 2026-10-29 | SI     |
+| MT-08 | `withoutTenantScope()` escape hatch               | `NI` | not present                                                                                                      | ✖/✖/✖/–/– | none                                                         | Helper exists, is logged, and is permitted only for night audit, cross-property reporting and migrations      | MT-03 | 3   | A      | 2026-10-29 | SI     |
+
+### 2.2 Property setup and configuration
+
+Parent status: **`PI`** — broad surface, zero tests.
+
+| ID    | Subfeature                   | St   | Evidence                                                                    | U/A/L/D/I | Tests and actual result | Acceptance criterion                                                                | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ---------------------------- | ---- | --------------------------------------------------------------------------- | --------- | ----------------------- | ----------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| PS-01 | Setup read                   | `PI` | `property-setup.controller.ts:56`                                           | ✔/✔/✔/✔/– | none                    | Returns the full setup payload for a scoped property                                | —     | 3   | M      | 2026-10-29 | SI     |
+| PS-02 | General settings update      | `PI` | `property-setup.controller.ts:75`                                           | ✔/✔/✔/✔/– | none                    | Round-trip test: PATCH then GET returns the written values                          | PS-01 | 3   | M      | 2026-10-29 | SI     |
+| PS-03 | Tax slabs                    | `PI` | `:95`; `PropertyTaxSlab`; migration `20261019093000_slab_floor_index_dedup` | ✔/✔/✔/✔/– | none                    | A slab change alters a new folio's tax lines; inclusive and exclusive both asserted | FO-10 | 2   | M      | 2026-10-29 | SI     |
+| PS-04 | Amenities                    | `PI` | `:117`; `Amenity`, `PropertyAmenityLink`                                    | ✔/✔/✔/✔/– | none                    | Linked amenities round-trip                                                         | —     | 4   | A      | 2026-10-29 | SI     |
+| PS-05 | Policies                     | `PI` | `:142`; `PropertyPolicy`, `PolicyType`                                      | ✔/✔/✔/✔/– | none                    | Policies round-trip and are visible to the booking surface                          | —     | 3   | A      | 2026-10-29 | SI     |
+| PS-06 | Fees and surcharges          | `PI` | `:160`; `FeeAndSurcharge`, `FeeType`                                        | ✔/✔/✔/✔/– | none                    | A configured fee appears as its own folio line on a new stay                        | FO-02 | 2   | A      | 2026-10-29 | SI     |
+| PS-07 | Media upload                 | `PI` | `:180`; `PropertyMedia`, `MediaCategory`                                    | ✔/✔/✔/?/? | none                    | Upload persists and is retrievable; storage backend documented                      | —     | 3   | A      | 2026-10-29 | SI     |
+| PS-08 | Timezone / currency / locale | `PI` | `Property.timezone`, `.currency`, `.locale`                                 | ✔/✔/~/✔/– | none                    | Date boundaries respect the property's IANA zone; asserted for two zones            | NA-05 | 2   | M      | 2026-10-29 | SI     |
+| PS-09 | Business date field          | `PI` | `Property.businessDate @db.Date`                                            | –/✔/~/✔/– | none                    | Advanced only by night audit step 7                                                 | NA-05 | 1   | M      | 2026-10-29 | SI     |
+
+### 2.3 Users, authentication and RBAC
+
+Parent status: **`PI`** — complete-looking surface with no dedicated tests and no password reset.
+
+| ID    | Subfeature                             | St   | Evidence                                                                                                                                                                  | U/A/L/D/I      | Tests and actual result                                                                                  | Acceptance criterion                                                                   | Dep                        | Pri | Launch | Verified   | Method |
+| ----- | -------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------- | --- | ------ | ---------- | ------ |
+| AU-01 | Login                                  | `PI` | `apps/api/src/modules/auth/auth.controller.ts:84`                                                                                                                         | ✔/✔/✔/✔/–      | none                                                                                                     | Valid credentials issue a challenge; invalid are refused without revealing which field | —                          | 1   | M      | 2026-10-29 | SI     |
+| AU-02 | 2FA OTP verification                   | `PI` | `:128`; `TwoFactorChallenge`; migration `20261016093000`                                                                                                                  | ✔/✔/✔/✔/✔ mail | none                                                                                                     | Correct OTP issues a session; wrong/expired/replayed are refused                       | NO-01                      | 2   | M      | 2026-10-29 | SI     |
+| AU-03 | OTP resend                             | `PI` | `:159`                                                                                                                                                                    | ✔/✔/✔/✔/✔      | none                                                                                                     | Resend is rate-limited and invalidates nothing already valid                           | AU-07                      | 3   | M      | 2026-10-29 | SI     |
+| AU-04 | Session read                           | `PI` | `:173`                                                                                                                                                                    | ✔/✔/✔/✔/–      | none                                                                                                     | Returns identity and permissions for the active property                               | —                          | 2   | M      | 2026-10-29 | SI     |
+| AU-05 | Logout                                 | `PI` | `:196`                                                                                                                                                                    | ✔/✔/✔/✔/–      | none                                                                                                     | Cookie cleared and session unusable afterwards                                         | —                          | 2   | M      | 2026-10-29 | SI     |
+| AU-06 | Session revocation                     | `PI` | `auth.service.ts:165`; `User.sessionsValidFrom`; migration `20261018040000`                                                                                               | –/✔/✔/✔/–      | none                                                                                                     | Revoking invalidates every pre-existing token; admin UI exists                         | —                          | 2   | M      | 2026-10-29 | SI     |
+| AU-07 | Login rate limiting                    | `PI` | `apps/api/src/modules/platform/rate-limiter.service.ts:48`                                                                                                                | –/✔/✔/–/–      | none                                                                                                     | Limits hold across instances (currently in-process only)                               | —                          | 2   | M      | 2026-10-29 | SI     |
+| AU-08 | Password reset / forgot password       | `NI` | no endpoint found                                                                                                                                                         | ✖/✖/✖/–/✖      | none                                                                                                     | Single-use expiring token; replay and expiry both refused                              | NO-01                      | 1   | M      | 2026-10-29 | SI     |
+| AU-09 | Role templates                         | `PI` | `rbac.controller.ts:12`; 7 global roles seeded (`SUPER_ADMIN`…`POS_STAFF`)                                                                                                | ✔/✔/✔/✔/–      | none                                                                                                     | Template permissions match the documented matrix                                       | —                          | 2   | M      | 2026-10-29 | SI     |
+| AU-10 | Custom role create / update            | `PI` | `access-control.controller.ts:82`, `:93`                                                                                                                                  | ✔/✔/✔/✔/–      | none                                                                                                     | Create/rename/repermission round-trip; delete exists                                   | AU-09                      | 3   | A      | 2026-10-29 | SI     |
+| AU-11 | Assign roles to users                  | `PI` | `access-control.controller.ts:123`                                                                                                                                        | ✔/✔/✔/✔/–      | none                                                                                                     | Assignment changes effective permissions immediately                                   | AU-09                      | 2   | M      | 2026-10-29 | SI     |
+| AU-12 | Permission enforcement                 | `PI` | `apps/web-admin/src/hooks/use-has-permission.ts`; `@Roles()` guards                                                                                                       | ✔/✔/✔/–/–      | cancellation suite step 9a (2026-10-29) — grant without `reservations:edit` refused 403, nothing changed | Per-endpoint permission matrix asserted                                                | AU-09                      | 2   | M      | 2026-10-29 | TR     |
+| AU-13 | Permissions for unimplemented features | `NI` | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND`, `FOLIO_SETTLE`, `NIGHT_AUDIT_EXECUTE`, `NIGHT_AUDIT_READ`, `HOUSEKEEPING_READ`, `HOUSEKEEPING_UPDATE_STATUS` in `packages/types` | ✖/✖/✖/✔/–      | none                                                                                                     | Not grantable until the backing feature ships, or clearly labelled inert               | FD-04, HK-01, NA-01, FO-12 | 2   | M      | 2026-10-29 | SI     |
+| AU-14 | User invitation / onboarding           | `NI` | none found                                                                                                                                                                | ✖/✖/✖/–/✖      | none                                                                                                     | Invite, accept, first-login password set                                               | NO-01                      | 2   | A      | 2026-10-29 | SI     |
+| AU-15 | User deactivation                      | `NI` | `User.isActive` exists; no endpoint                                                                                                                                       | ✖/✖/✖/✔/–      | none                                                                                                     | Deactivating blocks login and revokes sessions                                         | AU-06                      | 2   | M      | 2026-10-29 | SI     |
+
+### 2.4 Room types and rooms
+
+Parent status: **`NI`** — the inventory the whole PMS sells cannot be authored through the product.
+
+| ID    | Subfeature              | St   | Evidence                                                                   | U/A/L/D/I | Tests and actual result                      | Acceptance criterion                                                   | Dep          | Pri | Launch | Verified   | Method |
+| ----- | ----------------------- | ---- | -------------------------------------------------------------------------- | --------- | -------------------------------------------- | ---------------------------------------------------------------------- | ------------ | --- | ------ | ---------- | ------ |
+| RM-01 | `RoomType` model        | `PI` | `schema.prisma` — `RoomType` incl. `overbookingAllowance`, `baseRateMinor` | –/–/–/✔/– | exercised as a fixture by reservation suites | Model supports the documented pricing and overbooking policy           | —            | 1   | M      | 2026-10-29 | SI     |
+| RM-02 | Room type CRUD API      | `NI` | no controller for room types                                               | ✖/✖/✖/✔/– | none                                         | Create/edit/retire a category; retiring one with live stays is refused | RM-01        | 1   | M      | 2026-10-29 | SI     |
+| RM-03 | `Room` model            | `PI` | `schema.prisma` — `Room`, `RoomStatus`                                     | –/–/–/✔/– | fixture use                                  | —                                                                      | —            | 1   | M      | 2026-10-29 | SI     |
+| RM-04 | Room CRUD API           | `NI` | no controller for rooms                                                    | ✖/✖/✖/✔/– | none                                         | Add/edit/retire a room; retiring an occupied room is refused           | RM-03        | 1   | M      | 2026-10-29 | SI     |
+| RM-05 | Room status transitions | `NI` | `RoomStatus` enum only                                                     | ✖/✖/✖/✔/– | none                                         | Status changes are audited and visible to front desk                   | HK-01        | 1   | M      | 2026-10-29 | SI     |
+| RM-06 | Out-of-order handling   | `NI` | `RoomStatus.OUT_OF_ORDER` only                                             | ✖/✖/✖/✔/– | none                                         | An out-of-order room reduces sellable inventory for the affected dates | AV-04, MA-01 | 2   | M      | 2026-10-29 | SI     |
+
+### 2.5 Availability, rates and inventory
+
+Parent status: **`PI`** — the _protection_ is the strongest part of the codebase; the _management_
+does not exist.
+
+| ID    | Subfeature                               | St   | Evidence                                                                                                              | U/A/L/D/I          | Tests and actual result                                                                                                                                   | Acceptance criterion                                                                             | Dep          | Pri | Launch | Verified   | Method |
+| ----- | ---------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ | --- | ------ | ---------- | ------ |
+| AV-01 | Per-date inventory counters              | `CV` | `InventoryDay`; migration `20261016140000_inventory_and_reservations`                                                 | –/✔/✔/✔/–          | `node test/integration/create-race.test.mjs` ×3 → 177/179/178 checks, exit 0; `cancel-reservation` → 229/229, exit 0 (both 2026-10-29, `easeit_racetest`) | `sold` equals live `reservation_room` rows per date per category                                 | —            | 1   | M      | 2026-10-29 | TR     |
+| AV-02 | Oversell CHECK constraint                | `CV` | `inventory_day_not_oversold`; present in migration SQL (10 files carry hand-written constraints)                      | –/–/✔/✔/–          | asserted per round in both suites above — 0 violating rows                                                                                                | No committed state exceeds `physical + overbookingAllowance`                                     | AV-01        | 1   | M      | 2026-10-29 | TR     |
+| AV-03 | Non-negative counters CHECK              | `CV` | `inventory_day_counters_non_negative`                                                                                 | –/–/✔/✔/–          | asserted per round — 0 negative rows                                                                                                                      | A double release cannot drive a counter below zero                                               | AV-01        | 1   | M      | 2026-10-29 | TR     |
+| AV-04 | Inventory management API                 | `NI` | no `inventory` module (CLAUDE.md §2 lists it)                                                                         | ✖/✖/✖/✔/–          | none                                                                                                                                                      | Set `physical`, `blocked`, `overbookingAllowance` per date range; a block reduces sellable count | RM-02        | 1   | M      | 2026-10-29 | SI     |
+| AV-05 | Rate plans                               | `NI` | no model, module or endpoint                                                                                          | ✖/✖/✖/✖/–          | none                                                                                                                                                      | Rate plan CRUD; a quote derives from the stored plan                                             | AV-04        | 1   | M      | 2026-10-29 | SI     |
+| AV-06 | Rate calendar / derived and linked rates | `NI` | —                                                                                                                     | ✖/✖/✖/✖/–          | none                                                                                                                                                      | Per-date rates, derived rates recompute from their parent                                        | AV-05        | 1   | M      | 2026-10-29 | SI     |
+| AV-07 | Restrictions (MinLOS, CTA, CTD)          | `NI` | —                                                                                                                     | ✖/✖/✖/✖/–          | none                                                                                                                                                      | A restriction refuses a non-conforming booking with a typed error                                | AV-05        | 1   | M      | 2026-10-29 | SI     |
+| AV-08 | Public availability search               | `NI` | no booking-engine module                                                                                              | ✖/✖/✖/–/–          | none                                                                                                                                                      | Search returns only sellable room types for the date range                                       | BE-01        | 2   | A      | 2026-10-29 | SI     |
+| AV-09 | Redis availability cache                 | `NI` | Redis is used only by the outbox                                                                                      | ✖/✖/✖/–/✖          | none                                                                                                                                                      | Short-TTL cache keyed by `propertyId`, never read inside a booking transaction                   | AV-08        | 3   | P      | 2026-10-29 | SI     |
+| AV-10 | `rates-inventory` admin screen           | `NI` | `apps/web-admin/src/app/(property)/rates-inventory/page.tsx` — 75 lines, **0 API calls**, renders `PlaceholderScreen` | ✖ labelled/✖/✖/–/– | none                                                                                                                                                      | Screen reads and writes real rates and inventory                                                 | AV-04, AV-05 | 1   | M      | 2026-10-29 | SI     |
+
+### 2.6 Reservations
+
+Parent status: **`PI`** — create/cancel/race behaviour is the best-verified area in the repository;
+lifecycle amendments are missing.
+
+| ID    | Subfeature                              | St   | Evidence                                                                                                                                                                                    | U/A/L/D/I | Tests and actual result                                                                                       | Acceptance criterion                                                          | Dep   | Pri | Launch | Verified   | Method     |
+| ----- | --------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ---------- |
+| RS-01 | Quote                                   | `PI` | `create-reservation.controller.ts:42`                                                                                                                                                       | ✔/✔/✔/✔/– | exercised indirectly by booking fixtures                                                                      | Quoted total equals nightly rates plus taxes in integer minor units           | AV-05 | 2   | M      | 2026-10-29 | SI         |
+| RS-02 | Create booking                          | `CV` | `create-reservation.controller.ts:60`; inventory locked `create-reservation.service.ts:270-271`                                                                                             | ✔/✔/✔/✔/– | create-race ×3 → exit 0; booking is the fixture path of every suite                                           | Exactly one of N parallel bookings for the last unit succeeds                 | AV-01 | 1   | M      | 2026-10-29 | TR         |
+| RS-03 | Parallel-booking safety                 | `CV` | oversell CHECK + ordered `FOR UPDATE`                                                                                                                                                       | –/✔/✔/✔/– | create-race A1/B/C staged races, exit 0. **`pnpm test:concurrency` has never been run**                       | Dedicated N-parallel stress suite passes on an isolated DB                    | AV-02 | 1   | M      | 2026-10-29 | TR         |
+| RS-04 | Cancel (idempotent)                     | `CV` | `cancel-reservation.controller.ts:41`; `cancel-reservation.service.ts:203` `lock_timeout`, `:224` row lock, `:333` ordered inventory lock                                                   | ✔/✔/✔/✔/– | `node test/integration/cancel-reservation.test.mjs` → 229/229, exit 0 (2026-10-29, `easeit_racetest`)         | Repeat and concurrent cancels release each night exactly once                 | AV-03 | 1   | M      | 2026-10-29 | TR         |
+| RS-05 | Cancel racing check-in                  | `CV` | reservation row lock + status re-read `check-in.service.ts:336`                                                                                                                             | –/✔/✔/✔/– | 12/12 races → 409 `INVALID_STATE_TRANSITION`, never a 500                                                     | Neither both-succeed nor an infrastructure 500                                | RS-04 | 1   | M      | 2026-10-29 | TR         |
+| RS-06 | Cancel racing cross-category move       | `CV` | `room-move.service.ts:305-385`                                                                                                                                                              | –/✔/✔/✔/– | 9/9 races; per-category per-date counters asserted against live rows                                          | Per-category counters match live room rows after any interleaving             | RS-04 | 1   | M      | 2026-10-29 | TR         |
+| RS-07 | Create racing cancel / move / three-way | `CV` | `test/integration/create-race.test.mjs` staged lock-queue harness                                                                                                                           | –/✔/✔/✔/– | A1 both orderings, A2 deterministic stale-preflight refusal, B both orderings, C two orderings — all exit 0   | Exactly one winner per contended unit; no oversell in any ordering            | RS-02 | 1   | M      | 2026-10-29 | TR         |
+| RS-08 | Reservation detail                      | `PI` | `reservation-detail.controller.ts:41`                                                                                                                                                       | ✔/✔/✔/✔/– | none                                                                                                          | Detail payload matches persisted state and respects tenant scope              | —     | 2   | M      | 2026-10-29 | SI         |
+| RS-09 | Reservation notes                       | `PI` | `reservation-detail.controller.ts:60`; `ReservationNote`; migration `20261018020000`                                                                                                        | ✔/✔/✔/✔/– | none                                                                                                          | Note persists, is attributed and is audited                                   | —     | 3   | A      | 2026-10-29 | SI         |
+| RS-10 | Reservation search                      | `PI` | `reservation-search.controller.ts:43`; migration `20261016220000`                                                                                                                           | ✔/✔/✔/✔/– | none                                                                                                          | Cursor pagination; tenant-scoped; indexed                                     | —     | 2   | M      | 2026-10-29 | SI         |
+| RS-11 | Modify dates / occupancy                | `NI` | no endpoint                                                                                                                                                                                 | ✖/✖/✖/–/– | none                                                                                                          | Amending dates re-checks inventory for added nights and releases removed ones | AV-04 | 1   | M      | 2026-10-29 | SI         |
+| RS-12 | Extend / shorten stay                   | `NI` | —                                                                                                                                                                                           | ✖/✖/✖/–/– | none                                                                                                          | Same invariants as RS-11, tested per date                                     | RS-11 | 1   | M      | 2026-10-29 | SI         |
+| RS-13 | No-show handling                        | `NI` | `NO_SHOW` enum exists; `reservation.state.ts:86` `cancelRefusal` refuses it; no transition path                                                                                             | ✖/✖/~/✔/– | none                                                                                                          | A no-show roll sets the status and keeps inventory consistent                 | NA-04 | 1   | M      | 2026-10-29 | SI         |
+| RS-14 | Group / multi-room bookings             | `PI` | schema permits many `ReservationRoom`; cancel releases per category                                                                                                                         | ~/✔/✔/✔/– | release logic for N rooms asserted in cancellation suite                                                      | Create a group booking through the product; release is per-category           | RM-02 | 2   | A      | 2026-10-29 | TR         |
+| RS-15 | Reservation state machine               | `CV` | `reservation.state.ts:56` `CONSUMES_INVENTORY`, `:86` `cancelRefusal`                                                                                                                       | –/✔/✔/–/– | asserted via cancellation suite steps 6, 7, 7b, 7d                                                            | Legal transitions live in one place and are enforced in the domain layer      | —     | 1   | M      | 2026-10-29 | TR         |
+| RS-16 | Bounded reservation-row lock wait       | `CV` | `set_config('lock_timeout', …)` at `cancel-reservation.service.ts:203`, `room-move.service.ts:269`, `check-in.service.ts:295`; shared `ROW_LOCK_TIMEOUT_MS` in `common/errors/sql-state.ts` | –/✔/✔/–/– | step 14 measured move 3035 ms, check-in 3038 ms → typed 409 `CONFLICT` (2026-10-29)                           | A contended write returns a typed 409 inside the budget, never hangs          | —     | 1   | M      | 2026-10-29 | TR         |
+| RS-17 | Unbounded lock wait on create           | `PI` | `create-reservation.service.ts` contains **no** `set_config('lock_timeout')` — the only writer without one                                                                                  | –/⚠/⚠/–/– | none                                                                                                          | Contended booking returns a typed 409 within `ROW_LOCK_TIMEOUT_MS`, measured  | RS-16 | 2   | M      | 2026-10-29 | SI         |
+| RS-18 | Deadlock / serialization retry          | `BU` | `40001` and `40P01` in `RETRYABLE_SQLSTATES` (`common/errors/sql-state.ts`); `cancel-reservation.retry.ts` budget of 3                                                                      | –/?/?/–/– | classifier unit-tested (`test:cancellation:retry`, 30 checks, exit 0). **No deadlock has ever been induced.** | A forced `40P01` is retried within budget then answered as a typed 409        | —     | 2   | M      | 2026-10-29 | TR partial |
+
+### 2.7 Front desk — check-in, check-out, room moves
+
+Parent status: **`PI`** — check-in and room move are well verified; **check-out does not exist**.
+
+| ID    | Subfeature                                         | St   | Evidence                                                                                               | U/A/L/D/I | Tests and actual result                                                                                                              | Acceptance criterion                                                                                                                                                                                 | Dep          | Pri   | Launch | Verified   | Method |
+| ----- | -------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ----- | ------ | ---------- | ------ |
+| FD-01 | Check-in blockers (GET)                            | `PI` | `check-in.controller.ts:43`                                                                            | ✔/✔/✔/✔/– | `node test/integration/check-in.test.mjs` → 23/23, exit 0 (2026-10-29)                                                               | Every blocker is reported with a typed reason                                                                                                                                                        | —            | 2     | M      | 2026-10-29 | TR     |
+| FD-02 | Check-in (POST)                                    | `CV` | `check-in.controller.ts:62`; row lock `check-in.service.ts:336`, status re-read, assignment re-read    | ✔/✔/✔/✔/– | 23/23 plus 12/12 cancel-vs-check-in races and deterministic stale-assignment harness 8/8                                             | Check-in under contention is correct or typed-refused, never a 500                                                                                                                                   | RS-05        | 1     | M      | 2026-10-29 | TR     |
+| FD-03 | Exclusion-constraint violation becomes a typed 409 | `CV` | `check-in.service.ts` `translateWriteFailure` maps `23P01` → `RoomUnavailableError`                    | –/✔/✔/✔/– | step 14 iii — room already held → 409 `ROOM_UNAVAILABLE`, not a 500                                                                  | SQLSTATE never reaches the client                                                                                                                                                                    | —            | 2     | M      | 2026-10-29 | TR     |
+| FD-04 | **Check-out**                                      | `NI` | **no endpoint, service, DTO or UI anywhere**; zero matches for `@Post(...check-out)` in `apps/api/src` | ✖/✖/✖/✔/– | none                                                                                                                                 | `CHECKED_IN → CHECKED_OUT` under the row lock; refuses or settles an open balance; frees the room; audit row in the same transaction; idempotent; integration test covers every illegal source state | FO-13, RM-05 | **1** | **M**  | 2026-10-29 | SI     |
+| FD-05 | Room move / assign                                 | `CV` | `room-move.controller.ts:41` options, `:61` move; `room-move.service.ts:269/305/385`                   | ✔/✔/✔/✔/– | 9/9 cancel-vs-move races; create-vs-move both orderings; refusal message asserted as "That category is fully sold for these nights." | Move is correct or typed-refused under contention; counters match live rows                                                                                                                          | RS-06        | 1     | M      | 2026-10-29 | TR     |
+| FD-06 | Unassign (roomId null)                             | `PI` | `packages/types/src/dto/room-move.dto.ts` — `roomId` nullable                                          | ✔/✔/✔/✔/– | not specifically asserted                                                                                                            | Unassigning frees the physical room and keeps category inventory unchanged                                                                                                                           | FD-05        | 3     | M      | 2026-10-29 | SI     |
+| FD-07 | Cross-category move moves the counter              | `CV` | `room-move.service.ts:385` ordered inventory lock, decrement then increment under the oversell CHECK   | –/✔/✔/✔/– | per-category per-date assertion against live rows, 9/9 and create-race B                                                             | Old category down one, new up one, per affected date                                                                                                                                                 | AV-02        | 1     | M      | 2026-10-29 | TR     |
+| FD-08 | Walk-in                                            | `PI` | `BookingSource.WALK_IN` used as the fixture source throughout                                          | ~/✔/✔/✔/– | used as a fixture, not asserted as a flow                                                                                            | A dedicated walk-in flow creates and checks in one stay                                                                                                                                              | FD-02        | 3     | M      | 2026-10-29 | SI     |
+| FD-09 | Arrivals / departures board                        | `NI` | no endpoint; property dashboard covers part of the data                                                | ✖/✖/✖/–/– | none                                                                                                                                 | Today's arrivals, departures and in-house lists, per property                                                                                                                                        | FD-04        | 2     | M      | 2026-10-29 | SI     |
+| FD-10 | Instant check-in at creation                       | `PI` | `isInstantCheckIn` in the create DTO                                                                   | ✔/✔/✔/✔/– | used by the in-house fixture in the cancellation suite                                                                               | Creating with the flag produces a `CHECKED_IN` stay and its folio                                                                                                                                    | FD-02        | 3     | A      | 2026-10-29 | SI     |
+
+### 2.8 Guest profiles and companies
+
+Parent status: **`PI`**
+
+| ID    | Subfeature             | St   | Evidence                                                                                                                                       | U/A/L/D/I          | Tests and actual result                          | Acceptance criterion                                                                      | Dep          | Pri | Launch | Verified   | Method     |
+| ----- | ---------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------ | --- | ------ | ---------- | ---------- |
+| GP-01 | Per-reservation guests | `PI` | `ReservationGuest`; `GovtIdType`, `Gender`; migration `20261017120000`                                                                         | ✔/✔/✔/✔/–          | government-ID blocker asserted in check-in suite | Guest details persist and satisfy check-in requirements                                   | —            | 2   | M      | 2026-10-29 | TR partial |
+| GP-02 | Reusable guest profile | `NI` | no `Guest` model — guests are reservation-scoped only                                                                                          | ✖/✖/✖/✖/–          | none                                             | Profile with dedupe, stay history and preferences                                         | GP-01        | 2   | A      | 2026-10-29 | SI         |
+| GP-03 | Company list / create  | `PI` | `companies.controller.ts:34`, `:44`; `Company`                                                                                                 | ✔/✔/✔/✔/–          | none                                             | Company round-trips and can be attached to a booking                                      | —            | 3   | A      | 2026-10-29 | SI         |
+| GP-04 | GSTIN lookup           | `PI` | `companies.controller.ts:59`; `gst.service.ts:33` provider union, `:60` default `mock`, `:68` warns lookups return **synthetic** company names | ✔/✔/⚠/✔/⚠          | none                                             | A real provider path is exercised against sandbox; mock is impossible outside development | —            | 2   | A      | 2026-10-29 | SI         |
+| GP-05 | GSTIN validation       | `PI` | `apps/api/src/modules/companies/gstin.ts`; `GstinVerification` enum; migration `20261017150000`                                                | ✔/✔/✔/✔/–          | none                                             | Checksum and format validated; invalid refused with a typed error                         | GP-04        | 3   | A      | 2026-10-29 | SI         |
+| GP-06 | Postal-code lookup     | `PI` | `companies.controller.ts:72`                                                                                                                   | ✔/✔/✔/–/?          | none                                             | Returns city/state for a valid code; provider documented                                  | —            | 4   | P      | 2026-10-29 | SI         |
+| GP-07 | Direct-billing screen  | `NI` | `apps/web-admin/src/app/(property)/direct-billing/page.tsx` — 44 lines, **0 API calls**, `PlaceholderScreen`                                   | ✖ labelled/✖/✖/–/– | none                                             | Ledger of company-billed stays with aging                                                 | GP-03, FO-14 | 2   | A      | 2026-10-29 | SI         |
+
+### 2.9 Folios, billing, taxes, payments, refunds, invoices
+
+Parent status: **`PI`** — the largest body of untested money-handling code in the repository.
+
+| ID    | Subfeature                                 | St   | Evidence                                                                                                                                                         | U/A/L/D/I          | Tests and actual result                                                                               | Acceptance criterion                                                                              | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------------------ | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| FO-01 | Folio by booking code                      | `PI` | `folios.controller.ts:55`; `Folio`; migration `20261017190000`                                                                                                   | ✔/✔/✔/✔/–          | none                                                                                                  | Folio and its lines are returned for a scoped booking                                             | —     | 1   | M      | 2026-10-29 | SI     |
+| FO-02 | Post a charge                              | `PI` | `folios.controller.ts:97`                                                                                                                                        | ✔/✔/✔/✔/–          | none                                                                                                  | Charge creates one immutable line and the balance recomputes                                      | FO-08 | 1   | M      | 2026-10-29 | SI     |
+| FO-03 | Post a payment by booking code             | `PI` | `folios.controller.ts:76`                                                                                                                                        | ✔/✔/⚠/✔/–          | none                                                                                                  | **Idempotent**: replaying the same client key creates no second line                              | FO-04 | 1   | M      | 2026-10-29 | SI     |
+| FO-04 | Post a payment by folio                    | `PI` | `folios.controller.ts:117`; `folios.service.ts:493` atomic `paidAmountMinor: { increment }`. **Zero matches for `idempot\|requestId\|clientRef` in the service** | ✔/✔/⚠/✔/–          | none                                                                                                  | Five identical POSTs with one key produce exactly one payment line                                | —     | 1   | M      | 2026-10-29 | SI     |
+| FO-05 | Correct a folio line                       | `PI` | `folios.controller.ts:137`; `FolioLine.reversesLineId` at `schema.prisma:1529` with relation `Reversal`                                                          | ✔/✔/✔/✔/–          | none                                                                                                  | Correction writes a reversing line; the original is untouched                                     | FO-08 | 2   | M      | 2026-10-29 | SI     |
+| FO-06 | Correct room charges                       | `PI` | `folios.controller.ts:160`                                                                                                                                       | ✔/✔/✔/✔/–          | none                                                                                                  | Room-charge correction is reversal-based and audited                                              | FO-05 | 2   | M      | 2026-10-29 | SI     |
+| FO-07 | Discount                                   | `PI` | `folios.controller.ts:183`                                                                                                                                       | ✔/✔/✔/✔/–          | none                                                                                                  | Discount is its own line, permission-gated and audited                                            | —     | 2   | A      | 2026-10-29 | SI     |
+| FO-08 | Immutable lines and reversal trail         | `PI` | `schema.prisma:1529`; CLAUDE.md §3.4                                                                                                                             | –/✔/✔/✔/–          | none                                                                                                  | No code path updates or deletes a `folio_line`; test proves it                                    | —     | 1   | M      | 2026-10-29 | SI     |
+| FO-09 | Integer minor units everywhere             | `PI` | `amountMinor` Int columns; `Money` type in `packages/types`                                                                                                      | –/✔/✔/✔/–          | none                                                                                                  | Unit tests cover rounding, allocation and currency mixing (CLAUDE.md §3.4 mandates them)          | CI-05 | 1   | M      | 2026-10-29 | SI     |
+| FO-10 | Taxes as separate lines                    | `PI` | `FolioLineKind`; `PropertyTaxSlab`; migration `20261017170000`                                                                                                   | ✔/✔/✔/✔/–          | none                                                                                                  | Tax lines reference the charge they derive from; inclusive and exclusive both asserted            | PS-03 | 1   | M      | 2026-10-29 | SI     |
+| FO-11 | Balance derived from lines                 | `PI` | `folios.service.ts` sums lines; 5 `$transaction` blocks                                                                                                          | –/✔/✔/✔/–          | none                                                                                                  | Balance equals the integer sum of lines; reconciliation test exists                               | FO-08 | 1   | M      | 2026-10-29 | SI     |
+| FO-12 | Refunds                                    | `NI` | `FOLIO_REFUND` permission only; no endpoint                                                                                                                      | ✖/✖/✖/✔/–          | none                                                                                                  | Refund is a reversing line, permission-gated, audited, idempotent                                 | FO-04 | 1   | M      | 2026-10-29 | SI     |
+| FO-13 | Settlement / close folio                   | `NI` | `FolioStatus` and `FOLIO_SETTLE` permission exist; no endpoint                                                                                                   | ✖/✖/✖/✔/–          | none                                                                                                  | A zero-balance folio closes; a non-zero one is refused with a typed error                         | FO-11 | 1   | M      | 2026-10-29 | SI     |
+| FO-14 | Invoices                                   | `NI` | no model, endpoint or template                                                                                                                                   | ✖/✖/✖/✖/–          | none                                                                                                  | Numbered, immutable, tax-itemised invoice retrievable as PDF/CSV                                  | FO-13 | 1   | M      | 2026-10-29 | SI     |
+| FO-15 | Payment gateway                            | `NI` | `PaymentGatewayConfig` model and `PaymentGatewayProvider`/`PaymentGatewayStatus` enums exist; **zero references in `apps/api/src`**                              | ✖/✖/✖/✔/✖          | none                                                                                                  | Either wired to a real provider with a sandbox test, or the model is removed                      | FO-04 | 1   | A      | 2026-10-29 | SI     |
+| FO-16 | Payments screen                            | `NI` | `apps/web-admin/src/app/(property)/payments/page.tsx` — 44 lines, **0 API calls**, `PlaceholderScreen`                                                           | ✖ labelled/✖/✖/–/– | none                                                                                                  | Screen lists and captures real payments                                                           | FO-04 | 2   | M      | 2026-10-29 | SI     |
+| FO-17 | Cancellation leaves money untouched        | `CV` | cancellation service writes no folio line                                                                                                                        | –/✔/✔/✔/–          | step 10 plus a per-round money fingerprint in every race round — folio line count and total unchanged | A cancellation never alters a folio line or total                                                 | RS-04 | 2   | M      | 2026-10-29 | TR     |
+| FO-18 | Folio interleaving with reservation writes | `BU` | `folios.service.ts` takes no row lock, no `lock_timeout` and has no retry; writes `reservation.paidAmountMinor` via atomic increment at `:493` and `:712`        | –/?/?/✔/–          | none                                                                                                  | Concurrent payment and cancellation/check-in leave a consistent balance; proven on an isolated DB | FO-04 | 2   | M      | 2026-10-29 | SI     |
+
+### 2.10 Housekeeping
+
+Parent status: **`NI`** — module named in CLAUDE.md §2, absent in every layer.
+
+| ID    | Subfeature                           | St   | Evidence                  | U/A/L/D/I | Tests | Acceptance criterion                               | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------------ | ---- | ------------------------- | --------- | ----- | -------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| HK-01 | Housekeeping module                  | `NI` | no `modules/housekeeping` | ✖/✖/✖/✖/– | none  | Module exists with room status ownership           | RM-05 | 1   | M      | 2026-10-29 | SI     |
+| HK-02 | Room status board                    | `NI` | —                         | ✖/✖/✖/✖/– | none  | Board shows live status per room and updates it    | HK-01 | 1   | M      | 2026-10-29 | SI     |
+| HK-03 | Task assignment                      | `NI` | —                         | ✖/✖/✖/✖/– | none  | Tasks assignable to staff with completion tracking | HK-01 | 2   | M      | 2026-10-29 | SI     |
+| HK-04 | Inspection                           | `NI` | —                         | ✖/✖/✖/✖/– | none  | Inspection pass/fail gates a room back to sellable | HK-02 | 3   | A      | 2026-10-29 | SI     |
+| HK-05 | Housekeeping read-only on financials | `NI` | role template exists      | ✖/✖/✖/✔/– | none  | Housekeeping role cannot read or write folios      | AU-09 | 2   | M      | 2026-10-29 | SI     |
+
+### 2.11 Maintenance
+
+| ID    | Subfeature                | St   | Evidence           | U/A/L/D/I | Tests | Acceptance criterion                                                    | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------- | ---- | ------------------ | --------- | ----- | ----------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| MA-01 | Maintenance / work orders | `NI` | no model or module | ✖/✖/✖/✖/– | none  | Work order takes a room out of order and restores it; inventory follows | RM-06 | 2   | A      | 2026-10-29 | SI     |
+
+### 2.12 Night audit and business date
+
+Parent status: **`NI`** — CLAUDE.md §3.3 is entirely unimplemented.
+
+| ID    | Subfeature                   | St   | Evidence                                                                                                       | U/A/L/D/I          | Tests | Acceptance criterion                                                                         | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ---------------------------- | ---- | -------------------------------------------------------------------------------------------------------------- | ------------------ | ----- | -------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| NA-01 | `nightaudit` module          | `NI` | absent                                                                                                         | ✖/✖/✖/✖/–          | none  | Module exists; audit never runs on a user request                                            | —     | 1   | M      | 2026-10-29 | SI     |
+| NA-02 | `night_audit_step` table     | `NI` | absent                                                                                                         | ✖/✖/✖/✖/–          | none  | One row per step, each with its own transaction and deterministic outcome                    | NA-01 | 1   | M      | 2026-10-29 | SI     |
+| NA-03 | Per-property BullMQ schedule | `NI` | only the outbox queue exists                                                                                   | ✖/✖/✖/✖/✖          | none  | Ten independent schedules from each property's IANA zone; one failure does not block another | WK-01 | 1   | M      | 2026-10-29 | SI     |
+| NA-04 | The eight canonical steps    | `NI` | none                                                                                                           | ✖/✖/✖/✖/–          | none  | Steps 1–8 of CLAUDE.md §3.3 run in order, each committing independently                      | NA-02 | 1   | M      | 2026-10-29 | SI     |
+| NA-05 | Business-date advance        | `NI` | `property.businessDate` is read widely and **written by nothing outside the seed**                             | ✖/✖/✖/✔/–          | none  | Advanced only by step 7; idempotent on re-run                                                | NA-04 | 1   | M      | 2026-10-29 | SI     |
+| NA-06 | Immutable daily snapshots    | `NI` | no snapshot table                                                                                              | ✖/✖/✖/✖/–          | none  | Append-only occupancy/ADR/RevPAR/revenue snapshot per business date                          | NA-04 | 1   | M      | 2026-10-29 | SI     |
+| NA-07 | Night-audit screen           | `NI` | `apps/web-admin/src/app/(property)/night-audit/page.tsx` renders `PlaceholderScreen` and names its own blocker | ✖ labelled/✖/✖/–/– | none  | Screen enqueues a run and polls each step                                                    | NA-01 | 1   | M      | 2026-10-29 | SI     |
+| NA-08 | `audit:dry-run` command      | `NI` | documented in CLAUDE.md §4; **absent from `package.json`**                                                     | ✖/✖/✖/–/–          | none  | Dry run reports every step's intended effect with no writes                                  | NA-04 | 3   | A      | 2026-10-29 | SI     |
+
+### 2.13 Reports and analytics
+
+Parent status: **`PI`** — five report types exist; none is tested, and all precede closed books.
+
+| ID    | Subfeature                  | St   | Evidence                                                                                          | U/A/L/D/I          | Tests | Acceptance criterion                                                | Dep   | Pri | Launch | Verified   | Method |
+| ----- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------- | ------------------ | ----- | ------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| RP-01 | Master report               | `PI` | `reports.controller.ts:63`; `master-report.service.ts`                                            | ✔/✔/✔/✔/–          | none  | Figures reconcile to persisted reservations and folio lines         | —     | 2   | M      | 2026-10-29 | SI     |
+| RP-02 | Configurable report columns | `PI` | `packages/types/src/dto/master-report-columns.ts`; migration `20261019140000`                     | ✔/✔/✔/✔/–          | none  | Column selection persists per user and is applied to export         | RP-01 | 3   | A      | 2026-10-29 | SI     |
+| RP-03 | Room-inventory report       | `PI` | `reports.service.ts:127`                                                                          | ✔/✔/✔/✔/–          | none  | Matches `inventory_day` for the period                              | AV-01 | 3   | M      | 2026-10-29 | SI     |
+| RP-04 | Sales report                | `PI` | `reports.service.ts:129`                                                                          | ✔/✔/✔/✔/–          | none  | Reconciles to folio lines                                           | FO-11 | 2   | M      | 2026-10-29 | SI     |
+| RP-05 | Flash manager report        | `PI` | `reports.service.ts:131`                                                                          | ✔/✔/✔/✔/–          | none  | Matches the business date's snapshot                                | NA-06 | 2   | M      | 2026-10-29 | SI     |
+| RP-06 | BAR pricing report          | `PI` | `reports.service.ts:135`                                                                          | ✔/✔/⚠/✔/–          | none  | Derives from real rate plans                                        | AV-05 | 3   | A      | 2026-10-29 | SI     |
+| RP-07 | CSV export                  | `PI` | `apps/api/src/modules/reports/report-csv.ts`                                                      | ✔/✔/✔/–/–          | none  | Export matches the on-screen rows exactly                           | RP-01 | 3   | M      | 2026-10-29 | SI     |
+| RP-08 | Occupancy / ADR / RevPAR    | `PI` | `performance.controller.ts:44`; `performance.repository.ts`                                       | ✔/✔/⚠/✔/–          | none  | Read from immutable snapshots, not live aggregates (CLAUDE.md §3.3) | NA-06 | 2   | M      | 2026-10-29 | SI     |
+| RP-09 | Tax reports                 | `NI` | none                                                                                              | ✖/✖/✖/–/–          | none  | Period tax report reconciles exactly to folio tax lines             | FO-10 | 2   | M      | 2026-10-29 | SI     |
+| RP-10 | Revenue screen              | `NI` | `apps/web-admin/src/app/(property)/revenue/page.tsx` — 44 lines, 0 API calls, `PlaceholderScreen` | ✖ labelled/✖/✖/–/– | none  | Screen renders real revenue data                                    | RP-04 | 2   | A      | 2026-10-29 | SI     |
+
+### 2.14 Notifications
+
+| ID    | Subfeature                           | St   | Evidence                                                                                                                           | U/A/L/D/I | Tests | Acceptance criterion                                               | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------------ | ---- | ---------------------------------------------------------------------------------------------------------------------------------- | --------- | ----- | ------------------------------------------------------------------ | ----- | --- | ------ | ---------- | ------ |
+| NO-01 | SMTP mailer                          | `PI` | `apps/api/src/modules/platform/mail/smtp.mailer.ts`; `onModuleInit` catches a failed `verify()` and logs — boot is **not** blocked | –/✔/✔/–/✔ | none  | Delivery proven against a sandbox SMTP; failures surface as alerts | —     | 2   | M      | 2026-10-29 | SI     |
+| NO-02 | Logging mailer fallback              | `PI` | `log.mailer.ts`, selected when `SMTP_HOST` is unset                                                                                | –/✔/✔/–/– | none  | Development never silently sends real mail                         | NO-01 | 3   | M      | 2026-10-29 | SI     |
+| NO-03 | OTP delivery                         | `PI` | via the mailer, from `auth.service.ts`                                                                                             | ✔/✔/✔/✔/✔ | none  | OTP arrives, expires and cannot be replayed                        | AU-02 | 2   | M      | 2026-10-29 | SI     |
+| NO-04 | Booking confirmation email           | `NI` | no template or handler                                                                                                             | ✖/✖/✖/–/✖ | none  | Confirmation is sent through the outbox, exactly once per booking  | NO-05 | 1   | M      | 2026-10-29 | SI     |
+| NO-05 | Outbox-driven business notifications | `NI` | `OutboxEventType` has exactly one value, `OUTBOX_SELF_TEST` (`schema.prisma:1664`); only `handlers/self-test.handler.ts` exists    | ✖/✖/✖/✔/– | none  | Real event types with idempotent handlers and dead-letter alerting | WK-12 | 1   | M      | 2026-10-29 | SI     |
+| NO-06 | SMS / WhatsApp                       | `NI` | none                                                                                                                               | ✖/✖/✖/–/✖ | none  | —                                                                  | NO-05 | 3   | P      | 2026-10-29 | SI     |
+
+### 2.15 Booking engine (optional module)
+
+Parent status: **`NI`** — advertised in CLAUDE.md §1; effectively absent.
+
+| ID    | Subfeature                             | St   | Evidence                                                                                                                                        | U/A/L/D/I                    | Tests | Acceptance criterion                                                   | Dep   | Pri | Launch | Verified   | Method |
+| ----- | -------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ----- | ---------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| BE-01 | `booking-engine` module                | `NI` | absent                                                                                                                                          | ✖/✖/✖/✖/–                    | none  | Public search, quote, hold and book endpoints                          | AV-08 | 1   | A      | 2026-10-29 | SI     |
+| BE-02 | Public property page                   | `NI` | `apps/web-booking/src/app/[propertySlug]/page.tsx` — 51 lines, 0 API calls, comment at `:24` documents a **hardcoded placeholder nightly rate** | ⚠ renders fake price/✖/✖/–/– | none  | Page renders live availability and real rates                          | BE-01 | 1   | A      | 2026-10-29 | SI     |
+| BE-03 | Search / quote / hold / book           | `NI` | none                                                                                                                                            | ✖/✖/✖/✖/–                    | none  | Hold expires; book is transactional and respects the oversell CHECK    | BE-01 | 1   | A      | 2026-10-29 | SI     |
+| BE-04 | Payment capture                        | `NI` | none                                                                                                                                            | ✖/✖/✖/✖/✖                    | none  | Capture is idempotent and reconciles to a folio                        | FO-15 | 1   | A      | 2026-10-29 | SI     |
+| BE-05 | Server-side slug→propertyId resolution | `NI` | not implemented                                                                                                                                 | ✖/✖/✖/–/–                    | none  | Slug resolved server-side; never trusted from a client header or query | MT-02 | 2   | A      | 2026-10-29 | SI     |
+
+### 2.16 Channel manager / OTA (optional module)
+
+Parent status: **`NI`** — advertised in CLAUDE.md §1; only an enum and one migration exist.
+
+| ID    | Subfeature               | St   | Evidence                                                                         | U/A/L/D/I | Tests | Acceptance criterion                                                                                  | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------ | ---- | -------------------------------------------------------------------------------- | --------- | ----- | ----------------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| CM-01 | `channels` module        | `NI` | absent                                                                           | ✖/✖/✖/✖/✖ | none  | Module exists with adapters containing mapping only                                                   | —     | 1   | A      | 2026-10-29 | SI     |
+| CM-02 | Channel mappings         | `NI` | no model                                                                         | ✖/✖/✖/✖/– | none  | Mapping per property/room-type/rate-plan                                                              | CM-01 | 1   | A      | 2026-10-29 | SI     |
+| CM-03 | ARI push outbox          | `NI` | outbox exists; no ARI event type or handler                                      | ✖/✖/✖/~/✖ | none  | Debounced per `(propertyId, roomTypeId, dateRange)`, ordered per property, retried until acknowledged | NO-05 | 1   | A      | 2026-10-29 | SI     |
+| CM-04 | Inbound OTA reservations | `NI` | `BookingSource` enum and migration `20261016200000_booking_source_channels` only | ✖/✖/✖/~/✖ | none  | Raw payload stored first, normalized separately, idempotent on the channel's reservation id           | CM-01 | 1   | A      | 2026-10-29 | SI     |
+| CM-05 | Per-channel adapters     | `NI` | none                                                                             | ✖/✖/✖/✖/✖ | none  | One interface, no business rules inside an adapter                                                    | CM-01 | 1   | A      | 2026-10-29 | SI     |
+
+### 2.17 Administration and audit logs
+
+| ID    | Subfeature                        | St   | Evidence                                                                                                | U/A/L/D/I | Tests and actual result                                                             | Acceptance criterion                                            | Dep   | Pri | Launch | Verified   | Method     |
+| ----- | --------------------------------- | ---- | ------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------- | ----- | --- | ------ | ---------- | ---------- |
+| AD-01 | Audit log table                   | `PI` | `AuditLog`; migration `20261017190000_folios_and_audit_log`                                             | –/✔/✔/✔/– | cancellation suite asserts exactly one audit row per successful cancel, every round | Every money/state/rate/restriction mutation writes an audit row | —     | 2   | M      | 2026-10-29 | TR partial |
+| AD-02 | Audit row in the same transaction | `CV` | cancellation service writes the audit row inside its transaction                                        | –/✔/✔/✔/– | step 9 — audit row and status change commit together; refused cancels leave no row  | Audit and change are atomic on every mutating path              | AD-01 | 2   | M      | 2026-10-29 | TR         |
+| AD-03 | Audit log viewer                  | `NI` | no endpoint or page                                                                                     | ✖/✖/✖/✔/– | none                                                                                | Filterable by actor, entity and date, with before/after         | AD-01 | 2   | M      | 2026-10-29 | SI         |
+| AD-04 | Access-control admin UI           | `PI` | `apps/web-admin/src/app/(dashboard)/settings/access-control/page.tsx`; `roles-tab.tsx`, `staff-tab.tsx` | ✔/✔/✔/✔/– | none                                                                                | Role and staff management round-trip through the UI             | AU-10 | 2   | M      | 2026-10-29 | SI         |
+
+### 2.18 Import / export
+
+| ID    | Subfeature                    | St   | Evidence | U/A/L/D/I | Tests | Acceptance criterion                                                        | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ----------------------------- | ---- | -------- | --------- | ----- | --------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| IE-01 | Bulk data import              | `NI` | none     | ✖/✖/✖/–/– | none  | Dry-run validation then transactional import of properties, rooms and rates | RM-02 | 2   | A      | 2026-10-29 | SI     |
+| IE-02 | Data export beyond report CSV | `NI` | none     | ✖/✖/✖/–/– | none  | Tenant-scoped export of operational data                                    | RP-07 | 3   | P      | 2026-10-29 | SI     |
+
+### 2.19 Security and privacy
+
+| ID    | Subfeature                            | St   | Evidence                                                                                      | U/A/L/D/I | Tests and actual result                                                                | Acceptance criterion                                                                | Dep   | Pri | Launch | Verified   | Method     |
+| ----- | ------------------------------------- | ---- | --------------------------------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ---------- |
+| SE-01 | Typed domain errors and global filter | `PI` | `apps/api/src/common/errors/domain-error.ts`; `DomainExceptionFilter`                         | –/✔/✔/–/– | typed 400/403/409 asserted repeatedly across reservation suites                        | Uniform `{ code, message, details?, requestId }`; controllers build no error bodies | —     | 1   | M      | 2026-10-29 | TR partial |
+| SE-02 | No PII in logs                        | `BU` | CLAUDE.md §5 requires it; not audited line by line                                            | –/?/?/–/– | none                                                                                   | Documented review plus an automated check rejecting known PII fields in log calls   | OB-01 | 2   | M      | 2026-10-29 | NV         |
+| SE-03 | Infrastructure errors never leak      | `CV` | `common/errors/sql-state.ts`; `translateWriteFailure` in check-in; room-move exhaustion split | –/✔/✔/–/– | step 14 i–iii — SQLSTATE and SQL text never appear in a response body; typed 409s only | No SQLSTATE, SQL or stack trace in any response                                     | SE-01 | 2   | M      | 2026-10-29 | TR         |
+| SE-04 | Secrets handling                      | `PI` | env-based; `.env` gitignored; env schema in `apps/api/src/config/env.ts`                      | –/✔/✔/–/– | none                                                                                   | Secrets come from a manager in production; none are committed                       | —     | 2   | M      | 2026-10-29 | SI         |
+| SE-05 | GDPR / retention / erasure            | `NI` | none                                                                                          | ✖/✖/✖/✖/– | none                                                                                   | Documented retention and a working erasure path                                     | GP-02 | 2   | A      | 2026-10-29 | SI         |
+| SE-06 | CORS and cookie flags                 | `PI` | `API_CORS_ORIGINS`, `AUTH_COOKIE_NAME` in the env schema                                      | –/✔/✔/–/– | none                                                                                   | Cookies are HttpOnly, Secure and SameSite in production; CORS allowlist asserted    | —     | 2   | M      | 2026-10-29 | SI         |
+
+### 2.20 Observability
+
+| ID    | Subfeature                                   | St   | Evidence                                                         | U/A/L/D/I | Tests and actual result                               | Acceptance criterion                                                                              | Dep   | Pri | Launch | Verified   | Method |
+| ----- | -------------------------------------------- | ---- | ---------------------------------------------------------------- | --------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| OB-01 | Structured logging                           | `PI` | Nest `Logger` used in 27 files under `apps/api/src`              | –/✔/~/–/– | none                                                  | Every log carries requestId and propertyId where applicable; logged once at the handling boundary | —     | 2   | M      | 2026-10-29 | SI     |
+| OB-02 | Liveness probe                               | `PI` | `apps/api/src/modules/health/health.controller.ts:42`            | –/✔/✔/–/– | HTTP 200 observed from the isolated API on 2026-10-29 | Touches nothing; always answers when the process is alive                                         | —     | 1   | M      | 2026-10-29 | TR     |
+| OB-03 | Readiness probe (PostgreSQL only, by design) | `PI` | `health.controller.ts:49`                                        | –/✔/✔/✔/– | none                                                  | Reflects PostgreSQL only; Redis outage never pulls the API from a load balancer                   | —     | 1   | M      | 2026-10-29 | SI     |
+| OB-04 | Outbox backlog gauge                         | `PI` | `health.controller.ts:66`; `outbox-metrics.service.ts`           | –/✔/✔/✔/– | none                                                  | Always 200; never a readiness verdict                                                             | WK-04 | 2   | M      | 2026-10-29 | SI     |
+| OB-05 | Metrics / tracing / error reporting          | `NI` | no Prometheus, OpenTelemetry, Sentry or Datadog dependency       | ✖/✖/✖/–/✖ | none                                                  | Metrics endpoint, trace propagation and error reporting in place                                  | OB-01 | 2   | M      | 2026-10-29 | SI     |
+| OB-06 | Alerting                                     | `NI` | dead letters and stale leases log at `error`/`warn` with no sink | ✖/✖/~/–/✖ | none                                                  | A dead letter raises an external alert, not just a log line                                       | WK-11 | 1   | M      | 2026-10-29 | SI     |
+
+### 2.21 Backup, restore and recovery
+
+| ID    | Subfeature                      | St   | Evidence                                                                                                   | U/A/L/D/I | Tests              | Acceptance criterion                                                                 | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------- | --------- | ------------------ | ------------------------------------------------------------------------------------ | ----- | --- | ------ | ---------- | ------ |
+| BR-01 | Backup automation               | `NI` | no script in the repository; `pg_dump`/`pg_restore`/`pg_dumpall`/`pg_basebackup` are available on the host | ✖/✖/✖/–/– | none               | Scheduled dump with retention and a restore rehearsal record                         | —     | 1   | M      | 2026-10-29 | SI     |
+| BR-02 | Restore into a separate target  | `PI` | `.github/workflows/release.yml:144-146` only                                                               | –/–/~/–/– | **never executed** | Restore always targets a fresh database; never the source or development             | BR-01 | 1   | M      | 2026-10-29 | NV     |
+| BR-03 | Four-layer restore verification | `PI` | `release.yml` DO block checks 4 guards, 0 oversold, 0 orphans                                              | –/–/~/–/– | **never executed** | Object inventory, constraints, per-table counts and business invariants all verified | BR-02 | 1   | M      | 2026-10-29 | NV     |
+| BR-04 | Point-in-time recovery          | `NI` | WAL archiving not configured                                                                               | ✖/✖/✖/✖/– | none               | Documented RPO/RTO with a tested PITR to a timestamp                                 | BR-01 | 2   | A      | 2026-10-29 | SI     |
+
+### 2.22 Background workers and the transactional outbox
+
+Parent status: **`PI`** — the mechanism is sound and partly proven; it carries no real business
+events, and its Redis-dependent recovery has never been executed.
+
+| ID    | Subfeature                            | St   | Evidence                                                                                                             | U/A/L/D/I | Tests and actual result                                                                                   | Acceptance criterion                                                             | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| WK-01 | Worker process                        | `PI` | `apps/api/src/worker.ts` boots an application context, no HTTP listener                                              | –/–/✔/–/✔ | none run                                                                                                  | Worker runs independently of the API                                             | —     | 1   | M      | 2026-10-29 | SI     |
+| WK-02 | Dependency preflight                  | `PI` | `worker.ts` pings PostgreSQL then Redis and exits non-zero on either                                                 | –/–/✔/✔/✔ | none                                                                                                      | An unavailable dependency exits non-zero so a supervisor restarts it             | WK-01 | 2   | M      | 2026-10-29 | SI     |
+| WK-03 | Graceful shutdown                     | `BU` | `worker.ts` registers SIGINT/SIGTERM once each and calls `app.close()`; `enableShutdownHooks()` set                  | –/–/✔/–/– | **Windows has no deliverable SIGTERM.** The outbox suite exercises what the handler calls, not the signal | On SIGTERM an in-flight job finishes or releases its lease; no row is left stuck | WK-01 | 2   | M      | 2026-10-29 | NV     |
+| WK-04 | Dispatcher poll loop                  | `PI` | `outbox-dispatcher.service.ts` interval; swallows poll failures to keep the interval alive                           | –/✔/✔/✔/✔ | `pnpm gate:integration` (2026-10-29) — outbox suite exit 0                                                | Due rows are claimed and published within the poll interval                      | WK-01 | 1   | M      | 2026-10-29 | TR     |
+| WK-05 | Lease and stale-lease reaping         | `PI` | `outbox-dispatcher.service.ts:167` `"leaseExpiresAt" < now()`; lease computed in SQL                                 | –/✔/✔/✔/– | outbox suite — reaper reclaims an expired lease, row returns to PENDING with the claim cleared            | A dead worker costs one lease duration of latency and nothing else               | WK-04 | 1   | M      | 2026-10-29 | TR     |
+| WK-06 | `recoveries` separate from `attempts` | `PI` | distinct columns on `OutboxEvent`                                                                                    | –/✔/✔/✔/– | outbox suite — claiming spends no retry budget                                                            | A reclaim never consumes the retry budget                                        | WK-05 | 2   | M      | 2026-10-29 | TR     |
+| WK-07 | Claim-token guard                     | `PI` | `outbox.worker.ts:127` plus three write guards on `"claimedBy" = ${claimToken}`                                      | –/✔/✔/✔/– | outbox suite — a job replayed against a finished row is dropped                                           | A worker can only record an outcome for the claim it was handed                  | WK-05 | 1   | M      | 2026-10-29 | TR     |
+| WK-08 | PostgreSQL owns retries               | `PI` | `outbox.queue.ts:93` `attempts: 1`; backoff and budget in the database                                               | –/✔/✔/✔/✔ | outbox suite — bounded budget exhausts into DEAD                                                          | Exactly one retry counter exists, in the durable store                           | WK-04 | 1   | M      | 2026-10-29 | TR     |
+| WK-09 | Bounded Redis retention               | `PI` | `outbox.queue.ts:96-97` `removeOnComplete: 100`, `removeOnFail: 500`                                                 | –/✔/✔/–/✔ | none                                                                                                      | Redis stays a buffer, never an archive                                           | WK-08 | 3   | M      | 2026-10-29 | SI     |
+| WK-10 | Total queue-loss recovery             | `BU` | `test/integration/outbox-redis.test.mjs` calls `obliterate({ force: true })` and expects rediscovery from PostgreSQL | –/?/?/✔/? | **never run** — no Redis, Docker daemon down                                                              | After queue loss, pending work is rediscovered and completes exactly once        | WK-05 | 1   | M      | 2026-10-29 | NV     |
+| WK-11 | Dead-letter state                     | `PI` | `OutboxStatus.DEAD`; worker logs `OUTBOX DEAD LETTER` at `error`                                                     | –/✔/✔/✔/– | outbox suite — budget exhaustion reaches DEAD                                                             | A permanently failed job alerts and does not vanish                              | OB-06 | 1   | M      | 2026-10-29 | TR     |
+| WK-12 | Real business handlers                | `NI` | only `handlers/self-test.handler.ts`; `OutboxEventType` has one value                                                | ✖/✖/✖/✔/– | n/a                                                                                                       | At least booking-confirmation and ARI-push handlers exist and are idempotent     | NO-05 | 1   | M      | 2026-10-29 | SI     |
+| WK-13 | `queue:ui` (Bull Board)               | `NI` | documented in CLAUDE.md §4; **absent from `package.json`**                                                           | ✖/✖/✖/–/✖ | none                                                                                                      | Queue inspection available to operators                                          | WK-01 | 3   | A      | 2026-10-29 | SI     |
+
+### 2.23 Deployment, CI and the release gate
+
+Parent status: **`PI`** — the gate is the best-tested subsystem; nothing is deployable and no
+workflow has ever run.
+
+| ID    | Subfeature                                      | St   | Evidence                                                                                                          | U/A/L/D/I | Tests and actual result                                                                                                                            | Acceptance criterion                                                                                     | Dep   | Pri | Launch | Verified   | Method     |
+| ----- | ----------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ---------- |
+| CI-01 | Fast local gate                                 | `CV` | `scripts/gate.mjs`                                                                                                | –/–/✔/–/– | `pnpm gate` → **exit 0**: whitespace 47 ms, format 2984 ms, typecheck 690 ms, lint 652 ms, guards 59 ms, retry 164 ms (2026-10-29)                 | One documented command runs every service-free check and fails non-zero                                  | —     | 1   | M      | 2026-10-29 | TR         |
+| CI-02 | Typecheck                                       | `CV` | turbo `typecheck` across 10 packages                                                                              | –/–/✔/–/– | 10/10 tasks, exit 0                                                                                                                                | Clean before review                                                                                      | —     | 1   | M      | 2026-10-29 | TR         |
+| CI-03 | Lint                                            | `CV` | turbo `lint` across 11 packages                                                                                   | –/–/✔/–/– | 11/11 tasks, exit 0                                                                                                                                | Clean before review                                                                                      | —     | 1   | M      | 2026-10-29 | TR         |
+| CI-04 | `pnpm test` is honest                           | `PI` | now `node scripts/gate.mjs --no-format`; previously `turbo run test` planned 8 tasks, all `<NONEXISTENT>`, exit 0 | –/–/✔/–/– | `pnpm test` → exit 0 and actually runs suites                                                                                                      | `pnpm test` can never pass without executing tests                                                       | CI-05 | 1   | M      | 2026-10-29 | TR         |
+| CI-05 | Domain unit tests (vitest)                      | `NI` | **no vitest dependency and no `*.test.ts` anywhere**, against CLAUDE.md §4                                        | ✖/✖/✖/–/– | none                                                                                                                                               | Pricing, tax, rounding, allocation, state machines and business-date math covered                        | FO-09 | 1   | M      | 2026-10-29 | SI         |
+| CI-06 | Guard and gate unit tests                       | `CV` | `test/unit/gate-guards.test.mjs`                                                                                  | –/–/✔/–/– | `node test/unit/gate-guards.test.mjs` → 43 checks, exit 0                                                                                          | Every rejection path covered without services                                                            | CI-15 | 2   | M      | 2026-10-29 | TR         |
+| CI-07 | Changed-file detection on pull_request          | `CV` | `.github/workflows/pr.yml:80` `GATE_BASE_REF`; `scripts/lib/changed-files.mjs`                                    | –/–/✔/–/– | unit: mode `base`, three-dot diff against the merge base                                                                                           | A PR is compared against its real base                                                                   | CI-06 | 2   | M      | 2026-10-29 | TR         |
+| CI-08 | Changed-file detection on push                  | `CV` | `pr.yml:81` `GATE_BEFORE_REF: github.event.before`                                                                | –/–/✔/–/– | unit: mode `before`, two-dot; zero detected files in CI **fails**; live check with a real predecessor found 10 files (previously 0 → vacuous pass) | A push is compared against its predecessor and can never pass vacuously                                  | CI-07 | 2   | M      | 2026-10-29 | TR         |
+| CI-09 | Initial commit, force-push and shallow clone    | `CV` | `changed-files.mjs` modes `all` / `undetermined` / `unresolvable`                                                 | –/–/✔/–/– | unit: zero-SHA → `all` (372 files); unreachable predecessor → `all`; missing base in CI → hard fail                                                | No-predecessor cases are handled explicitly, never silently                                              | CI-08 | 3   | M      | 2026-10-29 | TR         |
+| CI-10 | Sufficient checkout history                     | `CV` | `pr.yml:43` `fetch-depth: 0`                                                                                      | –/–/✔/–/– | inspected alongside the passing base-ref tests                                                                                                     | Merge-base comparison is always possible                                                                 | CI-07 | 2   | M      | 2026-10-29 | TR partial |
+| CI-11 | Integration workflow                            | `BU` | `pr.yml` job `integration`, service `postgres:17`, ephemeral env files, API started and waited on                 | –/–/~/–/– | **never executed** — untracked and unpushed                                                                                                        | Green on a real pull request                                                                             | CI-01 | 1   | M      | 2026-10-29 | NV         |
+| CI-12 | Release workflow PostgreSQL client              | `PI` | `release.yml:142-143` installs `postgresql-client-17` with a fallback to `postgresql-client`                      | –/–/⚠/–/– | **never executed**                                                                                                                                 | `pg_dump` major ≥ server major; backup/restore step green                                                | BR-02 | 1   | M      | 2026-10-29 | SI         |
+| CI-13 | Resilience workflow                             | `BU` | `release.yml` job `resilience` with `postgres:17` and `redis:7-alpine` on 6380                                    | –/–/~/–/– | **never executed**                                                                                                                                 | Green nightly, including queue-loss recovery                                                             | WK-10 | 1   | M      | 2026-10-29 | NV         |
+| CI-14 | Deployment configuration                        | `NI` | **no Dockerfile, compose, Procfile or platform config anywhere**                                                  | ✖/✖/✖/–/– | none                                                                                                                                               | Reproducible build for api, worker and web apps; documented env contract; boots against a fresh database | —     | 1   | M      | 2026-10-29 | SI         |
+| CI-15 | Destructive-test database guards                | `CV` | `test/support/isolation-guard.mjs` called by six suites; `create-race.test.mjs` keeps its own guard               | –/–/✔/✔/– | all seven suites refused the development database, exit 1 each; zero module-scope destructive statements in all six (2026-10-29)                   | No destructive suite can touch a shared database by any entry point                                      | CI-16 | 1   | M      | 2026-10-29 | TR         |
+| CI-16 | Environment cannot authorize the development DB | `CV` | `classifyTarget` consults the development-name denylist before the allowlist                                      | –/–/✔/✔/– | unit: `EASEIT_TEST_DBS=easeit` refused; hidden in a longer list refused; remote host refused; `[::1]` accepted                                     | No environment variable can authorize a development database                                             | CI-15 | 1   | M      | 2026-10-29 | TR         |
+
+### 2.24 Performance and load testing
+
+| ID    | Subfeature                 | St   | Evidence                                            | U/A/L/D/I | Tests | Acceptance criterion                                                | Dep   | Pri | Launch | Verified   | Method |
+| ----- | -------------------------- | ---- | --------------------------------------------------- | --------- | ----- | ------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| PF-01 | Group performance endpoint | `PI` | `performance.controller.ts:44`                      | ✔/✔/✔/✔/– | none  | Figures reconcile to snapshots                                      | RP-08 | 2   | A      | 2026-10-29 | SI     |
+| PF-02 | Load / stress testing      | `NI` | no k6, artillery or JMeter profile                  | ✖/✖/✖/–/– | none  | Documented profile at 50 concurrent staff with p95 latency recorded | —     | 2   | A      | 2026-10-29 | SI     |
+| PF-03 | Index and query profiling  | `BU` | indexes declared in `schema.prisma`; never profiled | –/–/?/✔/– | none  | Hot queries profiled with `EXPLAIN` under representative data       | PF-02 | 2   | A      | 2026-10-29 | NV     |
+
+### 2.25 Calendar and timeline (product-specific)
+
+| ID    | Subfeature                      | St   | Evidence                                                                      | U/A/L/D/I | Tests | Acceptance criterion                                                  | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------------- | ---- | ----------------------------------------------------------------------------- | --------- | ----- | --------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| CA-01 | Group calendar                  | `PI` | `calendar.controller.ts:46`; `(dashboard)/group-calendar/page.tsx`            | ✔/✔/✔/✔/– | none  | Occupancy across the portfolio matches persisted state                | —     | 2   | M      | 2026-10-29 | SI     |
+| CA-02 | Timeline calendar (room × date) | `PI` | `timeline.controller.ts:48`; `components/calendar/timeline/timeline-grid.tsx` | ✔/✔/✔/✔/– | none  | Grid matches assignments; drag-to-assign calls the move endpoint      | FD-05 | 2   | M      | 2026-10-29 | SI     |
+| CA-03 | Create-reservation modal        | `PI` | `components/calendar/create-reservation-modal.tsx`                            | ✔/✔/✔/✔/– | none  | Creates a booking through the real endpoint and reflects the result   | RS-02 | 2   | M      | 2026-10-29 | SI     |
+| CA-04 | Reservation drawer              | `PI` | `components/calendar/timeline/reservation-drawer.tsx`                         | ✔/✔/✔/✔/– | none  | Shows real state; offered actions match legal transitions             | RS-08 | 2   | M      | 2026-10-29 | SI     |
+| CA-05 | Check-in modal                  | `PI` | `components/calendar/timeline/check-in-modal.tsx`                             | ✔/✔/✔/✔/– | none  | Surfaces blockers and typed refusals                                  | FD-02 | 2   | M      | 2026-10-29 | SI     |
+| CA-06 | Room-move sheet                 | `PI` | `components/folio/room-move-sheet.tsx`                                        | ✔/✔/✔/✔/– | none  | Category-change acknowledgement required; stale-move refusal surfaced | FD-05 | 2   | M      | 2026-10-29 | SI     |
+| CA-07 | Cancel-booking dialog           | `PI` | `components/folio/cancel-booking-dialog.tsx`                                  | ✔/✔/✔/✔/– | none  | Idempotent cancel; already-cancelled reported as success              | RS-04 | 2   | M      | 2026-10-29 | SI     |
+
+### 2.26 Group and property dashboards (product-specific)
+
+| ID    | Subfeature         | St   | Evidence                                                                         | U/A/L/D/I | Tests | Acceptance criterion                                  | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------ | ---- | -------------------------------------------------------------------------------- | --------- | ----- | ----------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| GR-01 | Group dashboard    | `PI` | `properties.controller.ts:60` `my-group`; `(dashboard)/group-dashboard/page.tsx` | ✔/✔/✔/✔/– | none  | Portfolio figures reconcile to per-property data      | —     | 2   | A      | 2026-10-29 | SI     |
+| GR-02 | Property dashboard | `PI` | `property-dashboard.controller.ts:56`; migration `20261016160000`                | ✔/✔/✔/✔/– | none  | Summary matches persisted state for the business date | NA-06 | 2   | M      | 2026-10-29 | SI     |
+| GR-03 | Omnibar search     | `PI` | `components/property-dashboard/omnibar-search.tsx`                               | ✔/✔/✔/✔/– | none  | Finds reservations and guests within tenant scope     | RS-10 | 3   | A      | 2026-10-29 | SI     |
+
+---
+
+## 3. Status roll-up
+
+### 3.1 COMPLETE AND VERIFIED (`CV`)
+
+- [x] AV-01, AV-02, AV-03 — inventory counters and both CHECK constraints
+- [x] RS-02, RS-03, RS-04, RS-05, RS-06, RS-07 — booking, cancellation and every tested race
+- [x] RS-15, RS-16 — state machine and bounded lock waits
+- [x] FD-02, FD-03, FD-05, FD-07 — check-in, typed `23P01`, room move, cross-category counters
+- [x] FO-17 — cancellation never touches money
+- [x] AD-02 — audit row atomic with the change
+- [x] SE-03 — infrastructure errors never leak
+- [x] CI-01, CI-02, CI-03, CI-06, CI-07, CI-08, CI-09, CI-10, CI-15, CI-16 — gate, typecheck, lint, guard tests, changed-file detection, isolation guards
+
+### 3.2 NOT IMPLEMENTED (`NI`) — the launch-critical ones
+
+- [ ] **FD-04 check-out** — the single largest functional hole
+- [ ] AV-04 … AV-07, AV-10 — inventory and rates management
+- [ ] RM-02, RM-04, RM-05, RM-06 — room and category administration
+- [ ] HK-01 … HK-05 — housekeeping
+- [ ] NA-01 … NA-08 — night audit and business date
+- [ ] FO-12, FO-13, FO-14, FO-15, FO-16 — refunds, settlement, invoices, gateway, payments screen
+- [ ] MT-02, MT-03, MT-04 — tenancy context, Prisma extension, RLS
+- [ ] AU-08, AU-13, AU-15 — password reset, inert permissions, deactivation
+- [ ] RS-11, RS-12, RS-13 — stay amendment and no-show
+- [ ] NO-04, NO-05 — confirmation email and real outbox events
+- [ ] WK-12 — business handlers
+- [ ] CI-05, CI-14 — domain unit tests, deployment configuration
+- [ ] OB-05, OB-06 — metrics/tracing, alerting
+- [ ] BR-01, BR-04 — backup automation, PITR
+- [ ] RP-09, RP-10 — tax reports, revenue screen
+- [ ] BE-01 … BE-05, CM-01 … CM-05 — optional modules, advertised
+- [ ] GP-02, GP-07, MA-01, IE-01, IE-02, SE-05, AV-09, NO-06, PF-02, WK-13, MT-08, AD-03
+
+### 3.3 BLOCKED / UNKNOWN (`BU`) — and the isolated setup each needs
+
+| ID                                                                       | What is unknown                                                   | Isolated setup required                                                        |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| RS-18                                                                    | Whether `40001`/`40P01` retries behave under a real deadlock      | Isolated PostgreSQL plus a test that forces two transactions into a lock cycle |
+| FO-18                                                                    | Whether concurrent payment and reservation writes stay consistent | Isolated DB plus concurrent folio/reservation load                             |
+| SE-02                                                                    | Whether any log line carries PII                                  | Line-by-line review, then an automated lint rule                               |
+| WK-03                                                                    | Whether SIGTERM drains in-flight jobs                             | Linux host or container (Windows has no deliverable SIGTERM)                   |
+| WK-10                                                                    | Whether total queue loss recovers from PostgreSQL                 | Docker daemon plus isolated Redis on port 6380                                 |
+| CI-11, CI-13                                                             | Whether either workflow runs green                                | Commit and push; observe a real PR and a nightly run                           |
+| PF-03                                                                    | Query plans under load                                            | Representative dataset plus profiling harness                                  |
+| MT-01…MT-07 runtime behaviour, PS-_, AU-_, FO-01…FO-11, RP-_, CA-_, GR-* | Whether the endpoints behave as written                           | Isolated DB plus API, per-module integration suites                            |
+
+---
+
+## 4. Prioritized remediation backlog
+
+### P0 — launch blockers
+
+| #     | Item                               | IDs                 | Acceptance criterion                                                                                                                                                                                                                                            |
+| ----- | ---------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0-1  | Implement check-out                | FD-04               | `POST .../check-out` moves `CHECKED_IN → CHECKED_OUT` under the reservation row lock, settles or refuses an open balance, frees the room, writes an audit row in the same transaction, is idempotent, and an integration test covers every illegal source state |
+| P0-2  | Inventory management               | AV-04, RM-06        | Endpoints set `physical`, `blocked` and `overbookingAllowance` per date range; a block reduces sellable count; the oversell CHECK still holds; test proves both                                                                                                 |
+| P0-3  | Rate plans and rate calendar       | AV-05, AV-06, RS-01 | A quote derives from a stored rate for the date and plan; test asserts quoted total equals nightly rates plus taxes in integer minor units                                                                                                                      |
+| P0-4  | Room type and room CRUD            | RM-02, RM-04        | Create/edit/retire with tenant scope; retiring a category or room with live stays is refused with a typed error                                                                                                                                                 |
+| P0-5  | Folio payment idempotency          | FO-03, FO-04        | Payment accepts a client idempotency key; five identical POSTs produce exactly one payment line and one audit row                                                                                                                                               |
+| P0-6  | Night audit and business-date roll | NA-01 … NA-06       | Per-property BullMQ job; `night_audit_step` rows; resumable and idempotent; re-running a completed audit is a no-op; business date advances only in step 7                                                                                                      |
+| P0-7  | Tenancy extension and RLS          | MT-02, MT-03, MT-04 | Prisma extension injects `propertyId`; RLS policies active; per-module test asserts cross-tenant read/update/delete returns not-found                                                                                                                           |
+| P0-8  | Deployment configuration           | CI-14               | Reproducible container build for api, worker and both web apps; documented env contract; boots against a fresh database                                                                                                                                         |
+| P0-9  | Password reset                     | AU-08               | Single-use expiring token; expiry and replay both refused; test covers both                                                                                                                                                                                     |
+| P0-10 | Gate unimplemented permissions     | AU-13               | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND`, `FOLIO_SETTLE`, `NIGHT_AUDIT_*` and `HOUSEKEEPING_*` are not grantable until their feature ships                                                                                                                       |
+
+### P1 — required before pilot
+
+| #     | Item                                          | IDs                  | Acceptance criterion                                                                                                               |
+| ----- | --------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| P1-1  | Commit and push the gate and test workstreams | CI-11, CI-13         | A real pull request and a real push both run green                                                                                 |
+| P1-2  | Fix the release workflow PostgreSQL client    | CI-12                | PGDG repo added; `pg_dump --version` major ≥ server major; backup/restore step green                                               |
+| P1-3  | Domain unit tests                             | CI-05, FO-09         | Vitest covers pricing, tax, rounding, allocation, state machines and business-date math; `pnpm test` runs them                     |
+| P1-4  | Housekeeping module                           | HK-01 … HK-03, RM-05 | Room status board and transitions; every change audited and visible to front desk                                                  |
+| P1-5  | Refunds and settlement                        | FO-12, FO-13         | Reversal-based refund and zero-balance close; immutability test passes                                                             |
+| P1-6  | Invoices                                      | FO-14                | Numbered, immutable, tax-itemised invoice retrievable as PDF/CSV                                                                   |
+| P1-7  | Prove queue-loss recovery                     | WK-10                | `pnpm gate:resilience` green against isolated Redis on 6380, including `obliterate`                                                |
+| P1-8  | Local backup/restore automation               | BR-01, BR-02, BR-03  | `test/recovery/` suite dumps, restores to a **separate** target and runs four-layer verification; refuses the development database |
+| P1-9  | Induce a real deadlock                        | RS-18                | A forced `40P01` is retried within budget then answered as a typed 409                                                             |
+| P1-10 | Bound the create-reservation lock wait        | RS-17                | Contended booking returns a typed 409 within `ROW_LOCK_TIMEOUT_MS`, measured in a test                                             |
+| P1-11 | Stay amendment and no-show                    | RS-11, RS-12, RS-13  | Inventory effects asserted per date and per category for every amendment                                                           |
+| P1-12 | Alerting sink                                 | OB-06, WK-11         | A dead letter or stale lease raises an external alert                                                                              |
+| P1-13 | Audit log viewer                              | AD-03                | Filterable per property by actor, entity and date, with before/after                                                               |
+| P1-14 | Graceful shutdown proof                       | WK-03                | SIGTERM test in a Linux container shows the in-flight job completes or the lease is released; no stuck rows                        |
+| P1-15 | Real outbox business events                   | NO-04, NO-05, WK-12  | Booking confirmation delivered exactly once through the outbox, with an idempotent handler                                         |
+
+### P2 — required before general availability
+
+| #     | Item                              | IDs                 | Acceptance criterion                                                                        |
+| ----- | --------------------------------- | ------------------- | ------------------------------------------------------------------------------------------- |
+| P2-1  | Observability                     | OB-01, OB-05        | Request/property-scoped logs, metrics endpoint, trace propagation, error reporting          |
+| P2-2  | PII-in-logs audit                 | SE-02               | Documented review plus an automated check rejecting known PII fields                        |
+| P2-3  | Load testing                      | PF-02, PF-03        | Documented profile at 50 concurrent staff; p95 latency and booking-race results recorded    |
+| P2-4  | Real GST provider                 | GP-04               | Sandbox path exercised; `mock` impossible outside development                               |
+| P2-5  | Maintenance / work orders         | MA-01, RM-06        | Out-of-order rooms leave sellable inventory, with a test                                    |
+| P2-6  | Reusable guest profiles           | GP-02               | Dedupe and stay history                                                                     |
+| P2-7  | Tax reports                       | RP-09               | Period tax report reconciles exactly to folio tax lines                                     |
+| P2-8  | Import / export                   | IE-01, IE-02        | Bulk import with dry-run validation                                                         |
+| P2-9  | Snapshot-based reporting          | RP-05, RP-08, GR-02 | Reports read night-audit snapshots, not live aggregates                                     |
+| P2-10 | Repo-wide Prettier decision       | —                   | Either reformat all 153 outstanding files or permanently document the grandfathering policy |
+| P2-11 | Payment gateway                   | FO-15               | Wired to a real provider with a sandbox test, or the model is removed                       |
+| P2-12 | Per-module tenant isolation tests | MT-05               | Every module has the CLAUDE.md §3.2 not-found test                                          |
+
+### P3 — post-launch
+
+Booking engine (BE-01 … BE-05) · Channel manager (CM-01 … CM-05) · SMS/WhatsApp (NO-06) · PITR
+(BR-04) · Redis availability cache (AV-09) · `queue:ui` (WK-13) · `audit:dry-run` (NA-08) ·
+GDPR tooling (SE-05) · `withoutTenantScope()` (MT-08).
+
+---
+
+## 5. End-to-end workflow verification matrix
+
+| Workflow                                  | Code exists | Proven end to end         | Evidence                                                                        |
+| ----------------------------------------- | ----------- | ------------------------- | ------------------------------------------------------------------------------- |
+| Create reservation, including races       | ✔           | **Yes**                   | `create-race.test.mjs` ×3 → 177/179/178 checks, exit 0, isolated DB, 2026-10-29 |
+| Cancel reservation                        | ✔           | **Yes**                   | `cancel-reservation.test.mjs` → 229/229, exit 0                                 |
+| Cancel vs check-in                        | ✔           | **Yes**                   | 12/12 races → typed 409                                                         |
+| Cancel vs cross-category move             | ✔           | **Yes**                   | 9/9, per-category per-date counters asserted                                    |
+| Check-in, including stale assignment      | ✔           | **Yes**                   | 23/23 plus deterministic harness 8/8                                            |
+| Room move                                 | ✔           | **Yes**                   | via cancellation and create-race suites                                         |
+| Bounded lock waits                        | ✔           | **Yes**                   | measured 3029 / 3035 / 3038 ms → typed 409                                      |
+| Outbox enqueue, claim, lease, retry, DEAD | ✔           | **Yes** (PostgreSQL only) | `pnpm gate:integration` → outbox and claim-race suites exit 0                   |
+| Destructive-test database guards          | ✔           | **Yes**                   | 7/7 suites refuse the development DB, exit 1; 43 unit checks                    |
+| CI changed-file detection                 | ✔           | **Yes** (unit)            | 43 checks covering push, PR, zero candidates, missing base                      |
+| Typecheck, lint, fast gate                | ✔           | **Yes**                   | `pnpm gate` exit 0                                                              |
+| Parallel-booking stress suite             | ✔           | **No**                    | `pnpm test:concurrency` has never been run                                      |
+| Redis / BullMQ queue loss                 | ✔           | **No**                    | no Redis, Docker daemon down                                                    |
+| Graceful SIGTERM                          | ✔           | **No**                    | not deliverable on Windows                                                      |
+| Backup / restore                          | partial     | **No**                    | CI-only, never executed                                                         |
+| Deadlock / serialization retry            | ✔           | **No**                    | never induced                                                                   |
+| Folio charge / payment / correction       | ✔           | **No**                    | zero tests                                                                      |
+| Auth, 2FA, RBAC enforcement               | ✔           | **No**                    | no dedicated tests                                                              |
+| Property setup writes                     | ✔           | **No**                    | zero tests                                                                      |
+| Reports                                   | ✔           | **No**                    | zero tests                                                                      |
+| Calendar / timeline UI                    | ✔           | **No**                    | never rendered in a test                                                        |
+| Any CI workflow                           | ✔           | **No**                    | untracked, never pushed                                                         |
+| **Check-out**                             | ✖           | **No**                    | does not exist                                                                  |
+
+---
+
+## 6. Must be hidden or labelled unavailable before any demo
+
+Already honestly labelled — `PlaceholderScreen` states "Not built yet" and names its blocker, and
+shows **no invented data**. Keep this pattern:
+
+- [x] NA-07 night audit · AV-10 rates & inventory · FO-16 payments · GP-07 direct billing ·
+      RP-10 revenue
+
+Still to address:
+
+- [ ] **AU-13** — permissions for absent features are grantable; an admin can confer authority that
+      silently does nothing
+- [ ] **BE-02** — the public booking page renders a **hardcoded nightly rate**
+      (`apps/web-booking/src/app/[propertySlug]/page.tsx:24`). It must not be publicly reachable; it
+      would quote prices the PMS never agreed
+- [ ] **GP-04** — GSTIN lookup returns synthetic company names under the default `mock` provider;
+      label "unverified demo data" or disable outside development
+- [ ] **RP-06** — BAR pricing report depends on a rates domain that does not exist
+- [ ] **RP-08 / GR-02** — occupancy, ADR and RevPAR are computed from live aggregates with no closed
+      books; label "provisional, pre-night-audit"
+- [ ] **FO-15** — do not surface any payment-gateway settings; the model is unwired
+- [ ] **CLAUDE.md §4** promises `pnpm test:integration`, `test:e2e`, `queue:ui` and `audit:dry-run`;
+      none exists in `package.json`
+- [ ] **CLAUDE.md §2** lists `inventory`, `rates`, `frontdesk`, `housekeeping`, `nightaudit`,
+      `channels` and `booking-engine` as if present; mark them planned
+
+---
+
+## 7. Provenance and safety record
+
+### 7.1 Audit of 2026-10-29
+
+Commands executed — read-only except the one test run:
+
+```
+git log / status / branch --porcelain
+find / grep / sed / ls / wc / awk                 (static inspection)
+python -c "..."                                   (parsed package.json and schema.prisma)
+pnpm gate                                         → exit 0   ← the only executing test
+```
+
+Tests actually run during the audit:
+
+```
+$ pnpm gate
+  PASS  whitespace 47ms
+  PASS  format 2984ms
+  PASS  typecheck 690ms          (10/10 turbo tasks)
+  PASS  lint 652ms               (11/11 turbo tasks)
+  PASS  unit tests (guards, no services) 59ms     (43 checks)
+  PASS  unit tests (retry classifier) 164ms       (30 checks)
+GATE_EXIT=0
+```
+
+Results cited from earlier the same day, against the isolated `easeit_racetest` database, not re-run
+during the audit itself: cancellation 229/229 · create-race 177/179/178 ×3 · check-in 23/23 ·
+`gate:integration` 5 suites exit 0 · bounded-wait measurements · 7/7 guard refusals.
+
+Not run — would need unavailable services or would mutate data: every integration and concurrency
+suite, `test:concurrency`, `test:outbox:redis`, backup/restore, both CI workflows. PostgreSQL was
+stopped, nothing listened on 6379, the Docker daemon was down.
+
+No secrets or connection strings were printed; databases are referred to by name only.
+
+### 7.2 Could not be verified at all
+
+Runtime behaviour of auth, folios, reports, property setup, calendar/timeline UI and notifications;
+UI-to-API wiring beyond static `fetch` detection; whether migrations apply cleanly from empty;
+actual CI behaviour; graceful shutdown; deadlock retries; folio interleavings; PII-in-logs
+compliance.
+
+---
+
+## 8. Change history
+
+Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-10-29 — document created
+
+| Feature IDs                                               | Transition                | Evidence                                                                                                                                   | Reason                                                                                                                         |
+| --------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| All 205 IDs                                               | — → initial status        | Full repository audit; `pnpm gate` exit 0; earlier same-day isolated-DB suite runs                                                         | Initial baseline of the living inventory.                                                                                      |
+| AV-01, AV-02, AV-03                                       | → `CV`                    | create-race ×3 and cancellation 229/229 on `easeit_racetest`; 0 oversold, 0 negative rows                                                  | Counter and constraint behaviour proven per date and per category, not merely present.                                         |
+| RS-02, RS-03, RS-04, RS-05, RS-06, RS-07, RS-15, RS-16    | → `CV`                    | cancellation 229/229; create-race 177/179/178; 12/12 and 9/9 races; bounded waits 3029/3035/3038 ms                                        | Reservation write paths have genuine race evidence against real constraints.                                                   |
+| FD-02, FD-03, FD-05, FD-07                                | → `CV`                    | check-in 23/23; stale-assignment harness 8/8; typed 409 `ROOM_UNAVAILABLE`                                                                 | Check-in and room move proven under contention.                                                                                |
+| FD-04                                                     | → `NI`                    | zero matches for `@Post(...check-out)` in `apps/api/src`; no service, DTO or UI                                                            | Check-out does not exist in any layer. Recorded as the largest launch blocker.                                                 |
+| FO-03, FO-04                                              | → `PI` with critical risk | zero matches for `idempot\|requestId\|clientRef` in `folios.service.ts`                                                                    | Payment endpoints exist but a retry can double-post real money.                                                                |
+| FO-15                                                     | → `NI`                    | `PaymentGatewayConfig` model present, zero references in `apps/api/src`                                                                    | Dead schema; must be wired or removed.                                                                                         |
+| AU-13                                                     | → `NI`                    | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND/SETTLE`, `NIGHT_AUDIT_*`, `HOUSEKEEPING_*` in `packages/types`                                      | RBAC grants authority for features that do not exist.                                                                          |
+| AV-04 … AV-07, RM-02, RM-04, HK-01 … HK-05, NA-01 … NA-08 | → `NI`                    | no module, schema or endpoint for `inventory`, `rates`, `housekeeping`, `nightaudit`                                                       | CLAUDE.md §2 lists these modules; none exists.                                                                                 |
+| AV-10, NA-07, FO-16, GP-07, RP-10                         | → `NI`                    | 44–75 line pages with 0 API calls rendering `PlaceholderScreen`                                                                            | Honest labelled placeholders — recorded as not implemented, and commended for showing no fake data.                            |
+| BE-01 … BE-05, CM-01 … CM-05                              | → `NI`                    | `web-booking` has 2 pages, one with a hardcoded rate at `:24`; no `channels` module                                                        | Optional modules advertised in CLAUDE.md §1 but absent.                                                                        |
+| CI-01, CI-02, CI-03, CI-06                                | → `CV`                    | `pnpm gate` exit 0 with per-check timings; 43 + 30 unit checks                                                                             | Gate executes real checks and fails non-zero.                                                                                  |
+| CI-04                                                     | → `PI`                    | previously `turbo run test` planned 8 `<NONEXISTENT>` tasks and exited 0                                                                   | A vacuous pass was replaced by a real suite; still `PI` because no domain unit tests exist.                                    |
+| CI-07, CI-08, CI-09, CI-10                                | → `CV`                    | `pr.yml:80-81` passes both refs; unit tests cover base/before/zero/missing; live push-mode check found 10 files where the old code found 0 | The silent-pass defect on push events is fixed and covered by tests.                                                           |
+| CI-15, CI-16                                              | → `CV`                    | all 7 destructive suites refuse the development DB, exit 1; 0 module-scope writes; `EASEIT_TEST_DBS=easeit` refused                        | Guards moved into the suites, so protection no longer depends on the entry point.                                              |
+| CI-05, CI-14                                              | → `NI`                    | no vitest, no `*.test.ts`, no Dockerfile or platform config                                                                                | Domain tests and deployment configuration are entirely absent.                                                                 |
+| CI-12                                                     | → `PI` with critical risk | `release.yml:142-143`                                                                                                                      | `postgresql-client-17` is absent from Ubuntu default repos; the fallback client 16 refuses a PG 17 server.                     |
+| RS-18, FO-18, SE-02, WK-03, WK-10, CI-11, CI-13, PF-03    | → `BU`                    | no deadlock induced; no Redis or Docker; Windows has no deliverable SIGTERM; workflows unpushed                                            | Recorded as blocked with the specific isolated setup each needs, rather than assumed working.                                  |
+| MT-02, MT-03, MT-04                                       | → `NI`                    | `client-factory.ts` builds a raw client; no request-context; no RLS policy in any migration                                                | The three controls CLAUDE.md §3.2 names as primary are missing; row-level scoping is enforced only by hand-written predicates. |

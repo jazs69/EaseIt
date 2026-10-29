@@ -75,6 +75,15 @@ const { OutboxMetricsService } = await load('outbox-metrics.service.js');
 
 const prisma = createPrismaClient();
 
+/**
+ * The isolation guard, shared with every other destructive suite.
+ *
+ * Imported here rather than relied upon from the release gate: this file is
+ * reachable directly through its own npm script, and run that way the gate's
+ * preflight never executes. See `test/support/isolation-guard.mjs`.
+ */
+const { assertIsolatedDatabase } = await import('../support/isolation-guard.mjs');
+
 const RUN = randomUUID().slice(0, 8);
 const KEY = (suffix) => `claimrace:${RUN}:${suffix}`;
 
@@ -226,6 +235,9 @@ async function race(label, ids, dispatcherCount, batchSize) {
 }
 
 async function main() {
+  // Before any fixture is created, mutated or deleted.
+  await assertIsolatedDatabase({ prisma, suite: 'the outbox claim-race suite' });
+
   const property = await prisma.property.findFirst({
     select: { id: true, code: true, name: true },
     orderBy: { code: 'asc' },

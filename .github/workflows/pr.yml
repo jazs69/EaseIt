@@ -1,0 +1,189 @@
+# Fast PR checks: everything that can fail without a release being at stake.
+#
+# Two jobs, deliberately separate. `fast` needs no services and should finish in
+# a couple of minutes; `integration` brings up PostgreSQL and is the one that
+# actually exercises inventory and concurrency. A failure in either blocks.
+#
+# Nothing here runs against a shared database: the integration job creates
+# `easeit_ci` inside an ephemeral service container that exists only for the
+# duration of the run, and `scripts/require-services.mjs` refuses to proceed
+# unless the live connection really is that database.
+
+name: PR
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned deliberately. Local development is on Node 24.14.1 and pnpm 9.14.4;
+  # `engines` permits Node >= 20.11.0, but CI pins one version so a failure is
+  # never "works on my machine". Turbo 2.11.8 and TypeScript 6.0.3 come from the
+  # lockfile, not from here.
+  NODE_VERSION: '24.14.1'
+  PNPM_VERSION: '9.14.4'
+
+jobs:
+  fast:
+    name: fast (format, typecheck, lint, unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The format check compares this branch against its merge base, so it
+          # needs more than a shallow clone.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # `cancel-retry.test.mjs` imports the compiled retry classifier, and
+      # typecheck depends on a generated Prisma client, so the build comes
+      # first. DATABASE_URL is required for the Prisma client to be
+      # constructed; it is never connected to by this job.
+      - name: Build
+        env:
+          DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
+        run: pnpm build
+
+      # Both refs are passed, and the script decides which applies.
+      #
+      # `GATE_BASE_REF` is set only on a pull_request event; `GATE_BEFORE_REF`
+      # only on a push. Supplying just the first is the defect this replaces:
+      # on a push it expanded to the empty string, the script fell back to
+      # comparing the working tree, a fresh checkout has nothing uncommitted,
+      # and the format check passed having inspected zero files.
+      #
+      # `github.event.before` is the all-zero sha on the first push of a
+      # branch; `scripts/lib/changed-files.mjs` treats that as "check every
+      # tracked file" rather than as nothing to do, and fails outright if
+      # neither ref is usable. See test/unit/gate-guards.test.mjs.
+      - name: Fast gate
+        env:
+          DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
+          GATE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          GATE_BEFORE_REF: ${{ github.event.before }}
+        run: pnpm gate
+
+  integration:
+    name: integration (isolated PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # Matches local development: PostgreSQL 17.
+        image: postgres:17
+        env:
+          POSTGRES_USER: easeit
+          POSTGRES_PASSWORD: easeit_ci_local_only
+          POSTGRES_DB: easeit_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U easeit -d easeit_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The suites read these files from disk rather than only the environment:
+      # `mintSession` reads JWT_SECRET out of apps/api/.env, and the database
+      # package resolves DATABASE_URL from packages/database/.env. Both are
+      # gitignored, so CI has to write them.
+      #
+      # No repository secret is involved and none is needed: this database is
+      # created empty, thrown away with the runner, and reachable only from
+      # inside this job. The JWT secret is generated per run, so nothing
+      # long-lived exists to leak. SMTP_HOST is deliberately left unset, which
+      # selects the logging mailer instead of a real transport.
+      - name: Write ephemeral env files
+        run: |
+          set -euo pipefail
+          DB_URL="postgresql://easeit:easeit_ci_local_only@127.0.0.1:5432/easeit_ci?schema=public"
+          printf 'DATABASE_URL=%s\nDIRECT_URL=%s\n' "$DB_URL" "$DB_URL" > packages/database/.env
+          {
+            printf 'NODE_ENV=development\n'
+            printf 'PORT=4100\n'
+            printf 'DATABASE_URL=%s\n' "$DB_URL"
+            printf 'DIRECT_URL=%s\n' "$DB_URL"
+            printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)"
+            printf 'AUTH_COOKIE_NAME=easeit_session\n'
+          } > apps/api/.env
+
+      - name: Build
+        run: pnpm build
+
+      - name: Migrate and seed the ephemeral database
+        run: |
+          set -euo pipefail
+          cd packages/database
+          pnpm exec prisma migrate deploy
+          pnpm exec tsx prisma/seed.ts
+
+      # Backgrounded with its readiness waited on explicitly. `pnpm start` would
+      # resolve the workspace script; calling node directly keeps the process
+      # tree flat so the kill at the end is reliable.
+      - name: Start the API against the ephemeral database
+        run: |
+          set -euo pipefail
+          node apps/api/dist/main.js > /tmp/api.log 2>&1 &
+          echo $! > /tmp/api.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4100/api/v1/health > /dev/null 2>&1; then
+              echo "API ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become ready; last 50 log lines:" >&2
+          tail -50 /tmp/api.log >&2
+          exit 1
+
+      # `EASEIT_TEST_DBS` extends the allowlist; it cannot authorise a
+      # development database, which the suites refuse unconditionally.
+      - name: Integration gate
+        env:
+          EASEIT_TEST_DBS: easeit_ci
+          EASEIT_API_URL: http://127.0.0.1:4100/api/v1
+        run: pnpm gate:integration
+
+      # Diagnostics only on failure, and only our own log — it contains no
+      # credentials, and the generated JWT secret is never logged by the app.
+      - name: API log (on failure)
+        if: failure()
+        run: tail -200 /tmp/api.log
+
+      - name: Stop the API
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then kill "$(cat /tmp/api.pid)" 2>/dev/null || true; fi

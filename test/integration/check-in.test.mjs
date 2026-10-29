@@ -65,6 +65,15 @@ const API = process.env.EASEIT_API_URL ?? 'http://127.0.0.1:4000/api/v1';
 const PROPERTY_CODE = process.env.EASEIT_PROPERTY ?? '31001';
 
 const prisma = createPrismaClient();
+
+/**
+ * The isolation guard, shared with every other destructive suite.
+ *
+ * Imported here rather than relied upon from the release gate: this file is
+ * reachable directly through its own npm script, and run that way the gate's
+ * preflight never executes. See `test/support/isolation-guard.mjs`.
+ */
+const { assertIsolatedDatabase, assertApiSharesDatabase } = await import('../support/isolation-guard.mjs');
 const created = [];
 let failures = 0;
 
@@ -205,6 +214,9 @@ async function findSellableRoomType(property, arrival, departure) {
 /* -------------------------------------------------------------------------- */
 
 async function main() {
+  // Before any fixture is created, mutated or deleted.
+  await assertIsolatedDatabase({ prisma, suite: 'the check-in suite' });
+
   // A user who may actually check guests in. The grant alone is not enough —
   // `reservations:checkin` is what the endpoint requires.
   const grant = await prisma.userPropertyRole.findFirst({
@@ -224,6 +236,37 @@ async function main() {
 
   const { user, property } = grant;
   const cookie = `easeit_session=${mintSession(user.id, user.email)}`;
+
+  /**
+   * Prove the API reached the same database before anything is written.
+   *
+   * Without this the suite could assert against the isolated database while
+   * the endpoints quietly wrote to development -- every counter check passing
+   * for the wrong reason. The probe is a reservation id read from THIS
+   * database; seeded ids are random uuids, so an API on any other database
+   * answers 404 for it. Read-only, and it runs before the first fixture.
+   */
+  {
+    const probeRow = await prisma.reservation.findFirst({
+      where: { propertyId: property.id },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    await assertApiSharesDatabase({
+      suite: 'the check-in suite',
+      api: API,
+      probe: async () => {
+        if (probeRow === null) {
+          return { ok: false, detail: 'no seeded reservation to probe with' };
+        }
+        const probe = await call('GET', `/properties/${PROPERTY_CODE}/reservations/${probeRow.id}`, cookie);
+        return probe.status === 200
+          ? { ok: true, detail: 'probe reservation visible' }
+          : { ok: false, detail: `probe reservation returned HTTP ${String(probe.status)}` };
+      },
+    });
+  }
+
   const businessDate = isoDate(property.businessDate);
   const departure = shiftDays(businessDate, 3);
 
