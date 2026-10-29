@@ -88,19 +88,20 @@ export function describeTarget(url) {
  * longer depends on a file that version control deliberately does not carry.
  * ===========================================================================
  */
-const ALWAYS_FORBIDDEN = ['easeit'];
+const ALWAYS_FORBIDDEN = new Set(['easeit']);
 
 /**
- * Database names belonging to shared development. Always refused.
+ * Database names this repository's env files point at.
  *
- * The union of `ALWAYS_FORBIDDEN` and whatever the repository's env files
- * name, so the set is never empty.
+ * Discovery only — the unconditional floor lives in `classifyTarget`, because
+ * the two signals mean different things and conflating them caused a CI
+ * failure. See the precedence note there.
  */
 export function developmentDatabaseNames({
   readFile = (path) => readFileSync(path, 'utf8'),
   files = ['packages/database/.env', '.env', 'apps/api/.env'],
 } = {}) {
-  const names = new Set(ALWAYS_FORBIDDEN);
+  const names = new Set();
   for (const file of files) {
     let text;
     try {
@@ -136,27 +137,56 @@ export function classifyTarget({ url, allowExtra = '', developmentNames = new Se
     .split(',')
     .map((name) => name.trim())
     .filter((name) => name.length > 0);
+  const builtInTestNames = new Set(DEFAULT_ALLOWLIST);
   const allowed = new Set([...DEFAULT_ALLOWLIST, ...extra]);
 
   /**
-   * The development name is refused FIRST and unconditionally.
+   * Three tiers, in this order, and the order is the whole design.
    *
-   * Order matters: if the allowlist were consulted first, adding `easeit` to
-   * `EASEIT_TEST_DBS` would authorise it. This is the rule the environment
-   * cannot override.
+   * =======================================================================
+   * Two different signals were conflated once, and CI caught it.
+   *
+   * The first version seeded the discovered-name set with a hard-coded floor
+   * and refused anything in it. That broke GitHub Actions, because the
+   * integration workflow *writes* `packages/database/.env` pointing at
+   * `easeit_ci` -- so discovery dutifully reported the suite's own disposable
+   * database as "development" and the gate refused the one database it was
+   * supposed to use:
+   *
+   *     x  "easeit_ci" is a shared development database.
+   *
+   * The two signals are not the same thing:
+   *
+   *   1. `ALWAYS_FORBIDDEN` -- names known to be shared and never disposable.
+   *      Absolute. No environment variable, allowlist entry or env file can
+   *      authorise one. This is the rule that stops
+   *      `EASEIT_TEST_DBS=easeit`.
+   *   2. `developmentNames` -- whatever this checkout's env files happen to
+   *      point at. A useful hint locally, where it catches a non-standard
+   *      personal database name. Meaningless in CI, where the env files are
+   *      written by the workflow and name a throwaway database. So it refuses
+   *      only names that are NOT built-in test databases, and
+   *      `EASEIT_TEST_DBS` cannot override it either -- only the built-in
+   *      list can.
+   *   3. The allowlist -- `DEFAULT_ALLOWLIST` plus `EASEIT_TEST_DBS`.
+   * =======================================================================
    */
-  if (developmentNames.has(target.name)) {
+  if (ALWAYS_FORBIDDEN.has(target.name)) {
     reasons.push(
-      `"${target.name}" is a shared development database. It can never be a ` +
-        'destructive-test target, and no environment variable can authorise it. ' +
-        "(Source: the built-in forbidden list, plus any name this repository's " +
-        '.env files carry.)',
+      `"${target.name}" is a known shared database. It can never be a ` +
+        'destructive-test target, and no environment variable can authorise it.',
+    );
+  } else if (developmentNames.has(target.name) && !builtInTestNames.has(target.name)) {
+    reasons.push(
+      `"${target.name}" is what this checkout's .env files point at, and it is not one ` +
+        `of the built-in disposable test databases (${[...builtInTestNames].sort().join(', ')}). ` +
+        'Refusing it as your working database; EASEIT_TEST_DBS cannot override this.',
     );
   } else if (!allowed.has(target.name)) {
     reasons.push(
       `"${target.name}" is not a permitted isolated database. Permitted: ` +
         `${[...allowed].sort().join(', ')}. Set EASEIT_TEST_DBS to extend that list ` +
-        '(it cannot include a development database).',
+        '(it can never include a known shared database).',
     );
   }
 

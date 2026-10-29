@@ -88,8 +88,12 @@ single fixture, so protection does not depend on choosing the right entry
 point. This matters because seven npm scripts invoke the suites directly, and
 run that way the release gate's preflight never executes at all.
 
-The rule the environment **cannot** override: the database names found in this
-repository's `.env` files are read at startup and always refused.
+The rule the environment **cannot** override: a known shared database name
+(`easeit`) is refused absolutely, by a built-in floor that does not depend on
+any file being present. Separately, names discovered from this checkout's
+`.env` files are also refused -- but only when they are not one of the
+built-in disposable test databases, because CI writes those env files itself
+and they legitimately name `easeit_ci`.
 `EASEIT_TEST_DBS` may _extend_ the allowlist (that is how CI names
 `easeit_ci`); it can never authorise the development database. Verified:
 

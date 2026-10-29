@@ -280,7 +280,7 @@ console.log('\n9. Remote hosts are refused even with a permitted name.');
   }
 }
 
-console.log('\n10. Development names are discovered from the repo, not hard-coded.');
+console.log('\n10. Discovery versus the built-in floor.');
 {
   const names = developmentDatabaseNames({
     files: ['fake/database.env'],
@@ -301,64 +301,79 @@ console.log('\n10. Development names are discovered from the repo, not hard-code
       throw new Error('ENOENT');
     },
   });
+  check('a missing env file is tolerated, not fatal', missing.size === 0);
+
+  /**
+   * Regression for GitHub Actions run 40820963243 (the `fast` job).
+   *
+   * `.env` files are gitignored, so CI discovers nothing. If the forbidden
+   * floor lived only in the discovered set, `EASEIT_TEST_DBS=easeit` would
+   * have authorised the shared development database on any machine without a
+   * `.env`. The floor must therefore be independent of discovery.
+   */
+  const noDiscovery = classifyTarget({
+    url: 'postgresql://u:p@127.0.0.1:5432/easeit',
+    allowExtra: 'easeit',
+    developmentNames: new Set(),
+  });
   check(
-    'a missing env file is tolerated, not fatal',
-    missing.size >= 1,
-    `${String(missing.size)} name(s)`,
-  );
-  check(
-    'and the floor still forbids the shared development database',
-    missing.has('easeit'),
-    [...missing].join(','),
+    'with NO discovered names, easeit is STILL refused by the built-in floor',
+    !noDiscovery.ok,
+    noDiscovery.reasons[0]?.slice(0, 60),
   );
 
   /**
-   * The regression test for GitHub Actions run 40820963243.
+   * Regression for the follow-up failure in `gate:integration`.
    *
-   * `.env` files are gitignored, so CI discovered zero development names and
-   * the denylist that overrides the allowlist was empty -- meaning
-   * `EASEIT_TEST_DBS=easeit` would have authorised the shared development
-   * database on any machine without a `.env`. The floor must hold with no
-   * files present at all.
+   * The integration workflow writes `packages/database/.env` pointing at
+   * `easeit_ci`, so discovery reports the suite's own disposable database as
+   * though it were development. Conflating that with the floor made the gate
+   * refuse the one database it was supposed to use:
+   *
+   *     x  "easeit_ci" is a shared development database.
    */
-  const noFiles = developmentDatabaseNames({
-    files: [],
-    readFile: () => {
-      throw new Error('should not be called');
-    },
+  for (const name of ['easeit_ci', 'easeit_racetest', 'easeit_recovery', 'easeit_test']) {
+    const ciShaped = classifyTarget({
+      url: `postgresql://u:p@127.0.0.1:5432/${name}`,
+      allowExtra: name,
+      developmentNames: new Set([name]),
+    });
+    check(
+      `${name} is allowed even when the .env files name it (the CI shape)`,
+      ciShaped.ok,
+      ciShaped.reasons.join('; ').slice(0, 80),
+    );
+  }
+
+  // Discovery still does its local job: a personal database name that is not
+  // a built-in disposable one is refused, and EASEIT_TEST_DBS cannot override.
+  const personal = classifyTarget({
+    url: 'postgresql://u:p@127.0.0.1:5432/easeit_myfork',
+    allowExtra: 'easeit_myfork',
+    developmentNames: new Set(['easeit_myfork']),
   });
   check(
-    'with NO env files at all the forbidden set is still non-empty',
-    noFiles.size >= 1,
-    [...noFiles].join(','),
-  );
-  const ciShaped = classifyTarget({
-    url: 'postgresql://u:p@127.0.0.1:5432/easeit',
-    allowExtra: 'easeit',
-    developmentNames: noFiles,
-  });
-  check(
-    'and EASEIT_TEST_DBS=easeit is refused even with no .env present',
-    !ciShaped.ok,
-    ciShaped.reasons[0]?.slice(0, 70),
+    'a personal database named by .env is refused despite EASEIT_TEST_DBS',
+    !personal.ok,
+    personal.reasons[0]?.slice(0, 68),
   );
 
-  // The real repository: whatever it names must be refused.
+  /**
+   * The real repository, whatever it currently holds. No assertion on the
+   * SIZE of the discovered set: it is legitimately empty in a fresh checkout
+   * and in CI, which is exactly what the floor is for.
+   */
   const real = developmentDatabaseNames();
-  check(
-    'this repository yields at least one development name to refuse',
-    real.size >= 1,
-    `${String(real.size)} name(s)`,
-  );
+  console.log(`  note  discovered ${String(real.size)} development name(s) in this checkout`);
   const guarded = classifyTarget({
-    url: `postgresql://u:p@127.0.0.1:5432/${[...real][0]}`,
-    allowExtra: [...real].join(','),
+    url: 'postgresql://u:p@127.0.0.1:5432/easeit',
+    allowExtra: 'easeit',
     developmentNames: real,
   });
   check(
     "this repository's own development database cannot be targeted",
     !guarded.ok,
-    guarded.reasons[0]?.slice(0, 64),
+    guarded.reasons[0]?.slice(0, 60),
   );
 }
 
