@@ -197,6 +197,33 @@ export function classifyTarget({ url, allowExtra = '', developmentNames = new Se
   return { ok: reasons.length === 0, target, reasons };
 }
 
+/**
+ * The refusal thrown when the API under test reached a different database.
+ *
+ * ===========================================================================
+ * Extracted so there is exactly one copy of this sentence.
+ *
+ * `create-race.test.mjs` composes this message, and the unit suite needs to
+ * assert on it. The unit suite cannot import that file -- importing it runs
+ * the whole integration suite -- so the first attempt kept its own copy of the
+ * template and asserted against that. Those assertions passed by construction
+ * and would have kept passing if the real message regressed, which is worse
+ * than no test: it reads as coverage.
+ *
+ * A pure function in the module both sides already import fixes that without
+ * adding a file or a layer. The integration guard calls it; the unit suite
+ * calls the same function and compares against output recorded from a real
+ * failing run.
+ * ===========================================================================
+ */
+export function apiMismatchMessage({ api, propertyId, status, isolatedDb }) {
+  return (
+    `REFUSING TO RUN. The API at ${api} cannot see this suite's property ` +
+    `${propertyId} (HTTP ${String(status)}). It is pointed at a different ` +
+    `database. Start an API whose DATABASE_URL names "${isolatedDb}".`
+  );
+}
+
 function refuse(suite, lines) {
   const message =
     `REFUSING TO RUN — ${suite}\n` +

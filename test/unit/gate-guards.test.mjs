@@ -30,6 +30,7 @@ import {
   adjudicateZero,
 } from '../../scripts/lib/changed-files.mjs';
 import {
+  apiMismatchMessage,
   classifyTarget,
   describeTarget,
   developmentDatabaseNames,
@@ -377,6 +378,129 @@ console.log('\n10. Discovery versus the built-in floor.');
   );
 }
 
+/* ========================================================================== */
+console.log('\n\nGuard diagnostics\n');
+
+console.log('\n11. The API/database mismatch refusal (shared helper).');
+{
+  /**
+   * The real composer, not a copy of it.
+   *
+   * `apiMismatchMessage` is the function `create-race.test.mjs` actually calls
+   * (see `assertApiSharesDatabase` there). The first version of this section
+   * kept its own copy of the template and asserted against that, which passed
+   * by construction and would have kept passing if the real message
+   * regressed. Importing the shared helper is what makes these assertions
+   * mean something.
+   */
+  const recorded =
+    "REFUSING TO RUN. The API at http://127.0.0.1:4100/api/v1 cannot see this suite's " +
+    'property 60f0436f-2cf4-482c-bca2-256caf1333af (HTTP 401). It is pointed at a ' +
+    'different database. Start an API whose DATABASE_URL names "easeit_ci".';
+
+  const reproduced = apiMismatchMessage({
+    api: 'http://127.0.0.1:4100/api/v1',
+    propertyId: '60f0436f-2cf4-482c-bca2-256caf1333af',
+    status: 401,
+    isolatedDb: 'easeit_ci',
+  });
+
+  /**
+   * A golden string taken from a real failing run: the API was started against
+   * `easeit_racetest` while the suite ran against `easeit_ci`, and this is
+   * byte-for-byte what the guard printed. If the helper drifts, this fails.
+   */
+  check(
+    'the helper reproduces the message observed in a real mismatch run',
+    reproduced === recorded,
+    reproduced === recorded ? 'byte-identical' : `got: ${reproduced}`,
+  );
+
+  check(
+    'it names the database the API should point at',
+    reproduced.includes('names "easeit_ci"'),
+    reproduced.slice(-40),
+  );
+  check('it names the API that was probed', reproduced.includes('http://127.0.0.1:4100/api/v1'));
+  check('it reports the HTTP status that triggered it', reproduced.includes('(HTTP 401)'));
+  check('it names the property that could not be seen', reproduced.includes('60f0436f'));
+
+  /**
+   * The bug this replaced produced a ReferenceError instead of a message, so
+   * the helper is checked for actually returning a usable string under every
+   * argument it is given -- including the shapes that would have thrown.
+   */
+  check('it returns a string, not a thrown error', typeof reproduced === 'string');
+  check('no ReferenceError text leaks into the message', !/ReferenceError/.test(reproduced));
+
+  let undefinedArgs = null;
+  try {
+    undefinedArgs = apiMismatchMessage({});
+  } catch (error) {
+    undefinedArgs = `THREW ${error.constructor.name}`;
+  }
+  check(
+    'it still composes a message when every field is missing, rather than throwing',
+    typeof undefinedArgs === 'string' && !undefinedArgs.startsWith('THREW'),
+    typeof undefinedArgs === 'string' ? undefinedArgs.slice(0, 48) : String(undefinedArgs),
+  );
+
+  check(
+    'a numeric status is stringified rather than concatenated as a number',
+    apiMismatchMessage({ api: 'a', propertyId: 'b', status: 404, isolatedDb: 'c' }).includes(
+      '(HTTP 404)',
+    ),
+  );
+
+  // The shape the original bug had: an identifier that is not in scope. This
+  // is a JavaScript property rather than a property of the guard, kept only to
+  // record why the fix had to thread the value through a parameter.
+  let threw = null;
+  try {
+    // eslint-disable-next-line no-undef
+    void `names ${outOfScopeBinding ?? 'fallback'}`;
+  } catch (error) {
+    threw = error;
+  }
+  check(
+    'an out-of-scope identifier in a template literal throws, it does not fall back',
+    threw instanceof ReferenceError,
+    threw === null ? 'did not throw' : threw.constructor.name,
+  );
+
+  /**
+   * Call-site and ordering checks, read from the source.
+   *
+   * LIMITED PURPOSE, stated plainly: these compare character offsets in the
+   * file, not execution order, and they cannot run the integration guard --
+   * importing `create-race.test.mjs` would execute the whole suite. They are a
+   * tripwire against the call site losing its third argument or the API probe
+   * drifting after the first race, nothing more. The behaviour itself is
+   * covered by `pnpm gate:integration` against an isolated database.
+   */
+  const { readFileSync } = await import('node:fs');
+  const suite = readFileSync(
+    new URL('../integration/create-race.test.mjs', import.meta.url),
+    'utf8',
+  );
+  check(
+    'the integration guard calls the shared helper, not its own template',
+    suite.includes('apiMismatchMessage({') && !suite.includes("cannot see this suite's property"),
+    'single source of truth',
+  );
+  check(
+    'the API probe is threaded the confirmed name',
+    /assertApiSharesDatabase\(cookie, fixture\.propertyId, isolatedDb\)/.test(suite),
+  );
+  const posGuard = suite.indexOf('await assertIsolatedDatabase()');
+  const posApi = suite.indexOf('await assertApiSharesDatabase(');
+  const posFirstRace = suite.indexOf('await raceUnderLock(');
+  check(
+    'the database guard appears before the API probe, which appears before the first race',
+    posGuard > -1 && posApi > posGuard && posFirstRace > posApi,
+    `guard@${String(posGuard)} api@${String(posApi)} firstRace@${String(posFirstRace)}`,
+  );
+}
 /* ========================================================================== */
 console.log(
   failures === 0 ? '\nAll gate-guard checks passed.' : `\n${String(failures)} check(s) FAILED.`,

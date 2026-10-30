@@ -33,6 +33,10 @@
  * else's afternoon. So it asserts its own database identity before it creates
  * anything (`assertIsolatedDatabase`) and exits rather than guessing.
  *
+ * `easeit_racetest` is only the default. Any database the shared classifier
+ * permits works, so CI provisions `easeit_ci` and names it through
+ * `EASEIT_TEST_DBS`; see `EXTRA_ALLOWED` below.
+ *
  * Provision the isolated database once:
  *
  *   createdb -h 127.0.0.1 -U easeit -O easeit easeit_racetest
@@ -103,16 +107,33 @@ const { createPrismaClient } = databaseModule.default ?? databaseModule;
 const API = process.env.EASEIT_API_URL ?? 'http://127.0.0.1:4100/api/v1';
 
 /**
- * The only database this suite will touch.
+ * Extra database names this run may use, beyond the shared built-in list.
  *
- * Deliberately a literal rather than "anything that is not `easeit`": an
- * allowlist fails closed when someone copies this file and forgets to think,
- * and a denylist does not.
+ * `EASEIT_TEST_DB` (singular) is kept because this file documented it first;
+ * `EASEIT_TEST_DBS` (plural) is what the release gates and CI set. Honouring
+ * both removes the mismatch that broke CI without narrowing the guard: the
+ * shared classifier still refuses a known shared database absolutely, and
+ * still refuses whatever this checkout's .env files point at.
  */
-const REQUIRED_DB = process.env.EASEIT_TEST_DB ?? 'easeit_racetest';
+const EXTRA_ALLOWED = [process.env.EASEIT_TEST_DB, process.env.EASEIT_TEST_DBS]
+  .filter(Boolean)
+  .join(',');
 
 /** Fixture names all start here, so a crashed run is identifiable and sweepable. */
 const FIXTURE_PREFIX = 'ZZRACE';
+
+/**
+ * The name decision is delegated to the shared classifier.
+ *
+ * This suite keeps its own guard -- the live-connection check, the constraint
+ * inventory and the API probe below are all still its own -- but it must not
+ * keep its own *opinion* about which database names are permitted. It used to,
+ * and that is how GitHub Actions run 40859847434 failed: CI provisions
+ * `easeit_ci`, this file demanded `easeit_racetest`, and the gate refused the
+ * database the workflow had just built for it.
+ */
+const { classifyTarget, developmentDatabaseNames, apiMismatchMessage } =
+  await import('../support/isolation-guard.mjs');
 
 const prisma = createPrismaClient();
 
@@ -203,25 +224,32 @@ async function assertIsolatedDatabase() {
 
   const [, , host, port, dbname] = parsed;
 
-  if (dbname !== REQUIRED_DB) {
+  const developmentNames = developmentDatabaseNames();
+  const verdict = classifyTarget({ url, allowExtra: EXTRA_ALLOWED, developmentNames });
+  if (!verdict.ok) {
     throw new Error(
       `REFUSING TO RUN. This suite fills categories to their limit and parks ` +
         `write transactions on inventory rows; it must not touch a shared database. ` +
-        `DATABASE_URL names "${dbname}" but only "${REQUIRED_DB}" is permitted. ` +
-        `Provision it with the commands in this file's header.`,
+        verdict.reasons.join(' '),
     );
-  }
-
-  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
-    throw new Error(`REFUSING TO RUN. Host "${host}" is not local.`);
   }
 
   const [live] = await prisma.$queryRaw`SELECT current_database() AS name, version() AS version`;
-  if (live.name !== REQUIRED_DB) {
+  if (live.name !== dbname) {
     throw new Error(
-      `REFUSING TO RUN. Connected to "${live.name}", not "${REQUIRED_DB}". ` +
+      `REFUSING TO RUN. Connected to "${live.name}", not "${dbname}". ` +
         `The URL and the live connection disagree.`,
     );
+  }
+  // The live name re-checked on its own merits, so a proxy cannot land us
+  // somewhere permitted-looking after the URL passed.
+  const liveVerdict = classifyTarget({
+    url: url.replace(`/${dbname}`, `/${live.name}`),
+    allowExtra: EXTRA_ALLOWED,
+    developmentNames,
+  });
+  if (!liveVerdict.ok) {
+    throw new Error(`REFUSING TO RUN. ${liveVerdict.reasons.join(' ')}`);
   }
 
   console.log(`Database  ${live.name} on ${host}:${port}`);
@@ -245,6 +273,11 @@ async function assertIsolatedDatabase() {
     }
   }
   console.log(`          ${present.size} guarding constraints present\n`);
+
+  // Returned so the API probe can name it without reaching for a module-level
+  // variable. `live.name` is the database the server actually reported, which
+  // is the one worth telling an operator about.
+  return live.name;
 }
 
 /**
@@ -254,8 +287,15 @@ async function assertIsolatedDatabase() {
  * endpoints quietly wrote to the development database — every counter check
  * would pass for the wrong reason. The property below exists only here, so an
  * API on any other database answers 404.
+ *
+ * `isolatedDb` is the name `assertIsolatedDatabase` confirmed with the server,
+ * passed in rather than read from a shared binding: the first version
+ * interpolated a `live` that is declared inside the other function, so the
+ * refusal threw `ReferenceError: live is not defined` and told the operator
+ * nothing. Threading the value keeps the diagnostic actionable and keeps the
+ * data flow visible.
  */
-async function assertApiSharesDatabase(cookie, propertyId) {
+async function assertApiSharesDatabase(cookie, propertyId, isolatedDb) {
   /**
    * By UUID, not by code.
    *
@@ -268,10 +308,15 @@ async function assertApiSharesDatabase(cookie, propertyId) {
    */
   const response = await call('GET', `/properties/${propertyId}/me`, cookie);
   if (response.status !== 200) {
+    // Composed by the shared helper, so the unit suite can assert on the real
+    // sentence rather than on a copy of it.
     throw new Error(
-      `REFUSING TO RUN. The API at ${API} cannot see this suite's property ` +
-        `${propertyId} (HTTP ${String(response.status)}). It is pointed at a different ` +
-        `database. Start an API with DATABASE_URL set to ${REQUIRED_DB}.`,
+      apiMismatchMessage({
+        api: API,
+        propertyId,
+        status: response.status,
+        isolatedDb,
+      }),
     );
   }
   console.log(`API       ${API} — confirmed on the same database\n`);
@@ -803,12 +848,12 @@ async function book(cookie, roomTypeId, arrival, departure, overrides = {}) {
 /* -------------------------------------------------------------------------- */
 
 async function main() {
-  await assertIsolatedDatabase();
+  const isolatedDb = await assertIsolatedDatabase();
   await sweepLeftovers();
   await buildFixture();
 
   const cookie = `easeit_session=${mintSession(fixture.actor.id, fixture.actor.email)}`;
-  await assertApiSharesDatabase(cookie, fixture.propertyId);
+  await assertApiSharesDatabase(cookie, fixture.propertyId, isolatedDb);
 
   /* ------------------------------------------------------------ operations */
 
