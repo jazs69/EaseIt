@@ -192,17 +192,114 @@ jobs:
 
       # `EASEIT_TEST_DBS` extends the allowlist; it cannot authorise a
       # development database, which the suites refuse unconditionally.
+      #
+      # The output is mirrored into the job summary, and that is a deliberate
+      # diagnostic, not decoration.
+      #
+      # Step logs need an authenticated token to download: `/actions/runs/{id}/logs`
+      # and `/actions/jobs/{id}/logs` both answer 403 without one, and the
+      # check-run annotations carry only "Process completed with exit code 1".
+      # So when this step failed on run 41047772921 there was no way to learn
+      # *which* suite failed without a GitHub login. The job summary is served
+      # by the check-runs API, which public repositories expose unauthenticated,
+      # so mirroring the gate output there makes a failure diagnosable by anyone
+      # who can see the repository.
+      #
+      # `set +e` is the load-bearing part. GitHub runs `run:` blocks under
+      # `bash -e`, so a non-zero `pnpm gate:integration` would abort the step
+      # immediately and the summary would never be written -- the exact case the
+      # summary exists for. Errexit is therefore disabled around the pipeline,
+      # the gate's own status is taken from `PIPESTATUS[0]` (not `$?`, which
+      # would be `tee`'s), errexit is restored, and the step exits with the
+      # gate's code so a failure still fails the job.
       - name: Integration gate
         env:
           EASEIT_TEST_DBS: easeit_ci
           EASEIT_API_URL: http://127.0.0.1:4100/api/v1
-        run: pnpm gate:integration
+        run: |
+          set +e
+          pnpm gate:integration 2>&1 | tee /tmp/gate-integration.log
+          GATE_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo "## Integration gate"
+            echo
+            if [ "${GATE_EXIT}" -eq 0 ]; then
+              echo "Result: **passed** (exit code \`0\`)"
+            else
+              echo "Result: **FAILED** (exit code \`${GATE_EXIT}\`)"
+            fi
+            echo
+            echo "<details><summary>Full output of <code>pnpm gate:integration</code></summary>"
+            echo
+            echo '```text'
+            # Bounded well under GitHub's 1 MiB per-step summary limit. A passing
+            # run is about 66 KB, so this truncates only pathological output, and
+            # it keeps the tail where the failure and the summary block live.
+            tail -c 700000 /tmp/gate-integration.log 2>/dev/null || echo "(no output captured)"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "${GATE_EXIT}"
 
       # Diagnostics only on failure, and only our own log — it contains no
       # credentials, and the generated JWT secret is never logged by the app.
+      #
+      # Mirrored into the job summary for the same reason as the gate above:
+      # step logs need an authenticated token, so without this the API side of
+      # a failure is unreadable to anyone without a GitHub login. Verified
+      # against a real 282-line API log before wiring it up — no connection
+      # string, token, JWT secret or password appears in it, and `SMTP_HOST` is
+      # deliberately unset in this job, so the logging mailer is selected and no
+      # mail credentials are constructed at all.
+      #
+      # Exit-code handling mirrors the gate step and is kept faithful to the
+      # original `tail`: if `/tmp/api.log` is unreadable the step still fails,
+      # as it did before. `PIPESTATUS[0]` is `tail`'s status, not `tee`'s.
       - name: API log (on failure)
         if: failure()
-        run: tail -200 /tmp/api.log
+        run: |
+          set +e
+          tail -200 /tmp/api.log | tee /tmp/api-tail.log
+          TAIL_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo "## API log (on failure)"
+            echo
+            if [ "${TAIL_EXIT}" -ne 0 ]; then
+              echo "No API log was captured — \`/tmp/api.log\` was unreadable (tail exit \`${TAIL_EXIT}\`)."
+            else
+              echo "Last 200 lines of the API process log."
+            fi
+            echo
+            echo "<details><summary>API log tail</summary>"
+            echo
+            echo '```text'
+            # Decided from TAIL_EXIT and the file's size, not from `tail` failing
+            # a second time. `tee` creates /tmp/api-tail.log even when the
+            # upstream `tail` fails, so an earlier `|| echo ...` fallback here
+            # never fired: the byte-cap `tail` simply succeeded on a zero-byte
+            # file and the fence came out empty, which reads as "the API logged
+            # nothing" rather than "there was no log to read".
+            #
+            # 200 lines is tens of KB in practice; the byte cap is a backstop so
+            # a runaway log cannot push the job summary past GitHub's 1 MiB limit
+            # and silently truncate the gate output written above it.
+            if [ "${TAIL_EXIT}" -ne 0 ] || [ ! -s /tmp/api-tail.log ]; then
+              echo "(no API output captured)"
+            else
+              tail -c 200000 /tmp/api-tail.log
+            fi
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "${TAIL_EXIT}"
 
       - name: Stop the API
         if: always()
