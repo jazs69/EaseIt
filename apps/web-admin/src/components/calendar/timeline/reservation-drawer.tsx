@@ -26,6 +26,7 @@
 
 import { cn } from '@repo/ui';
 import {
+  ErrorCode,
   MEAL_PLAN_LABELS,
   RESERVATION_SUB_STATUS_LABELS,
   type ReservationDetail,
@@ -55,8 +56,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
+import { ApiRequestError } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
-import { addReservationNote, fetchReservationDetail } from '@/lib/properties-client';
+import {
+  addReservationNote,
+  checkOutReservation,
+  fetchReservationDetail,
+} from '@/lib/properties-client';
 import { ModifyMenu } from './modify-menu';
 
 /** `2026-10-16` -> `Oct 16, 2026`. Parsed as UTC, never through local time. */
@@ -164,8 +170,7 @@ export function ReservationDrawer({
         setLoaded({
           id: blockId,
           detail: null,
-          error:
-            caught instanceof Error ? caught.message : 'The full detail could not be loaded.',
+          error: caught instanceof Error ? caught.message : 'The full detail could not be loaded.',
         });
       });
 
@@ -406,9 +411,7 @@ function BookingCard({
         <div className="flex items-start gap-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
           <Building2 className="mt-0.5 size-4 shrink-0 text-zinc-500" aria-hidden="true" />
           <div className="min-w-0">
-            <p className="truncate text-xs font-medium text-zinc-100">
-              {detail.company.legalName}
-            </p>
+            <p className="truncate text-xs font-medium text-zinc-100">{detail.company.legalName}</p>
             {detail.company.gstin !== null ? (
               <p className="mt-0.5 font-mono text-[10px] text-zinc-500">
                 GSTIN {detail.company.gstin}
@@ -453,11 +456,18 @@ function BookingCard({
           why="Needs the frontdesk module's registration card (CLAUDE.md section 2)"
         />
         {detail?.canCheckOut === true ? (
-          <ActionButton
-            icon={KeyRound}
-            label="Check out"
-            enabled={false}
-            why="Needs the frontdesk module's check-out path (CLAUDE.md section 2)"
+          <CheckOutButton
+            hotelId={hotelId}
+            reservationId={block.id}
+            bookingCode={block.bookingCode}
+            onDone={() => {
+              // Same order as the cancel path: refresh first so the grid is
+              // already correct underneath by the time the drawer gets out of
+              // the way. The room is now VACANT_DIRTY and the stay
+              // CHECKED_OUT, so the block redraws from the new server render.
+              router.refresh();
+              onClose();
+            }}
           />
         ) : (
           <button
@@ -481,6 +491,231 @@ function BookingCard({
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * Check a guest out, from the drawer that already shows the stay.
+ *
+ * ===========================================================================
+ * The interesting state is the refusal, not the success.
+ *
+ * Checkout is refused whenever the folio does not sum to zero, and that is the
+ * common case at a front desk -- the guest still owes for a minibar, or paid
+ * in advance and is owed change. So the refusal is not a toast that vanishes:
+ * it stays on screen, says which way the balance runs, and offers the folio as
+ * a link, because settling it is the clerk's actual next action and making
+ * them hunt for it is how a PMS earns its reputation.
+ *
+ * Which refusal it is decides what is offered. Only `OUTSTANDING_BALANCE`
+ * gets the balance figure and the folio link, because only that one is settled
+ * at the folio; sending a clerk who lacks the permission, or whose stay has
+ * already departed, to a folio page they cannot act on is noise dressed as
+ * help. The branch is on `code`, never on the message text (`api.ts` exists
+ * precisely so no component invents copy from a status), and the amount comes
+ * from `details.balanceMinor` so the figure shown is the one the server
+ * refused on.
+ *
+ * Double submission is prevented by disabling on `busy` and by returning early
+ * if a request is already in flight -- a double-click must not produce two
+ * checkout attempts, even though the endpoint is idempotent and would answer
+ * the second one harmlessly.
+ * ===========================================================================
+ */
+type CheckOutRefusal = {
+  code: string | null;
+  message: string;
+  balanceMinor: number | null;
+  currency: string | null;
+  requiredPermission: string | null;
+};
+
+type CheckOutGuidance = {
+  /** What went wrong, in the clerk's terms. */
+  headline: string;
+  /** What to do about it, or null when the headline already says. */
+  hint: string | null;
+  /** Only the balance refusal is settled at the folio. */
+  showFolioLink: boolean;
+};
+
+/**
+ * One refusal in, one piece of guidance out.
+ *
+ * Kept a pure function of the refusal rather than inlined into the markup so
+ * the branch table can be read -- and reviewed -- in one place. The server's
+ * own message is preferred wherever it is a domain refusal, because those
+ * strings are written for the front desk; the one case it is dropped is an
+ * unexpected or internal failure, where the message may carry detail that
+ * belongs in a log and not on a screen.
+ */
+function checkOutGuidance(refusal: CheckOutRefusal): CheckOutGuidance {
+  switch (refusal.code) {
+    case ErrorCode.OUTSTANDING_BALANCE:
+      return { headline: refusal.message, hint: null, showFolioLink: true };
+
+    case ErrorCode.FORBIDDEN:
+      return {
+        headline: 'You do not have permission to check guests out.',
+        hint:
+          refusal.requiredPermission === null
+            ? 'Ask an administrator to grant it on this property.'
+            : `Ask an administrator for ${refusal.requiredPermission} on this property.`,
+        showFolioLink: false,
+      };
+
+    case ErrorCode.INVALID_STATE_TRANSITION:
+      return {
+        headline: refusal.message,
+        hint: 'Somebody may have changed this stay already. Close the drawer and reopen it to see where it stands.',
+        showFolioLink: false,
+      };
+
+    case ErrorCode.CONFLICT:
+      return {
+        headline: refusal.message,
+        hint: 'Nothing was changed. Try the check-out again.',
+        showFolioLink: false,
+      };
+
+    case ErrorCode.NOT_FOUND:
+    case ErrorCode.TENANT_SCOPE_VIOLATION:
+      return {
+        headline: 'This reservation is no longer available at this property.',
+        hint: 'Refresh the calendar.',
+        showFolioLink: false,
+      };
+
+    case ErrorCode.UNAUTHENTICATED:
+      return {
+        headline: 'Your session has expired.',
+        hint: 'Sign in again, then check the guest out.',
+        showFolioLink: false,
+      };
+
+    /**
+     * Anything else, including an internal error or a code this build has not
+     * seen. The server's text is deliberately not shown: it is the one class of
+     * response that can carry infrastructure detail, and a stack trace or a SQL
+     * fragment on the front desk screen is a security problem (section 5), not
+     * a usability one.
+     */
+    default:
+      return {
+        headline: 'The check-out could not be completed.',
+        hint: 'Nothing was changed. Try again, and report it if it keeps happening.',
+        showFolioLink: false,
+      };
+  }
+}
+
+function CheckOutButton({
+  hotelId,
+  reservationId,
+  bookingCode,
+  onDone,
+}: {
+  hotelId: string;
+  reservationId: string;
+  bookingCode: string;
+  /** Called once the stay is checked out and the grid should be redrawn. */
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [refusal, setRefusal] = useState<CheckOutRefusal | null>(null);
+
+  async function submit(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setRefusal(null);
+    try {
+      await checkOutReservation(hotelId, reservationId, { reason: null });
+      onDone();
+    } catch (cause) {
+      if (cause instanceof ApiRequestError) {
+        const balance = cause.details?.['balanceMinor'];
+        const currency = cause.details?.['currency'];
+        const permission = cause.details?.['requiredPermission'];
+        setRefusal({
+          code: cause.code,
+          message: cause.message,
+          balanceMinor: typeof balance === 'number' ? balance : null,
+          currency: typeof currency === 'string' ? currency : null,
+          requiredPermission: typeof permission === 'string' ? permission : null,
+        });
+      } else {
+        /**
+         * No response, so no code to branch on -- `ApiUnreachableError` or a
+         * thrown parse failure. A null code lands on the default branch, which
+         * is why that branch says "nothing was changed" rather than naming a
+         * cause: from here we genuinely do not know whether the request
+         * arrived. The endpoint is idempotent, so trying again is safe either
+         * way.
+         */
+        setRefusal({
+          code: null,
+          message: 'The check-out could not be sent.',
+          balanceMinor: null,
+          currency: null,
+          requiredPermission: null,
+        });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const guidance = refusal === null ? null : checkOutGuidance(refusal);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        disabled={busy}
+        aria-busy={busy}
+        title={busy ? 'Checking out…' : 'Close the folio and hand the room back'}
+        onClick={() => {
+          void submit();
+        }}
+        className="flex items-center gap-1.5 rounded-lg bg-sky-500 px-3 py-1.5 text-[11px] font-semibold text-sky-950 transition-colors hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {busy ? (
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          <KeyRound className="size-3.5" aria-hidden="true" />
+        )}
+        {busy ? 'Checking out…' : 'Check out'}
+      </button>
+
+      {refusal !== null && guidance !== null ? (
+        <div
+          role="alert"
+          className="flex flex-col gap-1 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] px-2.5 py-2 text-[10px] leading-relaxed text-amber-200"
+        >
+          <span>{guidance.headline}</span>
+          {guidance.showFolioLink &&
+          refusal.balanceMinor !== null &&
+          refusal.balanceMinor !== 0 &&
+          refusal.currency !== null ? (
+            <span className="text-amber-300/80">
+              {refusal.balanceMinor > 0 ? 'Outstanding' : 'In credit'}:{' '}
+              {formatMoney(Math.abs(refusal.balanceMinor), refusal.currency)}
+            </span>
+          ) : null}
+          {guidance.hint !== null ? (
+            <span className="text-amber-300/80">{guidance.hint}</span>
+          ) : null}
+          {guidance.showFolioLink ? (
+            <Link
+              href={`/folio/${encodeURIComponent(bookingCode)}?hotelId=${encodeURIComponent(hotelId)}`}
+              className="font-semibold text-amber-100 underline decoration-amber-400/40 underline-offset-2 hover:decoration-amber-200"
+            >
+              Open the folio to settle it
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -545,9 +780,7 @@ function GuestsCard({ detail }: { detail: ReservationDetail | null }) {
         <h3 className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">
           <Users className="size-3.5" aria-hidden="true" />
           Guests
-          {detail === null ? null : (
-            <span className="text-zinc-600">({detail.guests.length})</span>
-          )}
+          {detail === null ? null : <span className="text-zinc-600">({detail.guests.length})</span>}
         </h3>
         <button
           type="button"
@@ -572,9 +805,7 @@ function GuestsCard({ detail }: { detail: ReservationDetail | null }) {
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="truncate text-xs font-medium text-zinc-100">
-                  {guest.name}
-                </span>
+                <span className="truncate text-xs font-medium text-zinc-100">{guest.name}</span>
                 {guest.ordinal === 1 ? (
                   <span className="rounded bg-blue-500/15 px-1.5 py-px text-[9px] font-semibold text-blue-300">
                     Primary
@@ -839,9 +1070,7 @@ function NotesCard({
               Save
             </button>
           </div>
-          {error !== null ? (
-            <p className="text-[10px] text-rose-300">{error}</p>
-          ) : null}
+          {error !== null ? <p className="text-[10px] text-rose-300">{error}</p> : null}
         </div>
       ) : null}
 
@@ -853,9 +1082,7 @@ function NotesCard({
           <p className="text-[9px] font-semibold tracking-wider text-zinc-600 uppercase">
             From the booking
           </p>
-          <p className="mt-1 text-[11px] whitespace-pre-wrap text-zinc-300">
-            {detail.bookingNote}
-          </p>
+          <p className="mt-1 text-[11px] whitespace-pre-wrap text-zinc-300">{detail.bookingNote}</p>
         </div>
       ) : null}
 

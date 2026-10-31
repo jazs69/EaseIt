@@ -248,6 +248,44 @@ export const postFolioPaymentSchema = z.object({
   method: paymentMethodSchema,
   amountMinor: z.number().int().positive(),
   remark: z.string().trim().max(200).nullable().default(null),
+  /**
+   * One key per payment the clerk intended to take.
+   *
+   * =========================================================================
+   * **Required, not optional, because money is the one thing a retry must not
+   * duplicate.**
+   *
+   * A folio line is immutable (CLAUDE.md section 3.4), so a double-posted
+   * payment cannot be edited away -- it has to be corrected with a reversing
+   * line, and in the meantime the folio is wrong in the direction that now
+   * blocks a departure: check-out refuses a folio that does not sum to zero
+   * *in either direction*, so a duplicate ₹5,000 leaves the guest in credit
+   * and unable to check out.
+   *
+   * An optional key would mean every caller that forgot one silently got the
+   * old behaviour back, which is exactly the hole this closes. Omitting it is
+   * therefore a `VALIDATION_FAILED` -- loud, typed, and impossible to ship by
+   * accident. There are only two endpoints taking this command and one caller
+   * of each, so requiring it costs nothing and guarantees everything.
+   *
+   * The client mints it **once per user intent** and reuses it for every
+   * retry of that intent; a new payment gets a new key. The server treats a
+   * replay as the original success and a reuse with different material
+   * details as a typed conflict.
+   *
+   * Shape: 16-64 characters of `[A-Za-z0-9_-]`, which `crypto.randomUUID()`
+   * satisfies. Long enough that two intents cannot collide by chance, bounded
+   * so it cannot be used to smuggle a payload, and URL-safe so it survives
+   * any transport a future client chooses.
+   * =========================================================================
+   */
+  idempotencyKey: z
+    .string()
+    .trim()
+    .regex(
+      /^[A-Za-z0-9_-]{16,64}$/,
+      'Must be 16-64 characters of letters, digits, hyphen or underscore.',
+    ),
 });
 
 export type PostFolioPaymentCommand = z.infer<typeof postFolioPaymentSchema>;

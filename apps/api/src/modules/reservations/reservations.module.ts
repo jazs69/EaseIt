@@ -6,6 +6,8 @@ import { CancelReservationController } from './cancel-reservation.controller.js'
 import { CancelReservationService } from './cancel-reservation.service.js';
 import { CheckInController } from './check-in.controller.js';
 import { CheckInService } from './check-in.service.js';
+import { CheckOutController } from './check-out.controller.js';
+import { CheckOutService } from './check-out.service.js';
 import { CreateReservationController } from './create-reservation.controller.js';
 import { CreateReservationService } from './create-reservation.service.js';
 import { ReservationDetailController } from './reservation-detail.controller.js';
@@ -47,6 +49,9 @@ import { PropertiesModule } from '../properties/properties.module.js';
     // literal segment under `:reservationId`, and the detail route would
     // otherwise swallow it.
     CancelReservationController,
+    // `/check-out` is a literal segment under `:reservationId` as well, so it
+    // is registered above the detail controller for the same reason.
+    CheckOutController,
     // Registered last: its `:reservationId` route would otherwise shadow the
     // literal sibling paths above it, and `/reservations/quote` would be read
     // as a reservation whose id is "quote".
@@ -55,6 +60,7 @@ import { PropertiesModule } from '../properties/properties.module.js';
   providers: [
     CancelReservationService,
     CheckInService,
+    CheckOutService,
     CreateReservationService,
     ReservationDetailService,
     RoomMoveService,
@@ -68,6 +74,7 @@ import { PropertiesModule } from '../properties/properties.module.js';
     ReservationSearchService,
     CreateReservationService,
     CheckInService,
+    CheckOutService,
     ReservationDetailService,
     RoomMoveService,
   ],

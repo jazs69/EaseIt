@@ -1567,6 +1567,25 @@ model FolioLine {
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
+  /// The client's reference for the payment intent this line records.
+  ///
+  /// ===========================================================================
+  /// Null for every line the system raises on its own behalf.
+  ///
+  /// A night audit posting a room charge, check-in posting the arrival night,
+  /// a tax line derived from a charge and a correction are all system-generated
+  /// from an act that is already guarded somewhere else -- the room charge by
+  /// `folio_line_one_room_charge_per_date`, a correction by the id of the line
+  /// it corrects. None of them has a client intent to deduplicate, so none of
+  /// them carries a key, and the unique index below ignores them: PostgreSQL
+  /// treats NULLs as distinct in a unique index, so unlimited keyless lines
+  /// coexist with no partial-index trickery.
+  ///
+  /// Nullable is also what makes this migration safe on a live table: every
+  /// existing row is valid unchanged.
+  idempotencyKey String?
+
+  @@unique([propertyId, idempotencyKey], name: "folio_line_unique_idempotency_key")
   @@index([propertyId, folioId, chargeDate])
   @@index([propertyId, kind, chargeDate])
   @@map("folio_line")

@@ -64,11 +64,7 @@ export function consumesInventory(status: ReservationStatus): boolean {
 }
 
 /** Why a status cannot be cancelled, or `null` when it can. */
-export type CancelRefusal =
-  | 'ALREADY_CANCELLED'
-  | 'CHECKED_IN'
-  | 'CHECKED_OUT'
-  | 'NO_SHOW';
+export type CancelRefusal = 'ALREADY_CANCELLED' | 'CHECKED_IN' | 'CHECKED_OUT' | 'NO_SHOW';
 
 /**
  * Whether this status may be cancelled, and if not, why.
@@ -97,5 +93,43 @@ export function cancelRefusal(status: ReservationStatus): CancelRefusal | null {
       return 'CHECKED_OUT';
     case ReservationStatus.NO_SHOW:
       return 'NO_SHOW';
+  }
+}
+
+/** Why a status cannot be checked out, or `null` when it can. */
+export type CheckOutRefusal = 'ALREADY_CHECKED_OUT' | 'NOT_IN_HOUSE';
+
+/**
+ * Whether this status may be checked out, and if not, why.
+ *
+ * ===========================================================================
+ * Only one status can check out, and that is the whole rule.
+ *
+ * `CHECKED_IN` means a guest is in the room. Every other status either has
+ * nobody in the room (`TENTATIVE`, `CONFIRMED`, `ON_HOLD`, `CANCELLED`,
+ * `NO_SHOW`) or has already left (`CHECKED_OUT`), so there is exactly one
+ * legal source state and the rest collapse into one refusal. Deliberately
+ * narrower than `cancelRefusal`, which has to distinguish several reasons
+ * because cancellation is legal from several states.
+ *
+ * `ALREADY_CHECKED_OUT` is a refusal here and an idempotent success at the
+ * service boundary, mirroring how `cancelRefusal` reports `ALREADY_CANCELLED`:
+ * the distinction is the caller's to make, and the service makes it by
+ * returning the existing checkout instead of raising. A clerk double-clicking
+ * the button, a retried request and a second browser tab all land there.
+ * ===========================================================================
+ */
+export function checkOutRefusal(status: ReservationStatus): CheckOutRefusal | null {
+  switch (status) {
+    case ReservationStatus.CHECKED_IN:
+      return null;
+    case ReservationStatus.CHECKED_OUT:
+      return 'ALREADY_CHECKED_OUT';
+    case ReservationStatus.TENTATIVE:
+    case ReservationStatus.CONFIRMED:
+    case ReservationStatus.ON_HOLD:
+    case ReservationStatus.CANCELLED:
+    case ReservationStatus.NO_SHOW:
+      return 'NOT_IN_HOUSE';
   }
 }

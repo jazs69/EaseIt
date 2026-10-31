@@ -83,6 +83,75 @@ export class FolioAlreadyClosedError extends DomainError {
   }
 }
 
+/**
+ * A folio that is not settled, when something required it to be.
+ *
+ * ===========================================================================
+ * Checkout is the caller, and the refusal is deliberately not a 400.
+ *
+ * An outstanding balance is not a malformed request -- the clerk asked a
+ * perfectly well-formed question and the answer is "not yet". It is a conflict
+ * with the current state of the folio, which is what 409 means, and it is the
+ * same class of answer as `InvalidStateTransitionError`: try again once the
+ * world has changed.
+ *
+ * `FolioAlreadyClosedError` is the opposite problem and must not be reused
+ * here: that one fires when the folio is shut, this one when it is open and
+ * carries a balance.
+ *
+ * A credit balance (the guest overpaid) is refused too, on purpose. Checking
+ * out over a credit would strand the guest's money in a closed folio, and
+ * returning it is a refund -- a separate operation with its own permission
+ * (FO-12), not something checkout should perform silently.
+ * ===========================================================================
+ */
+export class OutstandingBalanceError extends DomainError {
+  readonly code = ErrorCode.OUTSTANDING_BALANCE;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(balanceMinor: number, currency: string) {
+    super(
+      balanceMinor > 0
+        ? 'This stay still has an amount due, so it cannot be checked out. ' +
+            'Settle the folio first.'
+        : 'This stay is in credit, so it cannot be checked out. Refund the ' +
+            'balance first rather than closing the folio over it.',
+      { balanceMinor, currency },
+    );
+  }
+}
+
+/**
+ * The same idempotency key, a different payment.
+ *
+ * ===========================================================================
+ * Refused rather than disambiguated, and deliberately not retryable.
+ *
+ * The alternatives are both worse. Posting it as a new payment defeats the
+ * key's whole purpose -- a client whose retry mutated the amount would get two
+ * lines, which is the duplicate this exists to prevent. Silently returning the
+ * original would tell a clerk that ₹7,000 was taken when the books hold
+ * ₹5,000, and a folio that disagrees with the drawer is worse than a refusal.
+ *
+ * So the server names what differs and changes nothing. `details` carries the
+ * field names only, never the two amounts side by side: that is enough for a
+ * developer to find the bug and nothing a shoulder-surfer can read off a front
+ * desk screen.
+ * ===========================================================================
+ */
+export class IdempotencyKeyReusedError extends DomainError {
+  readonly code = ErrorCode.IDEMPOTENCY_KEY_REUSED;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(differing: readonly string[]) {
+    super(
+      'This payment reference has already been used for a different payment. ' +
+        'Reload the folio and post the new payment on its own reference.',
+      { differing: [...differing] },
+    );
+  }
+}
+
 export class BusinessDateClosedError extends DomainError {
   readonly code = ErrorCode.BUSINESS_DATE_CLOSED;
   readonly httpStatus = HttpStatus.CONFLICT;

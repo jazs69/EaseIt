@@ -230,8 +230,7 @@ export const PaymentGatewayStatus = {
   INACTIVE: 'INACTIVE',
 } as const;
 
-export type PaymentGatewayStatus =
-  (typeof PaymentGatewayStatus)[keyof typeof PaymentGatewayStatus];
+export type PaymentGatewayStatus = (typeof PaymentGatewayStatus)[keyof typeof PaymentGatewayStatus];
 
 export const paymentGatewayStatusSchema = z.enum(PaymentGatewayStatus);
 
@@ -416,6 +415,23 @@ export const ErrorCode = {
   ROOM_UNAVAILABLE: 'ROOM_UNAVAILABLE',
   INVALID_STATE_TRANSITION: 'INVALID_STATE_TRANSITION',
   FOLIO_ALREADY_CLOSED: 'FOLIO_ALREADY_CLOSED',
+  /**
+   * A folio still owes money, or is in credit, when something required it
+   * to be settled -- checkout, for instance. Distinct from
+   * `FOLIO_ALREADY_CLOSED`, which is the opposite problem: that folio is
+   * shut and this one is open with a balance on it.
+   */
+  OUTSTANDING_BALANCE: 'OUTSTANDING_BALANCE',
+  /**
+   * An idempotency key was reused for a materially different command.
+   *
+   * Distinct from `CONFLICT`, which means "try again": this one must never be
+   * retried as-is. The server is saying the key it was given already stands
+   * for a different payment, so repeating the request cannot succeed and the
+   * client has a bug -- it either reused a key across two intents or changed
+   * the amount under a key it had already sent.
+   */
+  IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
   RATE_NOT_BOOKABLE: 'RATE_NOT_BOOKABLE',
   RESTRICTION_VIOLATED: 'RESTRICTION_VIOLATED',
   BUSINESS_DATE_CLOSED: 'BUSINESS_DATE_CLOSED',

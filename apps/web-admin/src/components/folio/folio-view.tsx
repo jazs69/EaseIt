@@ -684,6 +684,31 @@ function PostingSheet({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * One payment reference per opening of this sheet.
+   *
+   * =========================================================================
+   * **Minted in a state initialiser, which is what makes it once per intent.**
+   *
+   * The clerk opening "Collect payment" *is* the intent. `PostingSheet` is
+   * mounted only while the sheet is open, so this initialiser runs exactly
+   * once for it: every re-render keeps the same key, and so does every retry
+   * after a failure — which is the case that matters, because a retry is
+   * precisely when a duplicate would otherwise be posted. Closing and
+   * reopening the sheet remounts the component and mints a new one, so the
+   * next payment is a new intent.
+   *
+   * Deriving it from the amount or the method would be wrong in both
+   * directions: a clerk who corrected a typo mid-entry would get a new key for
+   * the same intent, and two genuinely separate ₹1,000 cash payments would
+   * collide on one.
+   *
+   * `crypto.randomUUID()` is available in every browser this dashboard
+   * supports and satisfies the server's 16-64 character URL-safe shape.
+   * =========================================================================
+   */
+  const [paymentKey] = useState(() => crypto.randomUUID());
+
   // Rounded once, at the boundary, into integer minor units — never carried
   // as a float into the request (section 3.4).
   const amountMinor = amount.trim() === '' ? 0 : Math.round(Number(amount) * 100);
@@ -703,6 +728,7 @@ function PostingSheet({
         method,
         amountMinor,
         remark: remark.trim() === '' ? null : remark.trim(),
+        idempotencyKey: paymentKey,
       };
 
       const page =

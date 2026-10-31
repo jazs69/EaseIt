@@ -31,6 +31,8 @@
     "test:outbox:concurrency": "node test/concurrency/outbox-claim.test.mjs",
     "test:outbox:redis": "node test/integration/outbox-redis.test.mjs",
     "test:checkin": "node test/integration/check-in.test.mjs",
+    "test:checkout": "node test/integration/check-out.test.mjs",
+    "test:payment": "node test/integration/folio-payment.test.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",
     "test:unit": "node test/unit/gate-guards.test.mjs",

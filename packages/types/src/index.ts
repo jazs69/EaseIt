@@ -17,6 +17,7 @@ export * from './dto/cancel-reservation.dto.js';
 export * from './dto/folio.dto.js';
 export * from './dto/group.dto.js';
 export * from './dto/check-in.dto.js';
+export * from './dto/check-out.dto.js';
 export * from './dto/create-reservation.dto.js';
 export * from './dto/performance.dto.js';
 export * from './dto/reports.dto.js';

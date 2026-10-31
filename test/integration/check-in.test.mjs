@@ -177,7 +177,17 @@ async function createProbeBooking(cookie, property, roomType, arrival, departure
 }
 
 /** A room type with a sellable unit on every night of the stay. */
-async function findSellableRoomType(property, arrival, departure) {
+/**
+ * A category with room to spare, not merely room.
+ *
+ * `atLeast` exists because this suite books **twice** in the same category
+ * over the same nights -- once for the check-in path and once for the instant
+ * check-in from the create modal. Asking only for one free unit picked a
+ * category that had exactly one, and the second booking was then correctly
+ * refused with ROOM_UNAVAILABLE on the night that ran out. The fixture was
+ * asking the wrong question; the oversell CHECK was right.
+ */
+async function findSellableRoomType(property, arrival, departure, atLeast = 1) {
   const roomTypes = await prisma.roomType.findMany({
     where: { propertyId: property.id, rooms: { some: {} } },
     select: { id: true, name: true },
@@ -201,7 +211,11 @@ async function findSellableRoomType(property, arrival, departure) {
       (new Date(`${departure}T00:00:00.000Z`) - new Date(`${arrival}T00:00:00.000Z`)) / 86_400_000,
     );
     if (days.length !== nights) continue;
-    if (days.every((day) => day.physical + day.overbookingAllowance - day.sold - day.blocked > 0)) {
+    if (
+      days.every(
+        (day) => day.physical + day.overbookingAllowance - day.sold - day.blocked >= atLeast,
+      )
+    ) {
       return roomType;
     }
   }
@@ -273,26 +287,54 @@ async function main() {
   console.log(`Property ${property.code} (${property.name})`);
   console.log(`  business date ${businessDate}, acting as ${user.email}\n`);
 
-  const roomType = await findSellableRoomType(property, businessDate, departure);
+  // Two, because the suite books twice in this category over these nights.
+  const roomType = await findSellableRoomType(property, businessDate, departure, 2);
   if (roomType === null) {
-    throw new Error('no room type has inventory free for the probe stay. Run pnpm db:seed.');
+    throw new Error(
+      'no room type has two free units for the probe stay on every night. Run pnpm db:seed.',
+    );
   }
 
   const booking = await createProbeBooking(cookie, property, roomType, businessDate, departure);
   console.log(`Fixture: ${booking.bookingCode}, ${businessDate} -> ${departure}, ${rupees(booking.quote.totalMinor)} incl. ${rupees(booking.quote.taxMinor)} tax`);
 
-  // Start the target room dirty, so the acknowledgement path is exercised
-  // rather than assumed.
-  const room = await prisma.room.findFirst({
-    where: {
-      propertyId: property.id,
-      roomTypeId: roomType.id,
-      status: { notIn: ['OCCUPIED_CLEAN', 'OCCUPIED_DIRTY', 'OUT_OF_ORDER'] },
-    },
-    select: { id: true, number: true, status: true },
-    orderBy: { number: 'asc' },
-  });
-  if (room === null) throw new Error('no vacant room of that category for the probe.');
+  /**
+   * Start the target room dirty, so the acknowledgement path is exercised
+   * rather than assumed -- but pick a room that is actually free **for these
+   * dates**, not merely one whose housekeeping status looks free.
+   *
+   * `room.status` says what the room is like right now; it says nothing about
+   * who holds it next week. Choosing the lowest-numbered VACANT room made this
+   * suite fail with `23P01` / ROOM_UNAVAILABLE whenever the seed, or the
+   * drifting business date, had already given that room to an overlapping
+   * stay -- the fixture was wrong and the production path was right. So the
+   * selection asks the same question `reservation_room_no_overlap` asks:
+   * `daterange(arrival, departure, '[)')` against every assignment of that
+   * room whose status is outside ('CANCELLED', 'NO_SHOW'). This is the same
+   * correction the cancellation suite needed for the same reason.
+   */
+  const freeRooms = await prisma.$queryRaw`
+    SELECT rm."id"::text AS id, rm."number" AS number, rm."status"::text AS status
+    FROM room rm
+    WHERE rm."propertyId" = ${property.id}::uuid
+      AND rm."roomTypeId" = ${roomType.id}::uuid
+      AND rm."status" NOT IN ('OCCUPIED_CLEAN', 'OCCUPIED_DIRTY', 'OUT_OF_ORDER')
+      AND NOT EXISTS (
+        SELECT 1 FROM reservation_room rr
+        WHERE rr."roomId" = rm."id"
+          AND rr."status" NOT IN ('CANCELLED', 'NO_SHOW')
+          AND daterange(rr."arrivalDate", rr."departureDate", '[)')
+              && daterange(${businessDate}::date, ${departure}::date, '[)')
+      )
+    ORDER BY rm."number" ASC
+    LIMIT 1`;
+
+  const room = freeRooms[0] ?? null;
+  if (room === null) {
+    throw new Error(
+      `no room of category ${roomType.name} is free for ${businessDate} -> ${departure}.`,
+    );
+  }
 
   const originalRoomStatus = room.status;
   restoreRooms.push({ id: room.id, status: originalRoomStatus });
@@ -515,19 +557,33 @@ async function main() {
   // The whole point of sharing `postCheckIn` between the two pathways: an
   // instant check-in from the create modal must leave the same folio behind.
   console.log('\nInstant check-in from the create modal');
-  const instantRoom = await prisma.room.findFirst({
-    where: {
-      propertyId: property.id,
-      roomTypeId: roomType.id,
-      status: { notIn: ['OCCUPIED_CLEAN', 'OCCUPIED_DIRTY', 'OUT_OF_ORDER'] },
-      id: { not: room.id },
-    },
-    select: { id: true, number: true, status: true },
-    orderBy: { number: 'asc' },
-  });
+  /**
+   * A second room, free for the same dates, chosen the same way as the first
+   * (see the note there): by the question the exclusion constraint asks, not
+   * by housekeeping status. The first room is excluded because the stay above
+   * is now checked into it.
+   */
+  const instantRooms = await prisma.$queryRaw`
+    SELECT rm."id"::text AS id, rm."number" AS number, rm."status"::text AS status
+    FROM room rm
+    WHERE rm."propertyId" = ${property.id}::uuid
+      AND rm."roomTypeId" = ${roomType.id}::uuid
+      AND rm."id" <> ${room.id}::uuid
+      AND rm."status" NOT IN ('OCCUPIED_CLEAN', 'OCCUPIED_DIRTY', 'OUT_OF_ORDER')
+      AND NOT EXISTS (
+        SELECT 1 FROM reservation_room rr
+        WHERE rr."roomId" = rm."id"
+          AND rr."status" NOT IN ('CANCELLED', 'NO_SHOW')
+          AND daterange(rr."arrivalDate", rr."departureDate", '[)')
+              && daterange(${businessDate}::date, ${departure}::date, '[)')
+      )
+    ORDER BY rm."number" ASC
+    LIMIT 1`;
+
+  const instantRoom = instantRooms[0] ?? null;
 
   if (instantRoom === null) {
-    console.log('  SKIP  no second vacant room of that category');
+    console.log('  SKIP  no second room of that category free for these dates');
   } else {
     restoreRooms.push({ id: instantRoom.id, status: instantRoom.status });
     const instant = await createProbeBooking(

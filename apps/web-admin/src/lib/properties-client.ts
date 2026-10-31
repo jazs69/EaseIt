@@ -60,6 +60,9 @@ import {
   type CheckInPreflight,
   type CheckInRequest,
   type CheckInResult,
+  checkOutResultSchema,
+  type CheckOutCommand,
+  type CheckOutResult,
   type CreatedReservation,
   type GstinLookup,
   type PostalLookup,
@@ -96,9 +99,7 @@ export interface FetchMyGroupOptions {
   cookieHeader?: string;
 }
 
-export function fetchMyGroup(
-  options: FetchMyGroupOptions = {},
-): Promise<GroupPropertiesResponse> {
+export function fetchMyGroup(options: FetchMyGroupOptions = {}): Promise<GroupPropertiesResponse> {
   const params = new URLSearchParams();
   if (options.status !== undefined) params.set('status', options.status);
   if (options.search !== undefined && options.search.length > 0) {
@@ -121,9 +122,7 @@ export function fetchMyGroup(
  * cookies (CLAUDE.md section 3.2). The signed session is the only carrier, and
  * the API re-verifies the grant on every request regardless.
  */
-export function selectPropertyContext(
-  propertyId: string,
-): Promise<SelectPropertyContextResponse> {
+export function selectPropertyContext(propertyId: string): Promise<SelectPropertyContextResponse> {
   return apiFetch('/properties/select-context', selectPropertyContextResponseSchema, {
     method: 'POST',
     body: { propertyId },
@@ -252,9 +251,7 @@ export interface FetchTimelineOptions {
  * sold/available rollups above and below them must agree with each other, and
  * separate requests can each resolve against a different instant.
  */
-export function fetchTimelineCalendar(
-  options: FetchTimelineOptions,
-): Promise<TimelineCalendar> {
+export function fetchTimelineCalendar(options: FetchTimelineOptions): Promise<TimelineCalendar> {
   const params = new URLSearchParams();
   if (options.startDate !== undefined) params.set('startDate', options.startDate);
   if (options.timeframe !== undefined) params.set('timeframe', options.timeframe);
@@ -280,9 +277,7 @@ export function fetchTimelineCalendar(
  * express that.
  */
 export function parseTimeframe(raw: string | undefined): TimelineTimeframe {
-  return raw === 'day' || raw === 'week' || raw === 'ten_days' || raw === 'month'
-    ? raw
-    : 'week';
+  return raw === 'day' || raw === 'week' || raw === 'ten_days' || raw === 'month' ? raw : 'week';
 }
 
 export function parseViewMode(raw: string | undefined): TimelineViewMode {
@@ -609,6 +604,30 @@ export function addReservationNote(
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Check-out                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Check a guest out.
+ *
+ * The API refuses with `OUTSTANDING_BALANCE` when the folio does not sum to
+ * zero, and the caller is expected to branch on that code and send the clerk
+ * to the folio rather than re-wording the message locally -- `api.ts` exists so
+ * that no component builds copy out of an HTTP status.
+ */
+export function checkOutReservation(
+  hotelId: string,
+  reservationId: string,
+  body: CheckOutCommand = { reason: null },
+): Promise<CheckOutResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/check-out`,
+    checkOutResultSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Room assignment and moves                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -696,7 +715,6 @@ export function checkInReservation(
 /*  Companies and booking-form lookups                                        */
 /* -------------------------------------------------------------------------- */
 
-
 export function listCompanies(hotelId: string): Promise<CompanySummary[]> {
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/companies`,
@@ -708,11 +726,10 @@ export function createCompany(
   hotelId: string,
   body: CreateCompanyCommand,
 ): Promise<CompanySummary> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/companies`,
-    companySummarySchema,
-    { method: 'POST', body },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/companies`, companySummarySchema, {
+    method: 'POST',
+    body,
+  });
 }
 
 /** Offline GSTIN check: structure plus the number's own check digit. */
@@ -764,14 +781,10 @@ export function fetchPropertySetup(
   hotelId: string,
   options?: { signal?: AbortSignal; cookieHeader?: string },
 ): Promise<PropertySetup> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/setup`,
-    propertySetupSchema,
-    {
-      ...(options?.signal === undefined ? {} : { signal: options.signal }),
-      ...(options?.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
-    },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/setup`, propertySetupSchema, {
+    ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    ...(options?.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
 }
 
 /** Partial: only the fields present are written, so one tab cannot reset another. */
@@ -779,11 +792,10 @@ export function updatePropertySettings(
   hotelId: string,
   body: UpdatePropertySettings,
 ): Promise<PropertySetup> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/settings`,
-    propertySetupSchema,
-    { method: 'PATCH', body },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/settings`, propertySetupSchema, {
+    method: 'PATCH',
+    body,
+  });
 }
 
 /**
@@ -797,11 +809,10 @@ export function replacePropertyTaxSlabs(
   hotelId: string,
   body: ReplaceTaxSlabs,
 ): Promise<PropertySetup> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/tax-slabs`,
-    propertySetupSchema,
-    { method: 'PUT', body },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/tax-slabs`, propertySetupSchema, {
+    method: 'PUT',
+    body,
+  });
 }
 
 /** Records where an image lives; nothing here uploads bytes. */
@@ -809,11 +820,10 @@ export function addPropertyMedia(
   hotelId: string,
   body: CreatePropertyMedia,
 ): Promise<PropertyMedia> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/media`,
-    propertyMediaSchema,
-    { method: 'POST', body },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/media`, propertyMediaSchema, {
+    method: 'POST',
+    body,
+  });
 }
 
 /**
@@ -826,11 +836,10 @@ export function replacePropertyAmenities(
   hotelId: string,
   body: ReplaceAmenities,
 ): Promise<PropertySetup> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/amenities`,
-    propertySetupSchema,
-    { method: 'PUT', body },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/amenities`, propertySetupSchema, {
+    method: 'PUT',
+    body,
+  });
 }
 
 /** The policies, replaced as a set — they carry no natural key to match on. */
@@ -838,23 +847,18 @@ export function replacePropertyPolicies(
   hotelId: string,
   body: ReplacePolicies,
 ): Promise<PropertySetup> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/policies`,
-    propertySetupSchema,
-    { method: 'PUT', body },
-  );
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/policies`, propertySetupSchema, {
+    method: 'PUT',
+    body,
+  });
 }
 
 /** The fees and surcharges, replaced as a set. Recorded, not yet billed. */
-export function replacePropertyFees(
-  hotelId: string,
-  body: ReplaceFees,
-): Promise<PropertySetup> {
-  return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/fees`,
-    propertySetupSchema,
-    { method: 'PUT', body },
-  );
+export function replacePropertyFees(hotelId: string, body: ReplaceFees): Promise<PropertySetup> {
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/fees`, propertySetupSchema, {
+    method: 'PUT',
+    body,
+  });
 }
 
 /* -------------------------------------------------------------------------- */

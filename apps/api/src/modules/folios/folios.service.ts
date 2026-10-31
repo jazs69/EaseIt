@@ -15,7 +15,7 @@
  * ===========================================================================
  */
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   currentDateInTimeZone,
   Permission,
@@ -37,7 +37,9 @@ import {
 import {
   FolioAlreadyClosedError,
   ForbiddenError,
+  IdempotencyKeyReusedError,
   TenantScopeViolationError,
+  TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { Prisma } from '@repo/database';
@@ -114,6 +116,8 @@ interface LineRow {
 
 @Injectable()
 export class FoliosService {
+  private readonly logger = new Logger(FoliosService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly clock: ClockService,
@@ -436,24 +440,86 @@ export class FoliosService {
     });
     if (reservation === null) throw new TenantScopeViolationError('Reservation');
 
+    /**
+     * The container, created once even under a double-click.
+     *
+     * Two concurrent first payments on a folio-less booking both read
+     * `folio: null` and both try to create one. `folio.reservationId` is
+     * unique, so the loser raised `P2002` and answered 500 — a clerk's second
+     * click on "Collect payment" produced an unexplained error. That is a
+     * *container* collision, not a payment one: the losing request has posted
+     * no money yet, so the honest resolution is to use the folio the winner
+     * created and carry on. The payment itself is then deduplicated by its own
+     * key inside `postPayment`, which is what stops the two requests posting
+     * two lines into that one folio.
+     */
     const folioId =
       reservation.folio?.id ??
-      (
-        await this.prisma.client.folio.create({
-          data: {
-            propertyId: property.id,
-            reservationId: reservation.id,
-            currency: reservation.currency,
-            status: 'OPEN',
-          },
-          select: { id: true },
-        })
-      ).id;
+      (await this.openFolio(property.id, reservation.id, reservation.currency));
 
     return this.postPayment(userId, hotelId, folioId, command);
   }
 
-  /** Money received at the desk. */
+  /** Opens the payment container, tolerating a concurrent opener. */
+  private async openFolio(
+    propertyId: string,
+    reservationId: string,
+    currency: string,
+  ): Promise<string> {
+    try {
+      const created = await this.prisma.client.folio.create({
+        data: { propertyId, reservationId, currency, status: 'OPEN' },
+        select: { id: true },
+      });
+      return created.id;
+    } catch (cause) {
+      // Only the one-folio-per-reservation index means "somebody else opened
+      // it"; anything else is a real failure and propagates.
+      if (!isFolioPerReservationCollision(cause)) throw cause;
+
+      const existing = await this.prisma.client.folio.findFirst({
+        where: { reservationId, propertyId },
+        select: { id: true },
+      });
+      if (existing === null) throw cause;
+      return existing.id;
+    }
+  }
+
+  /**
+   * Money received at the desk.
+   *
+   * ===========================================================================
+   * **Exactly once per intent, and the index is what makes that true.**
+   *
+   * Three things move together: the payment line, the reservation's
+   * `paidAmountMinor` mirror, and the audit row. Posting any of them twice is a
+   * money bug of the worst kind, because `folio_line` is append-only (section
+   * 3.4) -- a duplicate cannot be edited away, only corrected with a reversing
+   * line, and until somebody does the folio is wrong in the direction that now
+   * blocks a departure. Check-out refuses a balance that is non-zero *in either
+   * direction*, so a duplicate payment leaves the guest in credit and unable to
+   * check out.
+   *
+   * So the client sends one `idempotencyKey` per intent and reuses it on every
+   * retry of that intent, and the line carries it under
+   * `folio_line_propertyId_idempotencyKey_key`.
+   *
+   * **Why there is no "has this key been used?" read first.** Because it cannot
+   * work. Two concurrent requests with the same key both read "no such line"
+   * and both proceed; a lookup narrows the window without closing it, and that
+   * window is exactly where a double-click lands. Only the unique index
+   * decides, and it decides correctly under any isolation level -- the same
+   * position section 3.1 takes on overselling. The insert is therefore
+   * attempted, and the violation is an answer rather than a failure.
+   *
+   * That violation rolls the **whole** transaction back: PostgreSQL aborts on
+   * constraint failure and refuses every later statement on that connection, so
+   * nothing partial survives -- no line, no increment, no audit row. The
+   * original is recovered *outside* the transaction, which is where this method
+   * already does its final read.
+   * ===========================================================================
+   */
   async postPayment(
     userId: string,
     hotelId: string,
@@ -464,43 +530,133 @@ export class FoliosService {
     const folio = await this.loadOpenFolio(property.id, folioId);
     const businessDate = toBusinessDate(property.businessDate);
 
-    await this.prisma.client.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+    try {
+      await this.prisma.client.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
 
-      await tx.folioLine.create({
-        data: {
-          propertyId: property.id,
-          folioId: folio.id,
-          kind: 'PAYMENT',
-          description: `Payment (${command.method})`,
-          // Negative, so the balance stays one plain sum. The CHECK constraint
-          // refuses the other sign.
-          amountMinor: -command.amountMinor,
-          currency: folio.currency,
-          // Posted to the business date, never `now()` (section 3.3) — a
-          // payment taken at 00:30 belongs to the open accounting day.
-          chargeDate: toUtcMidnight(businessDate),
-          paymentMethod: command.method,
-          remark: command.remark,
-          postedById: userId,
-        },
-      });
+        await tx.folioLine.create({
+          data: {
+            propertyId: property.id,
+            folioId: folio.id,
+            kind: 'PAYMENT',
+            description: `Payment (${command.method})`,
+            // Negative, so the balance stays one plain sum. The CHECK
+            // constraint refuses the other sign.
+            amountMinor: -command.amountMinor,
+            currency: folio.currency,
+            // Posted to the business date, never `now()` (section 3.3) — a
+            // payment taken at 00:30 belongs to the open accounting day.
+            chargeDate: toUtcMidnight(businessDate),
+            paymentMethod: command.method,
+            remark: command.remark,
+            postedById: userId,
+            idempotencyKey: command.idempotencyKey,
+          },
+        });
 
-      // The reservation's own mirror of what has been taken, kept in step
-      // inside the same transaction as the line.
-      await tx.reservation.update({
-        where: { id: folio.reservationId },
-        data: { paidAmountMinor: { increment: command.amountMinor } },
-      });
+        // The reservation's own mirror of what has been taken, kept in step
+        // inside the same transaction as the line.
+        await tx.reservation.update({
+          where: { id: folio.reservationId },
+          data: { paidAmountMinor: { increment: command.amountMinor } },
+        });
 
-      await this.writeAudit(tx, property.id, userId, folio.reservationId, 'FOLIO_PAYMENT_POSTED', {
-        method: command.method,
-        amountMinor: command.amountMinor,
-        businessDate,
+        await this.writeAudit(
+          tx,
+          property.id,
+          userId,
+          folio.reservationId,
+          'FOLIO_PAYMENT_POSTED',
+          {
+            method: command.method,
+            amountMinor: command.amountMinor,
+            businessDate,
+            idempotencyKey: command.idempotencyKey,
+          },
+        );
       });
-    });
+    } catch (cause) {
+      /**
+       * Only this one index means "already recorded".
+       *
+       * `folio_line` carries a second unique index --
+       * `folio_line_one_room_charge_per_date` -- so treating any `P2002` on
+       * this table as a replay would silently swallow a genuine
+       * double-charged-night bug. The constraint is identified by name before
+       * anything is swallowed, and everything else propagates untouched.
+       */
+      if (!isIdempotencyKeyCollision(cause)) throw cause;
+
+      await this.assertSamePaymentIntent(property.id, folio.id, command);
+      this.logger.debug(
+        `Folio payment replayed on an existing reference; nothing was posted.`,
+      );
+    }
 
     return this.byBookingCode(userId, hotelId, folio.bookingCode);
+  }
+
+  /**
+   * The key is already taken — by this payment, or by a different one?
+   *
+   * ===========================================================================
+   * A replay is a success; a reuse is a refusal. Nothing else is safe.
+   *
+   * Returning the original for a command that asked for a different amount
+   * would tell a clerk ₹7,000 was taken when the books hold ₹5,000. Posting it
+   * as a new payment would defeat the key. So the stored line is compared with
+   * what was asked for, and only an exact match on the material attributes is
+   * reported as the original success.
+   *
+   * **Material** — the folio, the amount, the method: what the money *is*. The
+   * folio is checked here rather than in the index because the index is scoped
+   * per property, and that is deliberate: it makes the same key on another
+   * folio a conflict to name rather than a second payment to accept.
+   *
+   * **Not material** — `remark`, a free-text note. A retry that re-typed it is
+   * still the same money, and refusing over a comment would leave a clerk
+   * unable to finish a payment the books have already taken. The first remark
+   * stands, which is the one thing a replay cannot change.
+   *
+   * The read is scoped by `propertyId`, so it can neither see nor report on a
+   * line belonging to another property (section 3.2). It runs outside the
+   * aborted transaction, on a fresh connection, because the violation rolled
+   * that one back.
+   * ===========================================================================
+   */
+  private async assertSamePaymentIntent(
+    propertyId: string,
+    folioId: string,
+    command: PostFolioPaymentCommand,
+  ): Promise<void> {
+    const existing = await this.prisma.client.folioLine.findFirst({
+      where: { propertyId, idempotencyKey: command.idempotencyKey },
+      select: { folioId: true, amountMinor: true, paymentMethod: true, kind: true },
+    });
+
+    /**
+     * Gone between the violation and this read.
+     *
+     * Only reachable if the first line were deleted in that window, which no
+     * production path does — a folio line is immutable. It is deliberately not
+     * treated as a success: *this* request wrote nothing, and reporting a
+     * payment that is not in the books is a lie about money. A typed conflict
+     * tells the caller to try again, which will then either insert cleanly or
+     * replay.
+     */
+    if (existing === null) throw new TransactionConflictError('folio payment');
+
+    const differing: string[] = [];
+    if (existing.folioId !== folioId) differing.push('folioId');
+    // Stored negative (section 3.4); the command carries the positive amount a
+    // clerk typed.
+    if (existing.amountMinor !== -command.amountMinor) differing.push('amountMinor');
+    if (existing.paymentMethod !== command.method) differing.push('method');
+    // A key that landed on something other than a payment is not this intent
+    // under any reading.
+    if (existing.kind !== 'PAYMENT') differing.push('kind');
+
+    if (differing.length > 0) throw new IdempotencyKeyReusedError(differing);
   }
 
   /**
@@ -1444,6 +1600,106 @@ export class FoliosService {
 
     return first.property;
   }
+}
+
+/**
+ * Was this unique violation the payment idempotency index, and only that one?
+ *
+ * ===========================================================================
+ * Named, never "any P2002 on this table".
+ *
+ * `folio_line` also carries `folio_line_one_room_charge_per_date`, the guard
+ * that stops a night being charged twice. Swallowing that as "already
+ * recorded" would turn the loudest possible double-charge bug into a silent
+ * success, which is the exact failure a blanket catch produces (section 5
+ * forbids swallowing an error).
+ *
+ * Prisma reports the index through `meta.target`, whose shape has moved
+ * between versions and between the query engine and the driver adapters: it
+ * may be the index name, an array of column names, or a comma-joined string.
+ * All three are accepted, and nothing else is — an unrecognised shape
+ * propagates as the original error rather than being guessed at. The payment
+ * suite asserts which shape this build actually produces, so a Prisma upgrade
+ * that changes it fails a test instead of quietly widening this predicate.
+ * ===========================================================================
+ */
+export function isIdempotencyKeyCollision(cause: unknown): boolean {
+  return uniqueViolationMentions(cause, ['folio_line_propertyId_idempotencyKey_key']);
+}
+
+/** The one-folio-per-reservation index, for the concurrent-opener case. */
+export function isFolioPerReservationCollision(cause: unknown): boolean {
+  return uniqueViolationMentions(cause, ['folio_reservationId_key']);
+}
+
+/**
+ * A unique violation that names one of `needles` as the index it hit.
+ *
+ * ===========================================================================
+ * The name is read from where this stack actually puts it, which was measured
+ * rather than assumed.
+ *
+ * Prisma 7 with the `pg` driver adapter reports the index at
+ * `meta.driverAdapterError.cause.constraint.index`, and leaves `meta.target`
+ * undefined — so a detector written against `target` alone compiles, passes
+ * typecheck, and silently never matches. That is exactly what happened here:
+ * every collision answered 500 until the shape was probed. Hence all three
+ * known shapes, most structured first:
+ *
+ *   1. the driver adapter's `constraint.index` (this build),
+ *   2. `meta.target`, a name or a column list (query-engine builds),
+ *   3. the message text, which carries the index name verbatim.
+ *
+ * The needles are **full index names and nothing looser**. A bare column name
+ * would also be matched against the message, and Prisma's message embeds the
+ * calling source — which mentions `idempotencyKey` — so a genuine
+ * double-charged-night violation could have matched it and been swallowed as a
+ * replay. A full index name appears in no other error, which is what makes
+ * reading the message a legitimate last resort rather than a shortcut. It is
+ * still the *last* resort: a message is the one part of an error nobody
+ * promises to keep stable.
+ *
+ * If a future Prisma reports only a column list, this fails **closed** — a
+ * loud 500 and a failing test, never a silently widened predicate.
+ *
+ * `P2002` is the client's code and `23505` the SQLSTATE; both are accepted,
+ * because the query builder surfaces the former while a raw query surfaces the
+ * latter and these paths are reachable through either — the same reasoning as
+ * `outbox.service.ts`.
+ *
+ * The payment suite pins this shape against a real violation, so a Prisma
+ * upgrade that moves it fails a test rather than quietly turning every replay
+ * back into a 500.
+ * ===========================================================================
+ */
+function uniqueViolationMentions(cause: unknown, needles: readonly string[]): boolean {
+  if (cause === null || typeof cause !== 'object') return false;
+
+  const record = cause as { code?: unknown; meta?: unknown; message?: unknown };
+  const adapterCause = (
+    record.meta as { driverAdapterError?: { cause?: unknown } } | undefined
+  )?.driverAdapterError?.cause as
+    | { originalCode?: unknown; constraint?: { index?: unknown } }
+    | undefined;
+
+  const isUnique =
+    record.code === 'P2002' ||
+    record.code === '23505' ||
+    adapterCause?.originalCode === '23505';
+  if (!isUnique) return false;
+
+  const candidates: string[] = [];
+
+  const index = adapterCause?.constraint?.index;
+  if (typeof index === 'string') candidates.push(index);
+
+  const target = (record.meta as { target?: unknown } | undefined)?.target;
+  if (Array.isArray(target)) candidates.push(target.map((part) => String(part)).join(','));
+  else if (typeof target === 'string') candidates.push(target);
+
+  if (typeof record.message === 'string') candidates.push(record.message);
+
+  return candidates.some((text) => needles.some((needle) => text.includes(needle)));
 }
 
 /** Kinds that add to what is owed, exported for the night audit to reuse. */
