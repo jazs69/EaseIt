@@ -47,6 +47,11 @@ const suites = [
     why: 'check-in state machine and room assignment',
   },
   {
+    name: 'folio payment idempotency',
+    script: 'test/integration/folio-payment.test.mjs',
+    why: 'one payment per key, concurrent same-key POSTs, by-key reconciliation read',
+  },
+  {
     name: 'cancellation + concurrency',
     script: 'test/integration/cancel-reservation.test.mjs',
     why: 'release-once, lock timeouts, cancel vs check-in, cancel vs move, stale assignment',

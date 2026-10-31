@@ -76,6 +76,19 @@ const checks = [
     why: 'the gate/guard unit suite failed',
   },
   {
+    name: 'unit tests (payment intent)',
+    // Pure: Node strips the types off the module under test, so this needs no
+    // database, no API and no browser. It guards the rules that decide which
+    // idempotency key a retry presents, which is what stops a lost response
+    // becoming a second payment.
+    command: process.execPath,
+    args: [
+      '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON',
+      'test/unit/payment-intent.test.mjs',
+    ],
+    why: 'the payment-intent state machine suite failed',
+  },
+  {
     name: 'unit tests (retry classifier)',
     // The one suite that contacts nothing: it imports the compiled retry
     // classifier and the shared SQLSTATE policy and asserts on them. It needs

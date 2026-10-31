@@ -291,6 +291,48 @@ export const postFolioPaymentSchema = z.object({
 export type PostFolioPaymentCommand = z.infer<typeof postFolioPaymentSchema>;
 
 /**
+ * What an idempotency key resolves to, right now, in the database.
+ *
+ * ===========================================================================
+ * The authoritative answer to "did my payment land?"
+ *
+ * A client that loses a response cannot tell whether the server committed. It
+ * can resend the key -- which is safe, because the unique index makes that a
+ * replay -- but resending is a *write*, and before writing again a front desk
+ * deserves to be able to simply look. This is that look: a property-scoped
+ * read of the committed row.
+ *
+ * **`found: false` is a statement about the instant of the read.** It means no
+ * payment line is visible under this key in the authoritative database at that
+ * moment. It is emphatically **not** proof that an earlier in-flight request
+ * can never commit -- a request still travelling, or a transaction still
+ * open, can land a moment later. So a client that sees `found: false` must
+ * keep its key and its frozen snapshot and resolve through the idempotent
+ * write path; it must never conclude the payment failed and start a fresh one.
+ *
+ * Only `PAYMENT` lines are reachable. `amountMinor` is returned **positive**,
+ * as the clerk typed it, so it can be compared directly with the command that
+ * was sent -- the ledger stores it negative (section 3.4), and making the
+ * caller remember which way round it is would be an invitation to get it
+ * wrong.
+ * ===========================================================================
+ */
+export const paymentByKeyResultSchema = z.object({
+  found: z.boolean(),
+  /** The `folio_line` row, for an operator chasing it in the ledger. */
+  lineId: z.uuid().nullable(),
+  /** Which folio it landed on -- a first payment opens one server-side. */
+  folioId: z.uuid().nullable(),
+  /** Positive minor units received. Null when nothing was found. */
+  amountMinor: z.number().int().nullable(),
+  method: paymentMethodSchema.nullable(),
+  /** The business date it was posted against, never `now()`. */
+  chargeDate: businessDateSchema.nullable(),
+});
+
+export type PaymentByKeyResult = z.infer<typeof paymentByKeyResultSchema>;
+
+/**
  * Correcting a posted charge.
  *
  * ===========================================================================

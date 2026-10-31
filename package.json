@@ -36,6 +36,7 @@
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",
     "test:unit": "node test/unit/gate-guards.test.mjs",
+    "test:intent": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/unit/payment-intent.test.mjs",
     "test:races": "node test/integration/create-race.test.mjs",
     "gate": "node scripts/gate.mjs",
     "gate:integration": "node scripts/gate-integration.mjs",

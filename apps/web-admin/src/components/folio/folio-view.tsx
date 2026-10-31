@@ -42,6 +42,17 @@ import {
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+
+import {
+  classifyOutcome,
+  conflictFields,
+  isFormEditable,
+  type PaymentAction as PaymentIntentAction,
+  type PaymentEffect,
+  type PaymentIntent,
+  type PaymentSnapshot,
+} from './payment-intent';
+import { usePaymentIntent } from './use-payment-intent';
 import {
   PAYMENT_METHOD_LABELS,
   paymentMethodSchema,
@@ -59,6 +70,7 @@ import {
   correctRoomCharges,
   postFolioCharge,
   postFolioDiscount,
+  fetchPaymentByKey,
   postFolioPayment,
   postFolioPaymentByBooking,
 } from '@/lib/properties-client';
@@ -144,6 +156,22 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
   const [tab, setTab] = useState<TabId>('summary');
   const [sheet, setSheet] = useState<'payment' | 'charge' | 'discount' | null>(null);
   const router = useRouter();
+
+  /**
+   * The payment reference lives here, not in the sheet.
+   *
+   * ===========================================================================
+   * The sheet unmounts when it closes; this does not.
+   *
+   * A key minted inside `PostingSheet` was lost the moment a clerk closed it,
+   * so after a lost response they reopened a fresh sheet with a fresh
+   * reference and posted the same money twice. `FolioView` stays mounted
+   * across sheet open/close and across `router.refresh()` (which is why the
+   * local-page tagging above exists), and `sessionStorage` carries it across a
+   * reload of the tab.
+   * ===========================================================================
+   */
+  const payment = usePaymentIntent(hotelId, folio.reservation.bookingCode);
 
   const { reservation, totals, breakdown } = folio;
   const currency = totals.currency;
@@ -288,6 +316,23 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             type="button"
             title="Collect payment"
             onClick={() => {
+              /**
+               * Opening the reference belongs here, in the click.
+               *
+               * Not in `PostingSheet`'s body: dispatching during another
+               * component's render is a setState-in-render bug, and this is a
+               * genuine user intent anyway. `OPEN_SHEET` mints a key only when
+               * this booking has no intent, so reopening after an ambiguous
+               * attempt returns the same reference and the same frozen amount
+               * rather than a blank form.
+               */
+              payment.dispatch({
+                type: 'OPEN_SHEET',
+                hotelId,
+                bookingCode: reservation.bookingCode,
+                key: crypto.randomUUID(),
+                now: new Date().toISOString(),
+              });
               setSheet('payment');
             }}
             className="flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-[11px] font-bold tracking-wider text-emerald-950 uppercase transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
@@ -410,6 +455,9 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
           bookingCode={reservation.bookingCode}
           currency={currency}
           balanceDueMinor={totals.balanceDueMinor}
+          intent={payment.intent}
+          dispatch={payment.dispatch}
+          storedUnreadable={payment.storedUnreadable}
           onClose={() => {
             setSheet(null);
           }}
@@ -661,6 +709,9 @@ function PostingSheet({
   bookingCode,
   currency,
   balanceDueMinor,
+  intent,
+  dispatch,
+  storedUnreadable,
   onClose,
   onPosted,
 }: {
@@ -671,6 +722,11 @@ function PostingSheet({
   bookingCode: string;
   currency: string;
   balanceDueMinor: number;
+  /** The booking's payment reference, owned by `FolioView`. */
+  intent: PaymentIntent | null;
+  dispatch: (action: PaymentIntentAction) => PaymentEffect;
+  /** A stored reference for this booking could not be read. */
+  storedUnreadable: boolean;
   onClose: () => void;
   onPosted: (page: FolioPage) => void;
 }) {
@@ -685,29 +741,27 @@ function PostingSheet({
   const [error, setError] = useState<string | null>(null);
 
   /**
-   * One payment reference per opening of this sheet.
+   * The reference is opened once per booking, by `FolioView`.
    *
    * =========================================================================
-   * **Minted in a state initialiser, which is what makes it once per intent.**
+   * It used to be minted here, and that was the bug.
    *
-   * The clerk opening "Collect payment" *is* the intent. `PostingSheet` is
-   * mounted only while the sheet is open, so this initialiser runs exactly
-   * once for it: every re-render keeps the same key, and so does every retry
-   * after a failure — which is the case that matters, because a retry is
-   * precisely when a duplicate would otherwise be posted. Closing and
-   * reopening the sheet remounts the component and mints a new one, so the
-   * next payment is a new intent.
+   * This component is mounted only while the sheet is open, so a key minted in
+   * its own state died the moment a clerk closed it. After a lost response
+   * they reopened the sheet, got a fresh reference, and posted the same money
+   * twice — and a folio line is immutable (section 3.4), so that duplicate can
+   * only be corrected, never removed.
    *
-   * Deriving it from the amount or the method would be wrong in both
-   * directions: a clerk who corrected a typo mid-entry would get a new key for
-   * the same intent, and two genuinely separate ₹1,000 cash payments would
-   * collide on one.
-   *
-   * `crypto.randomUUID()` is available in every browser this dashboard
-   * supports and satisfies the server's 16-64 character URL-safe shape.
+   * What this sheet renders is therefore not always a blank form: a booking
+   * whose last attempt is unaccounted for comes back frozen, showing what was
+   * sent and offering the two safe ways out.
    * =========================================================================
    */
-  const [paymentKey] = useState(() => crypto.randomUUID());
+  const unresolved = kind === 'payment' && intent !== null && intent.status === 'UNRESOLVED';
+  const conflicted = kind === 'payment' && intent !== null && intent.status === 'CONFLICTED';
+  const reconciling = kind === 'payment' && intent !== null && intent.status === 'RECONCILING';
+  const frozen = kind === 'payment' && !isFormEditable(intent);
+  const shown = intent?.snapshot ?? null;
 
   // Rounded once, at the boundary, into integer minor units — never carried
   // as a float into the request (section 3.4).
@@ -719,36 +773,94 @@ function PostingSheet({
     amountMinor > 0 &&
     (kind === 'payment' || description.trim().length > 0);
 
-  async function submit(): Promise<void> {
-    if (!valid || saving) return;
+  /**
+   * Sends whatever the reducer released, and reports the outcome back to it.
+   *
+   * ===========================================================================
+   * The body comes from the **effect**, never from the form.
+   *
+   * `SUBMIT` and `CONFIRM` both return a `post` effect carrying the frozen
+   * snapshot, and that is what goes on the wire. A confirmation therefore
+   * resends exactly what the first attempt sent, under the original key, which
+   * is what makes it a reconciliation rather than a second payment — the
+   * unique index turns it into a replay.
+   *
+   * The intent is persisted and read back *before* the effect is emitted (see
+   * `use-payment-intent.ts`), so a crash between the two leaves a recoverable
+   * reference rather than an untraceable payment.
+   * ===========================================================================
+   */
+  async function sendPayment(effect: PaymentEffect): Promise<void> {
+    if (effect.type !== 'post') return;
     setSaving(true);
     setError(null);
     try {
-      const payment = {
-        method,
-        amountMinor,
-        remark: remark.trim() === '' ? null : remark.trim(),
-        idempotencyKey: paymentKey,
+      const body = {
+        method: effect.snapshot.method,
+        amountMinor: effect.snapshot.amountMinor,
+        remark: effect.snapshot.remark,
+        idempotencyKey: effect.key,
       };
-
       const page =
-        kind === 'payment'
+        effect.snapshot.folioId === null
           ? // By booking code when there is no folio, so the server opens one;
             // by folio id otherwise, which is one fewer lookup.
-            folioId === null
-            ? await postFolioPaymentByBooking(hotelId, bookingCode, payment)
-            : await postFolioPayment(hotelId, folioId, payment)
-          : kind === 'charge'
-            ? await postFolioCharge(hotelId, folioId as string, {
-                description: description.trim(),
-                netAmountMinor: amountMinor,
-                taxAmountMinor: Number.isFinite(taxMinor) ? taxMinor : 0,
-                chargeDate: null,
-              })
-            : await postFolioDiscount(hotelId, folioId as string, {
-                reason: description.trim(),
-                amountMinor,
-              });
+            await postFolioPaymentByBooking(hotelId, bookingCode, body)
+          : await postFolioPayment(hotelId, effect.snapshot.folioId, body);
+
+      dispatch({ type: 'OUTCOME', outcome: { kind: 'settled' } });
+      onPosted(page);
+    } catch (caught) {
+      /**
+       * Classified, not merely displayed.
+       *
+       * The old handler printed `caught.message` and moved on, which is how a
+       * lost response became indistinguishable from a rejected one. The class
+       * decides whether the reference is kept, and `api.ts` already draws the
+       * line: no response at all is ambiguous, a 4xx is definitive.
+       */
+      dispatch({
+        type: 'OUTCOME',
+        outcome: classifyOutcome(caught),
+        differing: conflictFields(caught),
+      });
+      setError(caught instanceof Error ? caught.message : 'The posting could not be saved.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submit(): Promise<void> {
+    if (!valid || saving) return;
+
+    if (kind === 'payment') {
+      // Frozen states do not submit form values; they confirm or reconcile.
+      if (frozen) return;
+      const snapshot: PaymentSnapshot = {
+        folioId,
+        amountMinor,
+        method,
+        remark: remark.trim() === '' ? null : remark.trim(),
+      };
+      await sendPayment(dispatch({ type: 'SUBMIT', snapshot, now: new Date().toISOString() }));
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const page =
+        kind === 'charge'
+          ? await postFolioCharge(hotelId, folioId as string, {
+              description: description.trim(),
+              netAmountMinor: amountMinor,
+              taxAmountMinor: Number.isFinite(taxMinor) ? taxMinor : 0,
+              chargeDate: null,
+            })
+          : await postFolioDiscount(hotelId, folioId as string, {
+              reason: description.trim(),
+              amountMinor,
+            });
       onPosted(page);
     } catch (caught) {
       // Surfaced, never swallowed: a posting that silently failed leaves a
@@ -756,6 +868,48 @@ function PostingSheet({
       setError(caught instanceof Error ? caught.message : 'The posting could not be saved.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** Resend the frozen snapshot under the original key. */
+  async function confirmPayment(): Promise<void> {
+    if (saving) return;
+    await sendPayment(dispatch({ type: 'CONFIRM', now: new Date().toISOString() }));
+  }
+
+  /**
+   * Ask the database what the key resolves to. Writes nothing.
+   *
+   * `found: false` is deliberately **not** treated as proof that the original
+   * never landed — the reducer keeps the key and the snapshot either way and
+   * only changes what the clerk is told. A request still in flight can commit
+   * a moment after this read.
+   */
+  async function reconcile(): Promise<void> {
+    if (saving || intent === null) return;
+    const effect = dispatch({ type: 'RECONCILE' });
+    if (effect.type !== 'read') return;
+    setError(null);
+    try {
+      const answer = await fetchPaymentByKey(hotelId, effect.key);
+      dispatch({
+        type: 'RECONCILED',
+        outcome:
+          answer.found &&
+          answer.folioId !== null &&
+          answer.amountMinor !== null &&
+          answer.method !== null
+            ? {
+                kind: 'found',
+                folioId: answer.folioId,
+                amountMinor: answer.amountMinor,
+                method: answer.method,
+              }
+            : { kind: 'not-found' },
+      });
+    } catch (caught) {
+      dispatch({ type: 'RECONCILED', outcome: { kind: 'failed' } });
+      setError(caught instanceof Error ? caught.message : 'The check could not be completed.');
     }
   }
 
@@ -786,11 +940,13 @@ function PostingSheet({
               Method
             </span>
             <select
-              value={method}
+              value={shown?.method ?? method}
+              disabled={frozen}
+              aria-describedby={frozen ? 'payment-intent-frozen' : undefined}
               onChange={(event) => {
                 setMethod(event.target.value as PaymentMethod);
               }}
-              className="h-10 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+              className="h-10 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {paymentMethodSchema.options.map((option) => (
                 <option key={option} value={option} className="bg-zinc-900">
@@ -822,12 +978,14 @@ function PostingSheet({
             </span>
             <input
               inputMode="decimal"
-              value={amount}
+              value={shown === null ? amount : String(shown.amountMinor / 100)}
+              disabled={frozen}
+              aria-describedby={frozen ? 'payment-intent-frozen' : undefined}
               onChange={(event) => {
                 setAmount(event.target.value);
               }}
               placeholder={currency}
-              className="tabular h-10 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500/50"
+              className="tabular h-10 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-60"
             />
           </label>
 
@@ -861,7 +1019,147 @@ function PostingSheet({
           />
         ) : null}
 
-        {error !== null ? (
+        {kind === 'payment' && storedUnreadable && !unresolved && !conflicted ? (
+          <div
+            role="alert"
+            className="flex flex-col gap-1 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] px-3 py-2.5 text-[11px] leading-relaxed text-amber-200"
+          >
+            <span className="font-semibold">
+              A previous payment reference for this booking could not be read.
+            </span>
+            <span className="text-amber-300/80">
+              Something was saved in this browser and is unreadable, so we cannot tell whether that
+              payment went through. <strong>Check the ledger before taking another payment.</strong>
+            </span>
+          </div>
+        ) : null}
+
+        {unresolved || reconciling ? (
+          <div
+            role="alert"
+            className="flex flex-col gap-1.5 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] px-3 py-2.5 text-[11px] leading-relaxed text-amber-200"
+          >
+            <span className="font-semibold">This payment may already have been recorded.</span>
+            {shown !== null ? (
+              <span className="tabular text-amber-300/90">
+                {money(shown.amountMinor, currency)} · {PAYMENT_METHOD_LABELS[shown.method]}
+                {intent?.attempts !== undefined && intent.attempts > 1
+                  ? ` · ${String(intent.attempts)} attempts`
+                  : null}
+              </span>
+            ) : null}
+            <span className="text-amber-300/80">
+              {reconciling
+                ? 'Checking the ledger…'
+                : intent?.lastReconcile === 'not-found'
+                  ? // Deliberately not "it never landed": the read describes the
+                    // instant it ran, and a request still in flight can commit
+                    // after it.
+                    'No payment is recorded under this reference yet. Confirming will record it exactly once.'
+                  : intent?.lastReconcile === 'failed'
+                    ? 'We could not check the ledger. Confirming is still safe — it cannot take the money twice.'
+                    : 'We did not get a reply from the server, so we cannot tell whether it went through. Confirming is safe: it cannot take the money twice.'}
+            </span>
+            {intent?.lastFailure !== null && intent?.lastFailure !== undefined ? (
+              <span className="text-amber-300/80">
+                Last reply from the server: {intent.lastFailure.message}
+              </span>
+            ) : null}
+            <div className="mt-0.5 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={saving || reconciling}
+                onClick={() => {
+                  void confirmPayment();
+                }}
+                className="rounded-lg bg-amber-400 px-3 py-1.5 text-[11px] font-semibold text-amber-950 transition-colors hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Confirm this payment
+              </button>
+              <button
+                type="button"
+                disabled={saving || reconciling}
+                onClick={() => {
+                  void reconcile();
+                }}
+                className="rounded-lg border border-amber-400/30 px-3 py-1.5 text-[11px] text-amber-100 disabled:opacity-40"
+              >
+                Check again
+              </button>
+              <Link
+                href={`/folio/${encodeURIComponent(bookingCode)}?hotelId=${encodeURIComponent(hotelId)}`}
+                onClick={onClose}
+                className="text-[11px] font-semibold text-amber-100 underline decoration-amber-400/40 underline-offset-2"
+              >
+                Open the ledger
+              </Link>
+            </div>
+            <span id="payment-intent-frozen" className="text-amber-300/70">
+              A new payment cannot be started until this one is resolved, so the amount and method
+              are locked to what was sent.
+            </span>
+            {intent?.durability === 'memory-only' ? (
+              <span className="text-amber-300/70">
+                This reference is not saved in this browser — if you reload before confirming, check
+                the ledger.
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {conflicted ? (
+          <div
+            role="alert"
+            className="flex flex-col gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/[0.07] px-3 py-2.5 text-[11px] leading-relaxed text-rose-200"
+          >
+            <span className="font-semibold">
+              This payment reference is already attached to a different payment.
+            </span>
+            {shown !== null ? (
+              <span className="tabular text-rose-300/90">
+                Your attempt: {money(shown.amountMinor, currency)} ·{' '}
+                {PAYMENT_METHOD_LABELS[shown.method]}
+              </span>
+            ) : null}
+            {intent?.lastConflictFields !== null &&
+            intent?.lastConflictFields !== undefined &&
+            intent.lastConflictFields.length > 0 ? (
+              <span className="text-rose-300/80">
+                Differs in: {intent.lastConflictFields.join(', ')}
+              </span>
+            ) : null}
+            <span className="text-rose-300/80">
+              This needs a supervisor. Confirming cannot help, and a new payment cannot be started
+              on this booking until it is resolved.
+            </span>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={saving || reconciling}
+                onClick={() => {
+                  void reconcile();
+                }}
+                className="rounded-lg border border-rose-400/30 px-3 py-1.5 text-[11px] text-rose-100 disabled:opacity-40"
+              >
+                Check again
+              </button>
+              <Link
+                href={`/folio/${encodeURIComponent(bookingCode)}?hotelId=${encodeURIComponent(hotelId)}`}
+                onClick={onClose}
+                className="text-[11px] font-semibold text-rose-100 underline decoration-rose-400/40 underline-offset-2"
+              >
+                Open the ledger
+              </Link>
+            </div>
+            {/* Everything a supervisor needs to chase it, and nothing a
+                shoulder-surfer can read as a guest's detail. */}
+            <span className="text-rose-300/60 break-all">
+              Reference {intent?.key ?? '—'} · booking {bookingCode}
+            </span>
+          </div>
+        ) : null}
+
+        {error !== null && !unresolved && !conflicted && !reconciling ? (
           <p className="rounded-lg border border-rose-500/25 bg-rose-500/[0.07] px-3 py-2 text-[11px] text-rose-200">
             {error}
           </p>
@@ -876,17 +1174,23 @@ function PostingSheet({
           >
             Cancel
           </button>
-          <button
-            type="button"
-            disabled={!valid || saving}
-            onClick={() => {
-              void submit();
-            }}
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-emerald-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null}
-            Post
-          </button>
+          {/* Hidden while frozen: the only safe actions are Confirm and
+              Check again, both of which live in the panel above. A Post
+              button here would invite exactly the second payment this
+              feature exists to prevent. */}
+          {frozen ? null : (
+            <button
+              type="button"
+              disabled={!valid || saving}
+              onClick={() => {
+                void submit();
+              }}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-emerald-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null}
+              Post
+            </button>
+          )}
         </div>
       </div>
     </>

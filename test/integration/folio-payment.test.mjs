@@ -193,6 +193,13 @@ const key = () => randomUUID();
 const pay = (cookie, folioId, body) =>
   call('POST', `/properties/${PROPERTY_CODE}/folios/${folioId}/payment`, cookie, body);
 
+const byKey = (cookie, key, propertyCode = PROPERTY_CODE) =>
+  call(
+    'GET',
+    `/properties/${propertyCode}/folios/payments/by-key/${encodeURIComponent(key)}`,
+    cookie,
+  );
+
 const payByBooking = (cookie, bookingCode, body) =>
   call(
     'POST',
@@ -1128,6 +1135,258 @@ async function main() {
       `${String(linesWithKey(null, after, k))} line(s)`,
     );
   }
+
+  /* ==================================================================== 13 */
+  console.log('\n13. Lost response, sheet closed and reopened, then confirmed.');
+  {
+    /**
+     * The sequence this feature exists for, driven server-side.
+     *
+     * A clerk submits; the response is lost; they close the sheet and reopen
+     * it. What decides whether the guest is charged twice is simply *which
+     * key* the second request carries — so both branches are exercised here
+     * against the real endpoint, and the difference between them is the whole
+     * point of keeping the reference.
+     */
+    const f = await bookWithFolio(cookie, property.id, 38, 'LostResponse');
+    const before = await snapshot(property.id, f.reservationId);
+    const k = key();
+    const body = {
+      method: 'CASH',
+      amountMinor: 180_000,
+      remark: 'payment suite: lost response',
+      idempotencyKey: k,
+    };
+
+    // The first attempt commits. The client never sees the answer.
+    const first = await pay(cookie, f.folioId, body);
+    check(
+      'the first attempt committed',
+      first.status === 200 || first.status === 201,
+      `HTTP ${String(first.status)}`,
+    );
+
+    // Reopened with the SAME reference, exactly as the frozen snapshot had it.
+    const confirmed = await pay(cookie, f.folioId, body);
+    const afterConfirm = await snapshot(property.id, f.reservationId);
+
+    check(
+      'confirming with the retained key answers 2xx',
+      confirmed.status === 200 || confirmed.status === 201,
+      `HTTP ${String(confirmed.status)}`,
+    );
+    check(
+      'and leaves exactly ONE payment line',
+      linesWithKey(before, afterConfirm, k) === 1,
+      `${String(linesWithKey(before, afterConfirm, k))} line(s)`,
+    );
+    check(
+      'one audit row, not two',
+      afterConfirm.paymentAudits === before.paymentAudits + 1,
+      `${String(before.paymentAudits)} → ${String(afterConfirm.paymentAudits)}`,
+    );
+    check(
+      'and paidAmountMinor moved exactly once',
+      afterConfirm.paidAmountMinor === before.paidAmountMinor + 180_000,
+      `${String(before.paidAmountMinor)} → ${String(afterConfirm.paidAmountMinor)} (expected +180000)`,
+    );
+
+    /* ================================================================== 14 */
+    console.log('\n14. The same sequence with a FRESH key duplicates — the control.');
+    const fresh = await pay(cookie, f.folioId, { ...body, idempotencyKey: key() });
+    const afterFresh = await snapshot(property.id, f.reservationId);
+    check(
+      'a new reference posts a second payment',
+      (fresh.status === 200 || fresh.status === 201) &&
+        afterFresh.paymentCount === afterConfirm.paymentCount + 1,
+      `${String(afterConfirm.paymentCount)} → ${String(afterFresh.paymentCount)}`,
+    );
+    check(
+      'which is exactly the duplicate key retention prevents',
+      afterFresh.paidAmountMinor === afterConfirm.paidAmountMinor + 180_000,
+      `${String(afterConfirm.paidAmountMinor)} → ${String(afterFresh.paidAmountMinor)}`,
+    );
+
+    /* ================================================================== 15 */
+    console.log('\n15. Confirming three times under one key stays one payment.');
+    const repeats = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      repeats.push(await pay(cookie, f.folioId, body));
+    }
+    const afterRepeats = await snapshot(property.id, f.reservationId);
+    check(
+      'all three answered 2xx',
+      repeats.every((r) => r.status === 200 || r.status === 201),
+      repeats.map((r) => r.status).join('/'),
+    );
+    check(
+      'still one line for the key, and the mirror did not move',
+      linesWithKey(before, afterRepeats, k) === 1 &&
+        afterRepeats.paidAmountMinor === afterFresh.paidAmountMinor,
+      `${String(linesWithKey(before, afterRepeats, k))} line(s)`,
+    );
+
+    /* ================================================================== 16 */
+    console.log('\n16. The by-key read is authoritative, and writes nothing.');
+    const seen = await byKey(cookie, k);
+    check('the read answers 200', seen.status === 200, `HTTP ${String(seen.status)}`);
+    check(
+      'it reports the committed payment',
+      seen.payload?.found === true && seen.payload?.folioId === f.folioId,
+      JSON.stringify({ found: seen.payload?.found, folio: seen.payload?.folioId === f.folioId }),
+    );
+    check(
+      'with the amount POSITIVE, as it was sent — not as it is stored',
+      seen.payload?.amountMinor === 180_000,
+      String(seen.payload?.amountMinor),
+    );
+    check(
+      'and the method and business date it was posted under',
+      seen.payload?.method === 'CASH' && /^\d{4}-\d{2}-\d{2}$/.test(String(seen.payload?.chargeDate)),
+      `${String(seen.payload?.method)} / ${String(seen.payload?.chargeDate)}`,
+    );
+    const afterRead = await snapshot(property.id, f.reservationId);
+    check(
+      'the read created nothing: no line, no audit row, no increment',
+      afterRead.lineCount === afterRepeats.lineCount &&
+        afterRead.paymentAudits === afterRepeats.paymentAudits &&
+        afterRead.paidAmountMinor === afterRepeats.paidAmountMinor,
+      `lines ${String(afterRead.lineCount)} audits ${String(afterRead.paymentAudits)}`,
+    );
+
+    /* ================================================================== 17 */
+    console.log('\n17. An unused or malformed key is simply not found.');
+    const unused = await byKey(cookie, key());
+    check(
+      'an unused key answers 200 with found: false',
+      unused.status === 200 && unused.payload?.found === false,
+      `HTTP ${String(unused.status)} found=${String(unused.payload?.found)}`,
+    );
+    check(
+      'and every field null, so a caller cannot misread a partial hit',
+      unused.payload?.lineId === null &&
+        unused.payload?.folioId === null &&
+        unused.payload?.amountMinor === null &&
+        unused.payload?.method === null &&
+        unused.payload?.chargeDate === null,
+      JSON.stringify(unused.payload),
+    );
+    const malformed = await byKey(cookie, 'short');
+    check(
+      'a malformed key is answered, not 500',
+      malformed.status === 200 && malformed.payload?.found === false,
+      `HTTP ${String(malformed.status)}`,
+    );
+
+    /**
+     * A key that exists, but on a line that is not a payment.
+     *
+     * Unreachable through any production path today -- `postPayment` is the
+     * only writer of `idempotencyKey` -- so the row is made here directly and
+     * removed again. The point is that the endpoint's `kind: 'PAYMENT'`
+     * predicate, not the absence of such rows, is what keeps it out.
+     */
+    const probeKey = key();
+    const charge = await prisma.folioLine.findFirst({
+      where: { propertyId: property.id, folioId: f.folioId, kind: 'SERVICE_CHARGE' },
+      select: { id: true },
+    });
+    if (charge === null) {
+      console.log('  SKIP  no service charge on the fixture to stamp.');
+    } else {
+      await prisma.$executeRaw`
+        UPDATE folio_line SET "idempotencyKey" = ${probeKey} WHERE "id" = ${charge.id}::uuid`;
+      const nonPayment = await byKey(cookie, probeKey);
+      check(
+        'a key stamped on a non-payment line is not reported',
+        nonPayment.status === 200 && nonPayment.payload?.found === false,
+        `found=${String(nonPayment.payload?.found)}`,
+      );
+      await prisma.$executeRaw`
+        UPDATE folio_line SET "idempotencyKey" = NULL WHERE "id" = ${charge.id}::uuid`;
+    }
+  }
+
+  /* ==================================================================== 18 */
+  console.log("\n18. The by-key read cannot cross a property, and needs the permission.");
+  {
+    /**
+     * The *line* is found first, then its property follows.
+     *
+     * `folio_line` carries `propertyId` but no `property` relation. Picking a
+     * property first and looking for its payments skipped this case entirely,
+     * because the first property by id happened to have no folio lines at all
+     * -- the suite reported SKIP and proved nothing.
+     */
+    const foreign = await prisma.folioLine.findFirst({
+      where: { propertyId: { not: property.id }, kind: 'PAYMENT' },
+      select: { id: true, propertyId: true },
+    });
+
+    // A key that exists at another property, asked for through THIS one.
+    const crossKey = key();
+    if (foreign === null) {
+      console.log('  SKIP  no payment line at another property to stamp.');
+    } else {
+      await prisma.$executeRaw`
+        UPDATE folio_line SET "idempotencyKey" = ${crossKey} WHERE "id" = ${foreign.id}::uuid`;
+      /**
+       * The positive control.
+       *
+       * Without it `found: false` below would also pass if the UPDATE had
+       * quietly matched nothing -- the assertion would hold for the wrong
+       * reason and prove nothing about scoping at all.
+       */
+      const stamped = await prisma.folioLine.count({
+        where: { id: foreign.id, propertyId: foreign.propertyId, idempotencyKey: crossKey },
+      });
+      check(
+        "the foreign PAYMENT line really does carry the key now",
+        stamped === 1,
+        `${String(stamped)} row(s) stamped`,
+      );
+      const crossed = await byKey(cookie, crossKey);
+      check(
+        "another property's key is not found here",
+        crossed.status === 200 && crossed.payload?.found === false,
+        `HTTP ${String(crossed.status)} found=${String(crossed.payload?.found)}`,
+      );
+      check(
+        'and nothing of theirs leaked into the answer',
+        !JSON.stringify(crossed.payload ?? {}).includes(foreign.id),
+      );
+      await prisma.$executeRaw`
+        UPDATE folio_line SET "idempotencyKey" = NULL WHERE "id" = ${foreign.id}::uuid`;
+    }
+
+    const unknownProperty = await byKey(cookie, key(), '00000');
+    check(
+      'a property the caller has no grant at is 404, never 403',
+      unknownProperty.status === 404,
+      `HTTP ${String(unknownProperty.status)}`,
+    );
+
+    const housekeeping = await prisma.userPropertyRole.findFirst({
+      where: { property: { code: PROPERTY_CODE }, role: { key: 'HOUSEKEEPING' } },
+      select: { user: { select: { id: true, email: true } } },
+    });
+    if (housekeeping === null) {
+      console.log('  SKIP  no housekeeping grant at this property.');
+    } else {
+      const hkCookie = `easeit_session=${mintSession(housekeeping.user.id, housekeeping.user.email)}`;
+      const refused = await byKey(hkCookie, key());
+      check(
+        'a grant without folio:settle is refused 403',
+        refused.status === 403,
+        `HTTP ${String(refused.status)}`,
+      );
+      check(
+        'with the typed FORBIDDEN code',
+        refused.payload?.code === 'FORBIDDEN',
+        String(refused.payload?.code),
+      );
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1137,9 +1396,42 @@ async function main() {
 async function teardown() {
   let removedLines = 0;
   let removedFolios = 0;
+  let released = 0;
 
   for (const reservationId of created) {
     try {
+      /**
+       * The nights are read BEFORE the rows are deleted.
+       *
+       * =====================================================================
+       * Deleting a reservation does not release its inventory.
+       *
+       * `inventory_day.sold` is a stored counter that the booking path
+       * increments (section 3.1) -- it is not derived on read. So a teardown
+       * that deletes the reservation and stops leaves the counter permanently
+       * high, and a suite run a few times exhausts the category for every
+       * other suite. That is not hypothetical: it is how this file broke the
+       * check-in suite, which then failed with "no room type has two free
+       * units" for a reason that had nothing to do with check-in.
+       *
+       * So the nights this suite consumed are handed back explicitly, the way
+       * `cancel-reservation.test.mjs:3240` does it: scoped to the exact
+       * property, category and date range the fixture held, and guarded on
+       * `sold > 0` so a double-release cannot drive a counter negative.
+       * =====================================================================
+       */
+      const stay = await prisma.reservation
+        .findUnique({
+          where: { id: reservationId },
+          select: {
+            propertyId: true,
+            arrivalDate: true,
+            departureDate: true,
+            rooms: { select: { roomTypeId: true }, take: 1 },
+          },
+        })
+        .catch(() => null);
+
       const folio = await prisma.folio.findUnique({
         where: { reservationId },
         select: { id: true },
@@ -1151,20 +1443,31 @@ async function teardown() {
       await prisma.auditLog.deleteMany({ where: { entityId: reservationId } });
       await prisma.reservationRoom.deleteMany({ where: { reservationId } });
       await prisma.reservation.deleteMany({ where: { id: reservationId } });
+
+      const roomTypeId = stay?.rooms[0]?.roomTypeId;
+      if (stay !== undefined && stay !== null && roomTypeId !== undefined) {
+        const result = await prisma.inventoryDay
+          .updateMany({
+            where: {
+              propertyId: stay.propertyId,
+              roomTypeId,
+              stayDate: { gte: stay.arrivalDate, lt: stay.departureDate },
+              sold: { gt: 0 },
+            },
+            data: { sold: { decrement: 1 } },
+          })
+          .catch(() => ({ count: 0 }));
+        released += result.count;
+      }
     } catch (error) {
       console.error(`  CLEANUP FAILED for ${reservationId} — ${String(error.message ?? error)}`);
       failures += 1;
     }
   }
 
-  /**
-   * Nights are NOT released here, for the reason the checkout suite documents:
-   * deleting the reservation rows removes what `inventory_day.sold` counts, and
-   * decrementing as well would double-release.
-   */
   console.log(
-    `\nTeardown: removed ${String(created.length)} reservation(s), ${String(removedFolios)} folio(s) ` +
-      `and ${String(removedLines)} folio line(s).`,
+    `\nTeardown: removed ${String(created.length)} reservation(s), ${String(removedFolios)} folio(s), ` +
+      `${String(removedLines)} folio line(s), and released ${String(released)} night(s).`,
   );
 }
 

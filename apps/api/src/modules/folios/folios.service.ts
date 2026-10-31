@@ -28,6 +28,7 @@ import {
   type CorrectRoomChargesCommand,
   type PostFolioChargeCommand,
   type PostFolioDiscountCommand,
+  type PaymentByKeyResult,
   type PostFolioPaymentCommand,
   type PropertyId,
   type Role,
@@ -50,6 +51,19 @@ import { PropertyTaxService } from '../properties/property-tax.service.js';
 import { inclusiveRatePercentFor } from '../properties/tax-engine.js';
 
 const DAY_MS = 86_400_000;
+
+/** The DTO's key shape, mirrored so a malformed key never reaches a query. */
+const PAYMENT_KEY_SHAPE = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** The one shape every "no such payment" answer takes. */
+const NOT_FOUND_PAYMENT: PaymentByKeyResult = {
+  found: false,
+  lineId: null,
+  folioId: null,
+  amountMinor: null,
+  method: null,
+  chargeDate: null,
+};
 
 /** Kinds that increase what the guest owes. */
 const CHARGE_KINDS = ['ROOM_CHARGE', 'SERVICE_CHARGE', 'TAX'] as const;
@@ -484,6 +498,82 @@ export class FoliosService {
       if (existing === null) throw cause;
       return existing.id;
     }
+  }
+
+  /**
+   * What this idempotency key resolves to in the database, right now.
+   *
+   * ===========================================================================
+   * A read, and nothing but a read.
+   *
+   * No transaction, no lock, no audit row, no `set_config`: there is nothing
+   * to serialise because nothing is written. It exists so a client that lost a
+   * response can *look* before it writes again -- the alternative is resending
+   * the payment, which is safe but is still a write, and a front desk should
+   * be able to answer "did that go through?" by asking rather than by acting.
+   *
+   * **Authoritative, not cached.** It reads `folio_line` through the same
+   * Prisma client every posting uses, so it sees exactly what is committed. It
+   * deliberately does not consult the recomputed folio page, which is shaped
+   * for display and folds tax lines into their parents.
+   *
+   * **`found: false` carries no promise about the future.** It says no payment
+   * line is visible under this key at the moment of the read. A request still
+   * in flight may commit a moment later, so the caller must keep its key and
+   * resolve through the idempotent write path. Saying more than that here
+   * would invite a client to conclude the payment failed and post a second
+   * one, which is the exact duplicate the key exists to prevent.
+   *
+   * Scoped by `propertyId` in the same predicate as the key (section 3.2), so
+   * another property's payment is simply not found -- never a 403 that
+   * confirms a key exists somewhere. Narrowed to `kind: 'PAYMENT'` as well, so
+   * no other line can ever be reported through this route even if some future
+   * writer starts stamping keys.
+   * ===========================================================================
+   */
+  async findPaymentByKey(
+    userId: string,
+    hotelId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentByKeyResult> {
+    const property = await this.authorise(userId, hotelId, Permission.FOLIO_SETTLE);
+
+    /**
+     * A key that cannot have been issued by this system is answered, not
+     * refused.
+     *
+     * The shape is the DTO's (16-64 URL-safe characters). A malformed key
+     * matches nothing by construction, so the honest answer is the same
+     * `found: false` any unused key gets -- and it keeps a probe from learning
+     * anything from the difference between "malformed" and "not yours".
+     */
+    if (!PAYMENT_KEY_SHAPE.test(idempotencyKey)) return NOT_FOUND_PAYMENT;
+
+    const line = await this.prisma.client.folioLine.findFirst({
+      where: { propertyId: property.id, idempotencyKey, kind: 'PAYMENT' },
+      select: {
+        id: true,
+        folioId: true,
+        amountMinor: true,
+        paymentMethod: true,
+        chargeDate: true,
+      },
+    });
+
+    if (line === null) return NOT_FOUND_PAYMENT;
+
+    return {
+      found: true,
+      lineId: line.id,
+      folioId: line.folioId,
+      // Stored negative (section 3.4); reported as the amount received, so a
+      // caller compares it with what it sent rather than with its negation.
+      amountMinor: -line.amountMinor,
+      method: line.paymentMethod,
+      // Branded at the boundary, the same way the folio page's line dates
+      // are (`:1304`): `toBusinessDate` yields a plain string.
+      chargeDate: toBusinessDate(line.chargeDate) as PaymentByKeyResult['chargeDate'],
+    };
   }
 
   /**

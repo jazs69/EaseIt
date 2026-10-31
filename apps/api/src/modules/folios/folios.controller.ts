@@ -33,6 +33,7 @@ import {
   type CorrectFolioChargeCommand,
   type CorrectRoomChargesCommand,
   type FolioPage,
+  type PaymentByKeyResult,
   type PostFolioChargeCommand,
   type PostFolioDiscountCommand,
   type PostFolioPaymentCommand,
@@ -92,6 +93,38 @@ export class FoliosController {
     @Body(new ZodValidationPipe(postFolioPaymentSchema)) body: PostFolioPaymentCommand,
   ): Promise<FolioPage> {
     return this.folios.postPaymentByBooking(this.userId(request), hotelId, bookingCode, body);
+  }
+
+  /**
+   * Declared **before** the `:folioId` routes on purpose.
+   *
+   * `payments` would otherwise be captured as a folio id by
+   * `:hotelId/folios/:folioId/...`, and the request would reach a handler
+   * looking for a folio that does not exist. The same ordering problem the
+   * check-out controller has with `:reservationId`.
+   */
+  @Get(':hotelId/folios/payments/by-key/:key')
+  @ApiOperation({
+    summary: 'What an idempotency key resolves to',
+    description:
+      'A property-scoped read of the committed payment line for one client ' +
+      'idempotency key. Writes nothing. `found: false` means no payment is ' +
+      'visible under that key at the moment of the read — it is NOT proof ' +
+      'that an in-flight request can never commit, so a caller must keep its ' +
+      'key and resolve through the idempotent payment endpoint rather than ' +
+      'starting a new payment. Only PAYMENT lines are reachable, and a key ' +
+      'belonging to another property is simply not found. `amountMinor` is ' +
+      'returned positive, as it was sent.',
+  })
+  @ApiOkResponse({ description: 'Whether the key is committed, and what it holds.' })
+  @ApiForbiddenResponse({ description: 'Requires folio:settle.' })
+  @ApiNotFoundResponse({ description: 'No property you can access.' })
+  paymentByKey(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('key') key: string,
+  ): Promise<PaymentByKeyResult> {
+    return this.folios.findPaymentByKey(this.userId(request), hotelId, key);
   }
 
   @Post(':hotelId/folios/:folioId/charge')

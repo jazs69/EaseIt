@@ -53,6 +53,8 @@ import {
   type FolioPage,
   type PostFolioChargeCommand,
   type PostFolioDiscountCommand,
+  paymentByKeyResultSchema,
+  type PaymentByKeyResult,
   type PostFolioPaymentCommand,
   type AddReservationNoteCommand,
   type ReservationDetail,
@@ -505,6 +507,25 @@ export function postFolioPaymentByBooking(
     `/properties/${encodeURIComponent(hotelId)}/folios/by-booking/${encodeURIComponent(bookingCode)}/payment`,
     folioPageSchema,
     { method: 'POST', body },
+  );
+}
+
+/**
+ * What an idempotency key resolves to in the database, right now.
+ *
+ * A read, so it is safe to call before deciding anything — which is the point:
+ * a client that lost a response can look before it writes again. `found:
+ * false` means no payment is visible under that key **at the moment of the
+ * read**; it is not proof that an in-flight request can never commit, so the
+ * caller keeps its key and its frozen snapshot either way.
+ */
+export function fetchPaymentByKey(
+  hotelId: string,
+  key: string,
+): Promise<PaymentByKeyResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/payments/by-key/${encodeURIComponent(key)}`,
+    paymentByKeyResultSchema,
   );
 }
 
