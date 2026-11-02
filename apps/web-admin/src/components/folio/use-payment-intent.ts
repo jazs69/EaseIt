@@ -44,11 +44,12 @@
 import { useCallback, useRef, useState } from 'react';
 
 import {
+  bootFromStorage,
   browserSessionStorage,
   DRAFT_TTL_MS,
   forgetIntent,
+  persistAcknowledgement,
   persistIntent,
-  readStoredIntent,
   reducePaymentIntent,
   type PaymentAction,
   type PaymentEffect,
@@ -61,13 +62,34 @@ export type PaymentIntentApi = {
   /** Runs the action, applies its storage effect, and returns the effect. */
   dispatch: (action: PaymentAction) => PaymentEffect;
   /**
-   * A reference was stored for this booking and could not be read.
+   * The live intent, read synchronously from the ref.
    *
-   * Sticky for the life of the page: the key is gone, so nothing the clerk
-   * does here can answer the question it raises, and quietly dropping the
-   * warning would put them back where they started.
+   * =========================================================================
+   * `intent` above is React state: it is the value from the last render, and
+   * inside a click handler that has just dispatched, it is **stale**. Code
+   * deciding whether to put a payment on the wire must not use it.
+   *
+   * That was a real defect. The network boundary checked the rendered prop,
+   * which on the confirm path is always UNRESOLVED, so every Confirm was
+   * accepted by the reducer -- attempt incremented, token spent, state moved
+   * to IN_FLIGHT and persisted -- and then silently dropped before the
+   * request. This exists so that boundary can ask the authority instead.
+   *
+   * Read it in handlers and effects, never during render (`react-hooks/refs`,
+   * and rightly: output that depends on a ref depends on when React chose to
+   * re-render).
+   * =========================================================================
    */
-  storedUnreadable: boolean;
+  peek: () => PaymentIntent | null;
+  /**
+   * Which recovery generation is live, so the caller can mint into it.
+   *
+   * 0 is the ordinary primary slot; each acknowledged quarantine advances it.
+   * A counter rather than the boolean it replaces, because recovery can
+   * happen more than once and each generation needs its own slot -- otherwise
+   * a corrupt recovery slot has nowhere to go and gets overwritten.
+   */
+  generation: number;
 };
 
 /**
@@ -113,20 +135,56 @@ export function usePaymentIntent(
    * handed to the ref as its initial value, so `held.current` is only ever
    * touched inside `dispatch`.
    */
-  const [boot] = useState<{ intent: PaymentIntent | null; unreadable: boolean }>(() => {
-    const first = reducePaymentIntent(null, {
-      type: 'REHYDRATE',
-      stored: readStoredIntent(storage, hotelId, bookingCode),
+  /**
+   * Boot decides which slot is live before anything else happens — and it
+   * decides it in `payment-intent.ts`, not here.
+   *
+   * =========================================================================
+   * `bootFromStorage` is the whole algorithm: classify the primary slot, look
+   * for a verified acknowledgement over a corrupt one, promote `#next` only
+   * then, and rehydrate from whichever slot won. The order is the safety
+   * property and it is documented where it lives.
+   *
+   * It is not inlined here because this file is not reachable from the unit
+   * suite — it is a React hook, and the suite runs under plain Node. While
+   * the algorithm lived in this initialiser the only way to test it was to
+   * write a second copy of it in the suite, and a test that reimplements its
+   * subject passes happily while the two drift apart. An audit found exactly
+   * that: every quarantine guarantee rested on a helper that merely resembled
+   * the production path.
+   *
+   * So this is now the binding and nothing else: call it, apply the effect.
+   * =========================================================================
+   */
+  const [boot] = useState<{ intent: PaymentIntent | null; generation: number }>(() => {
+    const { transition, slot } = bootFromStorage(
+      storage,
       hotelId,
       bookingCode,
-      now: new Date().toISOString(),
-      draftTtlMs: DRAFT_TTL_MS,
-    });
-    if (first.effect.type === 'forget') forgetIntent(storage, hotelId, bookingCode);
-    if (first.effect.type === 'persist') persistIntent(storage, first.effect.intent);
-    return { intent: first.intent, unreadable: first.storedUnreadable === true };
+      new Date().toISOString(),
+      DRAFT_TTL_MS,
+    );
+
+    if (transition.effect.type === 'forget') {
+      forgetIntent(storage, hotelId, bookingCode, slot.generation);
+    }
+    if (transition.effect.type === 'persist') persistIntent(storage, transition.effect.intent);
+
+    return { intent: transition.intent, generation: slot.generation };
   });
 
+  /**
+   * The ref is for `dispatch`, the state is for render.
+   *
+   * `dispatch` has to read it synchronously to route a write to the right
+   * generation's slot; render cannot touch a ref at all (`react-hooks/refs`,
+   * and rightly — output that depends on a ref depends on when React
+   * re-rendered). One writer keeps them from diverging: both are set together,
+   * from the verified grant's own `generation`, and only when a grant
+   * verifies.
+   */
+  const liveGeneration = useRef<number>(boot.generation);
+  const [generationView, setGenerationView] = useState<number>(boot.generation);
   const held = useRef<PaymentIntent | null>(boot.intent);
   const [view, setView] = useState<PaymentIntent | null>(boot.intent);
 
@@ -136,6 +194,35 @@ export function usePaymentIntent(
 
       let intent = first.intent;
       let effect = first.effect;
+
+      /**
+       * The acknowledgement is applied here, and only a verified write
+       * advances the state.
+       *
+       * `ACKNOWLEDGE_UNREADABLE` deliberately leaves the intent quarantined
+       * and asks for this side effect instead. If the write cannot be proven,
+       * no `ACKNOWLEDGE_VERIFIED` follows and the booking stays locked — which
+       * is the fail-closed behaviour the whole recovery path depends on.
+       */
+      if (first.effect.type === 'acknowledge') {
+        const written = persistAcknowledgement(storage, first.effect.record);
+        if (!written) {
+          held.current = first.intent;
+          setView(first.intent);
+          return { type: 'none' };
+        }
+        /**
+         * The new generation comes off the record that was just verified, not
+         * from an increment here. One source of truth: the grant says which
+         * generation it authorises, and that is the generation writes go to.
+         */
+        liveGeneration.current = first.effect.record.generation;
+        setGenerationView(first.effect.record.generation);
+        const lifted = reducePaymentIntent(first.intent, { type: 'ACKNOWLEDGE_VERIFIED' });
+        held.current = lifted.intent;
+        setView(lifted.intent);
+        return lifted.effect;
+      }
 
       if (first.effect.type === 'persist') {
         /**
@@ -148,11 +235,25 @@ export function usePaymentIntent(
          * convention this file has to remember.
          */
         const durability = persistIntent(storage, first.effect.intent);
-        const released = reducePaymentIntent(intent, { type: 'DURABILITY', durability });
+        /**
+         * The report names the submission it is about.
+         *
+         * Read off the intent that was just written, so a durability report
+         * can only ever authorise the submission that asked for the write.
+         * An ordinary persist — an OUTCOME landing in UNRESOLVED, a coerced
+         * rehydrate — carries no token, and the reducer releases nothing for
+         * it even though the status may briefly look sendable.
+         */
+        const waiting = first.effect.intent.pendingSubmission;
+        const released = reducePaymentIntent(intent, {
+          type: 'DURABILITY',
+          durability,
+          ...(waiting === null ? {} : { submission: waiting }),
+        });
         intent = released.intent;
         if (released.effect.type !== 'none') effect = released.effect;
       } else if (first.effect.type === 'forget') {
-        forgetIntent(storage, hotelId, bookingCode);
+        forgetIntent(storage, hotelId, bookingCode, liveGeneration.current);
       }
 
       held.current = intent;
@@ -162,5 +263,11 @@ export function usePaymentIntent(
     [storage, hotelId, bookingCode],
   );
 
-  return { intent: view, dispatch, storedUnreadable: boot.unreadable };
+  /**
+   * Stable across renders, so a handler closing over it always reaches the
+   * current ref rather than a snapshot of it.
+   */
+  const peek = useCallback(() => held.current, []);
+
+  return { intent: view, dispatch, peek, generation: generationView };
 }

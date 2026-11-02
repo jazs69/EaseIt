@@ -20,43 +20,38 @@
  * get a 401, redirect" into an immediate redirect. A forged cookie gets past
  * middleware and then fails at the API, which is the correct ordering — the
  * cheap check is cheap, and the authoritative check is authoritative.
+ *
+ * Because it cannot tell valid from invalid, it no longer makes any decision
+ * that depends on knowing. It used to redirect away from `/login` whenever a
+ * cookie merely existed, which produced a closed redirect cycle for every
+ * operator whose session had expired or been revoked — the sign-in form became
+ * unreachable. `decideAuthRoute` in `lib/auth-routing.ts` holds that rule now,
+ * with the reasoning, and the "you are already signed in" redirect moved to the
+ * login page, which can ask the API and only acts on a confirmed answer.
+ *
+ * The decisions live in that module rather than here so they can be unit
+ * tested: this file imports `next/server`, which plain Node cannot load, and
+ * an open-redirect guard that cannot be tested is not a guard.
  * ===========================================================================
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
 
-const SESSION_COOKIE = process.env.NEXT_PUBLIC_AUTH_COOKIE_NAME ?? 'easeit_session';
-
-/** Everything a signed-out visitor may reach. */
-const PUBLIC_PATHS = ['/login'];
+import { decideAuthRoute, SESSION_COOKIE_NAME } from '@/lib/auth-routing';
 
 export function middleware(request: NextRequest): NextResponse {
-  const { pathname } = request.nextUrl;
-  const hasSession = request.cookies.has(SESSION_COOKIE);
+  const route = decideAuthRoute({
+    pathname: request.nextUrl.pathname,
+    search: request.nextUrl.search,
+    // Presence only. See the note above on why validity is not checked here.
+    hasSession: request.cookies.has(SESSION_COOKIE_NAME),
+  });
 
-  if (PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
-    // Already signed in and asking for the login screen: send them on. Note
-    // this is a presence check too, so an expired cookie bounces to the group
-    // dashboard, which then redirects back — one extra hop, and the cookie is
-    // cleared on the way. Preferable to parsing a token here.
-    if (hasSession) {
-      return NextResponse.redirect(new URL('/group-dashboard', request.url));
-    }
-    return NextResponse.next();
-  }
+  if (route.kind === 'allow') return NextResponse.next();
 
-  if (!hasSession) {
-    const signIn = new URL('/login', request.url);
-    // Preserved so the operator lands where they were trying to go. Only the
-    // path and query are kept — taking a full URL from the request would let
-    // a crafted link turn this into an open redirect.
-    if (pathname !== '/') {
-      signIn.searchParams.set('next', `${pathname}${request.nextUrl.search}`);
-    }
-    return NextResponse.redirect(signIn);
-  }
-
-  return NextResponse.next();
+  // `to` is always a same-origin path built by `decideAuthRoute`; resolving it
+  // against the request keeps the origin and port of the current deployment.
+  return NextResponse.redirect(new URL(route.to, request.url));
 }
 
 export const config = {
@@ -65,5 +60,7 @@ export const config = {
    * dashboard routes by name instead would silently leave each new
    * authenticated route unguarded until somebody remembered to add it here.
    */
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+  ],
 };

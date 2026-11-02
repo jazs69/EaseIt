@@ -1,7 +1,11 @@
 import type { Metadata } from 'next';
+import { redirect } from 'next/navigation';
 
 import { SignInPanel } from '@/components/login/sign-in-panel';
 import { ShowcasePanel } from '@/components/login/showcase-panel';
+import { signedInDestination } from '@/lib/auth-routing';
+import { fetchSession } from '@/lib/auth-client';
+import { requireCookieHeader } from '@/lib/server-session';
 import { X } from 'lucide-react';
 
 export const metadata: Metadata = {
@@ -9,6 +13,49 @@ export const metadata: Metadata = {
   description: 'Staff sign-in for the EaseIt hotel operating system.',
   robots: { index: false, follow: false },
 };
+
+/**
+ * Never cached: this page now asks the API whether the caller is already
+ * signed in, and a cached answer would be somebody else's.
+ */
+export const dynamic = 'force-dynamic';
+
+function first(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * Is the caller already signed in, really?
+ *
+ * ===========================================================================
+ * The question middleware cannot ask, asked by the layer that can.
+ *
+ * Middleware sees only that a cookie exists. It used to redirect on that
+ * alone, which meant an expired or revoked session bounced here, bounced back
+ * to the dashboard, got a 401, and bounced here again — forever, because no
+ * hop ever cleared the cookie. The sign-in form was unreachable for exactly
+ * the operators who most needed it.
+ *
+ * So the convenience redirect lives here instead, behind a real answer from
+ * the API. A confirmed session redirects; everything else renders the form.
+ *
+ * **A failure is not a session, and must not be a 500.** `fetchSession`
+ * deliberately rethrows anything that is not a 401/403 — a timeout, a
+ * connection refused, a 500 from the API — because elsewhere rendering a
+ * signed-out shell would hide a real fault. Here that reasoning inverts: this
+ * is the one page that has to render when the rest of the system is down, or
+ * an API outage locks every operator out of the product entirely. So the
+ * throw is caught and the form is rendered.
+ * ===========================================================================
+ */
+async function alreadySignedIn(): Promise<boolean> {
+  try {
+    return (await fetchSession(await requireCookieHeader())) !== null;
+  } catch {
+    // Unreachable, timed out, or 5xx. Render the form.
+    return false;
+  }
+}
 
 const MARKETING_URL = process.env.NEXT_PUBLIC_MARKETING_URL ?? 'http://localhost:3000';
 
@@ -86,7 +133,20 @@ function BackdropGrid() {
  * the left column, so the surrounding chrome never moves between them.
  * `SignInPanel` owns that switch; this page stays a server component.
  */
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const query = await searchParams;
+  // Validated here as well as at the point of navigation: a destination that
+  // arrives in a URL is attacker input, whoever wrote it first.
+  const destination = signedInDestination(first(query['next']));
+
+  if (await alreadySignedIn()) {
+    redirect(destination);
+  }
+
   return (
     <div className="relative grid min-h-screen place-items-center overflow-hidden bg-[#09090b] px-4 py-10 sm:px-6">
       {/* Ambient wash + blurred grid, then a scrim to push both back. */}

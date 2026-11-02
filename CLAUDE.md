@@ -476,9 +476,22 @@ pnpm test                    # unit tests (vitest), all packages
 pnpm test:watch
 pnpm test:integration        # API + DB tests against a disposable Postgres/Redis (testcontainers)
 pnpm test:concurrency        # parallel-booking race suite — must pass before any reservation change
+pnpm test:outbox:redis       # outbox end-to-end through real BullMQ
 pnpm test:e2e                # Playwright against web-admin and web-booking
 pnpm test --filter=api
 ```
+
+`test:concurrency` and `test:outbox:redis` both run **through
+`scripts/gate-resilience.mjs`** (`--only=parallel-booking` / `--only=outbox-redis`), not
+directly. They are the two destructive suites that damage more than their own fixtures —
+one rewrites shared `inventory_day` counters, the other calls `obliterate({ force: true })`
+on the outbox queue — so neither infers a target any more. Both **require** an explicit
+`DATABASE_URL` naming a wholly disposable database (`easeit_racetest`, `easeit_recovery`,
+`easeit_ci` — never `easeit_test`, and never `easeit`); the booking suite requires
+`EASEIT_API_URL`; the outbox suite requires `REDIS_URL` on port **6380**, because 6379 is
+the shared development instance and `OutboxQueue` sets no BullMQ prefix. The gate resolves,
+validates and exports all three before any suite starts, and running a suite's file
+directly fails closed rather than guessing.
 
 ### Background workers
 

@@ -81,30 +81,45 @@
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-/** Same resolution as the suites beside it: the repo's `.env`, then the root one. */
-function loadDatabaseEnv() {
-  for (const relative of ['../../packages/database/.env', '../../.env']) {
-    try {
-      const text = readFileSync(new URL(relative, import.meta.url), 'utf8');
-      const match = /^DATABASE_URL\s*=\s*"?([^"\r\n]+)"?/m.exec(text);
-      if (match?.[1]) return match[1];
-    } catch {
-      // Next candidate. A missing file here is ordinary, not an error.
-    }
-  }
-  return null;
-}
-
-process.env.DATABASE_URL ??= loadDatabaseEnv() ?? '';
+/**
+ * Both targets are **required**, and neither is guessed.
+ *
+ * ===========================================================================
+ * The `.env` fallback this replaced resolved to whatever this checkout
+ * points at, which is the shared development database. The guard refuses it,
+ * so that was never a way to reach real data -- but a destructive suite whose
+ * documented default is the development database is a trap regardless of what
+ * catches it, and "the guard will stop you" is the wrong first line of defence.
+ *
+ * `gate:integration` supplies both explicitly, and this file's own header
+ * already documents running it with both set. Anything else stops here,
+ * before a connection is opened.
+ * ===========================================================================
+ */
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set and no .env was found.');
+  console.error(
+    'DATABASE_URL is not set.\n' +
+      'There is no default and no .env lookup: this suite fills categories to\n' +
+      'their limit and parks write transactions on inventory rows, so it will\n' +
+      'not guess a target. Run it through `pnpm gate:integration`, or set it\n' +
+      'explicitly to a disposable test database.',
+  );
   process.exit(1);
 }
 
 const databaseModule = await import('../../packages/database/dist/index.js');
 const { createPrismaClient } = databaseModule.default ?? databaseModule;
 
-const API = process.env.EASEIT_API_URL ?? 'http://127.0.0.1:4100/api/v1';
+if (!process.env.EASEIT_API_URL) {
+  console.error(
+    'EASEIT_API_URL is not set.\n' +
+      'There is no default: assuming a port is assuming which stack receives\n' +
+      'the reservations this suite creates. Run it through `pnpm gate:integration`,\n' +
+      'or set it to an API running against the SAME isolated database.',
+  );
+  process.exit(1);
+}
+const API = process.env.EASEIT_API_URL;
 
 /**
  * Extra database names this run may use, beyond the shared built-in list.
@@ -132,8 +147,9 @@ const FIXTURE_PREFIX = 'ZZRACE';
  * `easeit_ci`, this file demanded `easeit_racetest`, and the gate refused the
  * database the workflow had just built for it.
  */
-const { classifyTarget, developmentDatabaseNames, apiMismatchMessage } =
-  await import('../support/isolation-guard.mjs');
+const { assertIsolatedDatabase, apiMismatchMessage } = await import(
+  '../support/isolation-guard.mjs'
+);
 
 const prisma = createPrismaClient();
 
@@ -217,67 +233,45 @@ async function call(method, path, cookie, body) {
  * actually reached, and the fixture count says nobody else's data is in here
  * to lose. All three run before a single row is written.
  */
-async function assertIsolatedDatabase() {
-  const url = process.env.DATABASE_URL;
-  const parsed = /^(\w+):\/\/[^:]+:[^@]*@([^/:]+):(\d+)\/([^?]+)/.exec(url);
-  if (parsed === null) throw new Error('DATABASE_URL has an unrecognised shape.');
-
-  const [, , host, port, dbname] = parsed;
-
-  const developmentNames = developmentDatabaseNames();
-  const verdict = classifyTarget({ url, allowExtra: EXTRA_ALLOWED, developmentNames });
-  if (!verdict.ok) {
-    throw new Error(
-      `REFUSING TO RUN. This suite fills categories to their limit and parks ` +
-        `write transactions on inventory rows; it must not touch a shared database. ` +
-        verdict.reasons.join(' '),
-    );
-  }
-
-  const [live] = await prisma.$queryRaw`SELECT current_database() AS name, version() AS version`;
-  if (live.name !== dbname) {
-    throw new Error(
-      `REFUSING TO RUN. Connected to "${live.name}", not "${dbname}". ` +
-        `The URL and the live connection disagree.`,
-    );
-  }
-  // The live name re-checked on its own merits, so a proxy cannot land us
-  // somewhere permitted-looking after the URL passed.
-  const liveVerdict = classifyTarget({
-    url: url.replace(`/${dbname}`, `/${live.name}`),
-    allowExtra: EXTRA_ALLOWED,
-    developmentNames,
+/**
+ * The shared guard, with this suite's own allowlist alias preserved.
+ *
+ * ===========================================================================
+ * This file used to carry its own copy of the guard. It called the shared
+ * `classifyTarget` and did check the live identity, so it was never
+ * unguarded -- but it was a **second implementation**, and the gap that
+ * matters is the one you cannot see: a tier added to the shared guard simply
+ * would not apply here. That is not hypothetical. The built-in-test-name
+ * exemption on the post-connection check was fixed in
+ * `postConnectionRefusals`, and this copy never received it, so in CI --
+ * where discovery reports `easeit_ci` as a development name -- this suite
+ * would have refused the database the workflow had just built for it.
+ *
+ * Switching loses nothing and gains two things:
+ *
+ *   * the constraint set goes from three names to four, because the shared
+ *     guard also requires `reservation_cancelled_at_matches_status`;
+ *   * every future tier applies here automatically.
+ *
+ * `EASEIT_TEST_DB` (singular) is the one thing the shared guard does not
+ * know about -- this file documented that spelling first and kept it. It is
+ * preserved by folding it into the `EASEIT_TEST_DBS` this guard reads, via
+ * the `env` it already accepts, so the alias keeps working without the
+ * shared guard growing a special case for one suite.
+ *
+ * `disposableOnly` is deliberately **not** set: this suite removes its own
+ * fixtures and releases the nights it took, so `easeit_test` remains a valid
+ * target for it, exactly as before.
+ * ===========================================================================
+ */
+async function guardDatabase() {
+  const confirmed = await assertIsolatedDatabase({
+    prisma,
+    suite: 'the creation-race suite',
+    env: { ...process.env, EASEIT_TEST_DBS: EXTRA_ALLOWED },
   });
-  if (!liveVerdict.ok) {
-    throw new Error(`REFUSING TO RUN. ${liveVerdict.reasons.join(' ')}`);
-  }
-
-  console.log(`Database  ${live.name} on ${host}:${port}`);
-  console.log(`          ${live.version.split(',')[0]}`);
-
-  // The constraints this suite's assertions lean on. Without them a green run
-  // would prove nothing at all, so their absence is a hard stop rather than a
-  // skipped check.
-  const constraints = await prisma.$queryRaw`
-    SELECT conname FROM pg_constraint
-    WHERE conname IN ('inventory_day_not_oversold', 'reservation_room_no_overlap',
-                      'inventory_day_counters_non_negative')`;
-  const present = new Set(constraints.map((row) => row.conname));
-  for (const required of [
-    'inventory_day_not_oversold',
-    'reservation_room_no_overlap',
-    'inventory_day_counters_non_negative',
-  ]) {
-    if (!present.has(required)) {
-      throw new Error(`REFUSING TO RUN. Constraint ${required} is missing; migrations are stale.`);
-    }
-  }
-  console.log(`          ${present.size} guarding constraints present\n`);
-
-  // Returned so the API probe can name it without reaching for a module-level
-  // variable. `live.name` is the database the server actually reported, which
-  // is the one worth telling an operator about.
-  return live.name;
+  // The name the server actually reported, which is what the API probe names.
+  return confirmed.liveName;
 }
 
 /**
@@ -848,7 +842,7 @@ async function book(cookie, roomTypeId, arrival, departure, overrides = {}) {
 /* -------------------------------------------------------------------------- */
 
 async function main() {
-  const isolatedDb = await assertIsolatedDatabase();
+  const isolatedDb = await guardDatabase();
   await sweepLeftovers();
   await buildFixture();
 

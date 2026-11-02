@@ -82,11 +82,20 @@ const checks = [
     // idempotency key a retry presents, which is what stops a lost response
     // becoming a second payment.
     command: process.execPath,
-    args: [
-      '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON',
-      'test/unit/payment-intent.test.mjs',
-    ],
+    args: ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', 'test/unit/payment-intent.test.mjs'],
     why: 'the payment-intent state machine suite failed',
+  },
+  {
+    name: 'unit tests (auth routing)',
+    // Pure, like the payment-intent suite: `lib/auth-routing.ts` imports
+    // nothing, which is why the route decisions live there rather than in
+    // `middleware.ts` (that file imports `next/server`, which plain Node
+    // cannot load). Guards two things -- that `/login` stays reachable when a
+    // session cookie is present but invalid, which was a reproducible
+    // lockout, and the open-redirect rejection corpus for `next`.
+    command: process.execPath,
+    args: ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', 'test/unit/auth-routing.test.mjs'],
+    why: 'the auth-routing suite failed',
   },
   {
     name: 'unit tests (retry classifier)',

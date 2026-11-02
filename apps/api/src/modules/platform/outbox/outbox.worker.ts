@@ -64,13 +64,15 @@ export class OutboxWorker implements OnModuleDestroy {
   start(): void {
     if (this.worker !== null) return;
 
-    const { url } = redisConnectionFrom(this.config);
+    // One destructure, so the prefix cannot drift from the queue's. A
+    // mismatch would not throw -- the worker would simply drain nothing.
+    const { url, prefix } = redisConnectionFrom(this.config);
     this.worker = new Worker<OutboxJobData>(
       OUTBOX_QUEUE_NAME,
       async (job) => {
         await this.process(job);
       },
-      { connection: { url }, concurrency: this.concurrency },
+      { connection: { url }, prefix, concurrency: this.concurrency },
     );
 
     this.worker.on('failed', (job, error) => {

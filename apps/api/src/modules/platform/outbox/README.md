@@ -51,6 +51,23 @@ rather than letting it idle quietly. Stopping Redis later does not stop the API.
 timeout, concurrency and backoff; every one has a default, and the env schema
 refuses a lease shorter than twice the handler timeout.
 
+`OUTBOX_QUEUE_PREFIX` sets the BullMQ key prefix and **defaults to `bull`**, which is
+BullMQ's own default — so leaving it unset is byte-for-byte the behaviour every existing
+deployment already has: same `bull:outbox:*` keys, same jobs, no migration. Setting it
+namespaces every key, which is how a destructive test run can bound its blast radius
+instead of sharing one keyspace with the development worker.
+
+It is resolved in exactly one place, `outbox.prefix.ts`, and reaches both clients through
+`redisConnectionFrom`, which returns `{ url, prefix }`. That single return value is
+load-bearing: a `Queue` and a `Worker` given **different** prefixes do not error — both
+resolve `opts.prefix ?? 'bull'` in BullMQ's Redis backend and compose keys as
+`` `${prefix}:${queueName}:${type}` ``, so a mismatch produces two disjoint queues that
+share a name and a worker that silently drains nothing. A blank or whitespace-padded
+value is refused rather than normalised, for the same reason. Note also that BullMQ's own
+`BULLMQ_TEST_PREFIX` variable does **not** affect `Queue` or `Worker` — it is only the
+default argument of `removeAllQueueData` — so it must not be used to namespace anything
+here.
+
 ### Observing it
 
 | Where | What |
@@ -70,8 +87,25 @@ queue into an outage.
 ```bash
 pnpm test:outbox              # enqueue, dedupe, claim, lease, retry, dead letter, constraints
 pnpm test:outbox:concurrency  # N dispatchers racing one batch; concurrent reapers
-pnpm test:outbox:redis        # end to end through real BullMQ — needs Redis
+pnpm test:outbox:redis        # end to end through real BullMQ — needs an ISOLATED Redis
 ```
+
+`test:outbox:redis` runs through `scripts/gate-resilience.mjs --only=outbox-redis`, not
+directly, and it is the one suite here that is destructive beyond its own rows: it calls
+`obliterate({ force: true })`, and `OutboxQueue` sets no BullMQ `prefix`, so every process
+on one Redis shares `bull:outbox:*`. It therefore **requires** both values explicitly and
+infers neither:
+
+```bash
+docker run -d --name easeit-redis-test -p 6380:6379 redis:7-alpine
+export REDIS_URL=redis://127.0.0.1:6380       # 6379 is refused: it is the dev instance
+export DATABASE_URL=...easeit_ci              # wholly disposable only
+```
+
+Port 6380 is enforced by `redisRefusal` in `test/support/isolation-guard.mjs`, before the
+suite opens any socket. The 6379 container above under "Running it locally" is for the
+**development worker**, which is a different thing and correctly uses the default port.
+A port allowlist is not instance isolation, though — see that file's note.
 
 The first two need no Redis, because everything they assert is PostgreSQL-owned by
 design. The third says `NOT RUN` and fails loudly rather than skipping silently, and

@@ -31,6 +31,7 @@ import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 
 import type { ClaimedRow } from './outbox-dispatcher.service.js';
+import { outboxPrefixFrom } from './outbox.prefix.js';
 
 export const OUTBOX_QUEUE_NAME = 'outbox';
 
@@ -51,12 +52,25 @@ export interface OutboxJobData {
 }
 
 /**
- * Redis connection options.
+ * Redis connection options, including the key prefix.
  *
  * Exported because the worker builds its own connection from the same shape;
  * sharing one `Queue` instance across processes is not possible.
+ *
+ * ===========================================================================
+ * The prefix travels WITH the url, deliberately.
+ *
+ * `Queue` and `Worker` must agree on it. In bullmq 6.4.2 a mismatch raises
+ * nothing: both resolve `opts.prefix ?? 'bull'` in the Redis backend
+ * (`redis-queue-backend.js:73`) and compose keys as
+ * `` `${prefix}:${queueName}:${type}` `` (`queue-keys.js:35-40`), so two
+ * different prefixes produce two disjoint queues that happen to share a name,
+ * and the symptom is a worker that drains nothing. Returning both from one
+ * function makes them impossible to resolve separately -- the two call sites
+ * destructure the same object.
+ * ===========================================================================
  */
-export function redisConnectionFrom(config: ConfigService): { url: string } {
+export function redisConnectionFrom(config: ConfigService): { url: string; prefix: string } {
   const url = config.get<string>('REDIS_URL');
   if (url === undefined || url.trim() === '') {
     // `validateEnv` defaults this, so an empty value means someone set it to
@@ -64,7 +78,7 @@ export function redisConnectionFrom(config: ConfigService): { url: string } {
     // guessed localhost in production.
     throw new Error('REDIS_URL is not configured; the outbox worker cannot start.');
   }
-  return { url };
+  return { url, prefix: outboxPrefixFrom(config) };
 }
 
 @Injectable()
@@ -85,9 +99,10 @@ export class OutboxQueue implements OnModuleDestroy {
    */
   private get handle(): Queue<OutboxJobData> {
     if (this.queue === null) {
-      const { url } = redisConnectionFrom(this.config);
+      const { url, prefix } = redisConnectionFrom(this.config);
       this.queue = new Queue<OutboxJobData>(OUTBOX_QUEUE_NAME, {
         connection: { url },
+        prefix,
         defaultJobOptions: {
           // PostgreSQL owns retries. See the file header.
           attempts: 1,

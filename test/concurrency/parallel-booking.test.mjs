@@ -31,32 +31,46 @@
 
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+
 /**
- * The repo's own factory, not `new PrismaClient()`: Prisma 7 requires a driver
- * adapter, and the factory is where the adapter, pooling and the tenancy
- * extension are configured. Bypassing it would exercise a different client
- * than the API uses, which is the one thing an integration test must not do.
+ * Both targets are REQUIRED, and both are checked HERE.
  *
- * Imported dynamically because the factory reads `DATABASE_URL` at call time
- * and a static import is hoisted above the line that sets it — so the env has
- * to be in place first.
+ * ===========================================================================
+ * Before the database module is imported, before the Prisma client exists,
+ * and before a single HTTP request -- because this suite rewrites shared
+ * `inventory_day` counters and the only repair is `pnpm db:seed`.
+ *
+ * What was here read `packages/database/.env` and then the root one, both of
+ * which name the shared development database on a developer's machine, and
+ * defaulted the API to `:4000`, which is the shared development API. The
+ * isolation guard refused the database, so that was never a route to real
+ * data; but a destructive suite whose documented default is the development
+ * stack is a trap regardless of what catches it, and "the guard will stop
+ * you" is the wrong first line of defence.
+ *
+ * `pnpm test:concurrency` routes through `gate-resilience.mjs
+ * --only=parallel-booking`, which resolves, validates and exports both.
+ * ===========================================================================
  */
-function loadDatabaseEnv() {
-  for (const relative of ['../../packages/database/.env', '../../.env']) {
-    try {
-      const text = readFileSync(new URL(relative, import.meta.url), 'utf8');
-      const match = /^DATABASE_URL\s*=\s*"?([^"\r\n]+)"?/m.exec(text);
-      if (match?.[1]) return match[1];
-    } catch {
-      // Next candidate. A missing file here is ordinary, not an error.
-    }
-  }
-  return null;
+if (!process.env.DATABASE_URL) {
+  console.error(
+    'DATABASE_URL is not set.\n' +
+      'There is no default and no .env lookup: this suite fills a room type to\n' +
+      'its limit and rewrites shared inventory counters, so it will not guess a\n' +
+      'target. Run it through `pnpm test:concurrency`, or set it explicitly to a\n' +
+      'wholly disposable test database.',
+  );
+  process.exit(1);
 }
 
-process.env.DATABASE_URL ??= loadDatabaseEnv() ?? '';
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set and no .env was found. Run pnpm db:seed first.');
+if (!process.env.EASEIT_API_URL) {
+  console.error(
+    'EASEIT_API_URL is not set.\n' +
+      'There is no default: :4000 is the shared development API, and assuming a\n' +
+      "port is assuming which stack receives this suite's requests. Run it\n" +
+      'through `pnpm test:concurrency`, or point it at an API running against\n' +
+      'the SAME isolated database.',
+  );
   process.exit(1);
 }
 
@@ -66,7 +80,7 @@ if (!process.env.DATABASE_URL) {
 const databaseModule = await import('../../packages/database/dist/index.js');
 const { createPrismaClient } = databaseModule.default ?? databaseModule;
 
-const API = process.env.EASEIT_API_URL ?? 'http://127.0.0.1:4000/api/v1';
+const API = process.env.EASEIT_API_URL;
 const PARALLEL = Number(process.env.EASEIT_PARALLEL ?? 8);
 const PROPERTY_CODE = process.env.EASEIT_PROPERTY ?? '31336';
 
@@ -287,8 +301,20 @@ async function raceForSameRoom(cookie, property, roomType, room, arrival, depart
 /* -------------------------------------------------------------------------- */
 
 async function main() {
-  // Before any fixture is created, mutated or deleted.
-  await assertIsolatedDatabase({ prisma, suite: 'the parallel-booking stress suite' });
+  /**
+   * Before any fixture is created, mutated or deleted.
+   *
+   * `disposableOnly` because this suite does not clean up after itself
+   * completely: it rewrites `inventory_day` counters for the test date, and
+   * says so in its own teardown. That damage outlives the run, so
+   * `easeit_test` -- long-lived, seeded, and what every other suite reads --
+   * is refused here even though the ordinary allowlist accepts it.
+   */
+  await assertIsolatedDatabase({
+    prisma,
+    suite: 'the parallel-booking stress suite',
+    disposableOnly: true,
+  });
 
   const property = await prisma.property.findFirst({
     where: { code: PROPERTY_CODE },

@@ -45,8 +45,9 @@ import { createConnection } from 'node:net';
  */
 import {
   classifyTarget,
-  describeTarget,
+  describeRedisTarget,
   developmentDatabaseNames,
+  redisRefusal,
 } from '../test/support/isolation-guard.mjs';
 
 const args = new Map(
@@ -201,17 +202,39 @@ async function checkApi(base) {
  * opens a socket first.
  */
 async function checkRedis(url) {
-  const target = describeTarget(url);
-  if (target === null) {
-    problems.push('The Redis URL has an unrecognised shape.');
+  /**
+   * Endpoint policy BEFORE the socket, and from the shared helper.
+   *
+   * =========================================================================
+   * Two defects are closed here.
+   *
+   * The port check used to come *after* the reachability probe, so a URL this
+   * layer was always going to refuse was connected to first. Nothing was
+   * written by a bare connect, but the order said the probe mattered more than
+   * the policy, and it is the policy that protects the queue.
+   *
+   * Worse, the parse used `describeTarget`, whose regex requires a
+   * `/database` segment after the port. A Redis URL has none, so
+   * `redis://127.0.0.1:6380` -- this gate's own default -- parsed as `null`
+   * and was refused as "unrecognised shape". `gate:resilience` could not have
+   * cleared its own preflight.
+   *
+   * `redisRefusal` is now the single definition, shared with
+   * `outbox-redis.test.mjs`, which is reachable without this gate.
+   * =========================================================================
+   */
+  const refusal = redisRefusal({ url });
+  if (refusal !== null) {
+    problems.push(refusal);
     return;
   }
 
+  // Safe to name: the helper has already established scheme, host and port,
+  // and this carries no credentials.
+  const target = describeRedisTarget(url);
+
   const reachable = await new Promise((resolve) => {
-    const socket = createConnection({
-      host: target.host,
-      port: Number(target.port) || 6379,
-    });
+    const socket = createConnection({ host: target.host, port: Number(target.port) });
     const finish = (result) => {
       socket.destroy();
       resolve(result);
@@ -232,16 +255,7 @@ async function checkRedis(url) {
     return;
   }
 
-  if (target.port === '6379') {
-    problems.push(
-      'Redis is on the default port 6379, which is the shared development instance. ' +
-        'Use a dedicated instance on another port (6380) so queue obliteration ' +
-        'cannot reach development state.',
-    );
-    return;
-  }
-
-  confirmed.push(`Redis       ${target.host}:${target.port} — reachable, non-default port`);
+  confirmed.push(`Redis       ${target.host}:${target.port} — reachable, approved test port`);
 }
 
 /* -------------------------------------------------------------------------- */

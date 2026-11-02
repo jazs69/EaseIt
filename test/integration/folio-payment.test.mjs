@@ -35,30 +35,46 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-/** Same resolution as the suites beside it: the repo's `.env`, then the root one. */
-function loadDatabaseEnv() {
-  for (const relative of ['../../packages/database/.env', '../../.env']) {
-    try {
-      const text = readFileSync(new URL(relative, import.meta.url), 'utf8');
-      const match = /^DATABASE_URL\s*=\s*"?([^"\r\n]+)"?/m.exec(text);
-      if (match?.[1]) return match[1];
-    } catch {
-      // Next candidate. A missing file here is ordinary, not an error.
-    }
-  }
-  return null;
-}
-
-process.env.DATABASE_URL ??= loadDatabaseEnv() ?? '';
+/**
+ * Both targets are **required**, and neither is guessed.
+ *
+ * ===========================================================================
+ * This used to fall back to `packages/database/.env`, then the root `.env`,
+ * and its API defaulted to `:4000`. Both of those name the **shared
+ * development** stack, so the documented command for a suite that writes
+ * payments, folio lines and audit rows pointed at live hotel records.
+ *
+ * The isolation guard refused it, and that was the only thing in the way. A
+ * refusal is a good last line and a bad first one: it puts the whole
+ * guarantee on an allowlist that somebody will one day widen for a reason
+ * that looks fine in isolation. So nothing is inferred here any more.
+ *
+ * `scripts/test-payment.mjs` is the supported way in and supplies both; the
+ * release gate supplies both too. Anything else stops here, before a
+ * connection is opened.
+ * ===========================================================================
+ */
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set and no .env was found.');
+  console.error(
+    'DATABASE_URL is not set.\n' +
+      'This suite writes payments and will not read a target out of a .env file.\n' +
+      'Run it through `pnpm test:payment` with EASEIT_TEST_DATABASE_URL set.',
+  );
+  process.exit(1);
+}
+if (!process.env.EASEIT_API_URL) {
+  console.error(
+    'EASEIT_API_URL is not set.\n' +
+      'There is no default: :4000 is the shared development API, and this suite\n' +
+      'must run against an isolated one on the same isolated database.',
+  );
   process.exit(1);
 }
 
 const databaseModule = await import('../../packages/database/dist/index.js');
 const { createPrismaClient } = databaseModule.default ?? databaseModule;
 
-const API = process.env.EASEIT_API_URL ?? 'http://127.0.0.1:4000/api/v1';
+const API = process.env.EASEIT_API_URL;
 const PROPERTY_CODE = process.env.EASEIT_PROPERTY ?? '31001';
 
 const prisma = createPrismaClient();
@@ -71,6 +87,101 @@ const prisma = createPrismaClient();
  */
 const { assertIsolatedDatabase, assertApiSharesDatabase } =
   await import('../support/isolation-guard.mjs');
+
+/**
+ * Borrows one existing line's `idempotencyKey`, then puts back exactly what
+ * was there.
+ *
+ * ===========================================================================
+ * Two bugs, both of which this exists to stop.
+ *
+ * The sites that needed this used to stamp a key with `$executeRaw`, run
+ * their assertions, and then `SET "idempotencyKey" = NULL`. So:
+ *
+ *   1. **No `try`/`finally`.** A failing `check()` that threw, or an HTTP
+ *      call that rejected, left the suite's probe key welded to a *seeded*
+ *      row. The next run then saw a keyed line it never created.
+ *   2. **NULL is not "the original".** The restore assumed the column had
+ *      been empty. It happens to be empty today, and the moment a fixture
+ *      ships with a key, the "restore" silently destroys it.
+ *
+ * So the previous value is read first, put back in a `finally`, and the
+ * restore is verified. `restoreFailures` is asserted at the end of the suite:
+ * a restore that silently failed would otherwise look exactly like a pass.
+ * ===========================================================================
+ */
+let restoreFailures = 0;
+
+async function withBorrowedKey(lineId, borrowedKey, body) {
+  const before = await prisma.folioLine.findUnique({
+    where: { id: lineId },
+    select: { idempotencyKey: true },
+  });
+  if (before === null) throw new Error(`line ${lineId} vanished before it could be borrowed`);
+  const original = before.idempotencyKey;
+
+  await prisma.$executeRaw`
+    UPDATE folio_line SET "idempotencyKey" = ${borrowedKey} WHERE "id" = ${lineId}::uuid`;
+
+  let bodyError = null;
+  let result;
+  try {
+    result = await body();
+  } catch (error) {
+    bodyError = error;
+  }
+
+  /**
+   * Restoration is attempted whatever the body did, and its own failure is
+   * captured rather than thrown.
+   *
+   * =========================================================================
+   * A bare `finally` was not enough, and the gap was subtle: if the restoring
+   * UPDATE itself threw -- a dropped connection, a lock timeout -- that
+   * exception propagated **out of the `finally` and replaced whatever the
+   * body threw**. The original diagnosis was lost, the verify-read never ran,
+   * so `restoreFailures` stayed 0 and the summary looked clean while the
+   * borrowed key was still welded to the row.
+   *
+   * So the two failures are now independent. Both are recorded, a failed
+   * restore always counts as a failure (never as cleanup), and if both happen
+   * the body's error is reported as the cause of the one that is thrown --
+   * neither is swallowed.
+   * =========================================================================
+   */
+  let restoreError = null;
+  try {
+    await prisma.$executeRaw`
+      UPDATE folio_line SET "idempotencyKey" = ${original} WHERE "id" = ${lineId}::uuid`;
+    const after = await prisma.folioLine.findUnique({
+      where: { id: lineId },
+      select: { idempotencyKey: true },
+    });
+    if ((after?.idempotencyKey ?? null) !== original) {
+      restoreError = new Error(
+        `expected ${String(original)}, found ${String(after?.idempotencyKey)}`,
+      );
+    }
+  } catch (error) {
+    restoreError = error;
+  }
+
+  if (restoreError !== null) {
+    restoreFailures += 1;
+    console.error(`  RESTORE FAILED  line ${lineId}: ${String(restoreError.message ?? restoreError)}`);
+    const failure = new Error(
+      `restoring the borrowed key on line ${lineId} failed: ` +
+        String(restoreError.message ?? restoreError),
+    );
+    // The body's error, if there was one, is preserved as the cause rather
+    // than discarded -- it is usually the more informative of the two.
+    if (bodyError !== null) failure.cause = bodyError;
+    throw failure;
+  }
+
+  if (bodyError !== null) throw bodyError;
+  return result;
+}
 
 /** Reservations this suite created, for teardown. */
 const created = [];
@@ -1287,24 +1398,57 @@ async function main() {
      * predicate, not the absence of such rows, is what keeps it out.
      */
     const probeKey = key();
-    const charge = await prisma.folioLine.findFirst({
-      where: { propertyId: property.id, folioId: f.folioId, kind: 'SERVICE_CHARGE' },
-      select: { id: true },
+
+    /**
+     * The line is **created**, not borrowed from whatever the fixture had.
+     *
+     * =====================================================================
+     * It used to find an existing `SERVICE_CHARGE` on the fixture folio and
+     * borrow its `idempotencyKey` slot. That worked, but it made the case
+     * conditional on the fixture's shape -- it carried a `SKIP` for when no
+     * such line existed, and a skip proves nothing -- and it mutated a row
+     * this section did not make.
+     *
+     * Creating it is strictly better here and changes no intent: the whole
+     * point, stated above, is that such a row is unreachable through any
+     * production path, so it has to be made directly either way. It lands in
+     * the fixture's own folio, so the existing teardown removes it with the
+     * rest of that booking's lines (`deleteMany({ where: { folioId } })`),
+     * and nothing pre-existing is touched.
+     *
+     * `amountMinor` is positive: `folio_line_sign_matches_kind` refuses a
+     * negative on anything that is not a PAYMENT.
+     * =====================================================================
+     */
+    const folioRow = await prisma.folio.findUnique({
+      where: { id: f.folioId },
+      select: { currency: true },
     });
-    if (charge === null) {
-      console.log('  SKIP  no service charge on the fixture to stamp.');
-    } else {
-      await prisma.$executeRaw`
-        UPDATE folio_line SET "idempotencyKey" = ${probeKey} WHERE "id" = ${charge.id}::uuid`;
-      const nonPayment = await byKey(cookie, probeKey);
-      check(
-        'a key stamped on a non-payment line is not reported',
-        nonPayment.status === 200 && nonPayment.payload?.found === false,
-        `found=${String(nonPayment.payload?.found)}`,
-      );
-      await prisma.$executeRaw`
-        UPDATE folio_line SET "idempotencyKey" = NULL WHERE "id" = ${charge.id}::uuid`;
-    }
+    const planted = await prisma.folioLine.create({
+      data: {
+        propertyId: property.id,
+        folioId: f.folioId,
+        kind: 'SERVICE_CHARGE',
+        description: 'payment suite: non-payment key probe',
+        amountMinor: 1,
+        currency: folioRow.currency,
+        chargeDate: new Date('2026-01-01T00:00:00.000Z'),
+        idempotencyKey: probeKey,
+      },
+      select: { id: true, idempotencyKey: true, kind: true },
+    });
+    check(
+      'the probe line really carries the key, on a non-payment kind',
+      planted.idempotencyKey === probeKey && planted.kind === 'SERVICE_CHARGE',
+      `${planted.kind} key=${String(planted.idempotencyKey)}`,
+    );
+
+    const nonPayment = await byKey(cookie, probeKey);
+    check(
+      'a key stamped on a non-payment line is not reported',
+      nonPayment.status === 200 && nonPayment.payload?.found === false,
+      `found=${String(nonPayment.payload?.found)}`,
+    );
   }
 
   /* ==================================================================== 18 */
@@ -1328,35 +1472,33 @@ async function main() {
     if (foreign === null) {
       console.log('  SKIP  no payment line at another property to stamp.');
     } else {
-      await prisma.$executeRaw`
-        UPDATE folio_line SET "idempotencyKey" = ${crossKey} WHERE "id" = ${foreign.id}::uuid`;
-      /**
-       * The positive control.
-       *
-       * Without it `found: false` below would also pass if the UPDATE had
-       * quietly matched nothing -- the assertion would hold for the wrong
-       * reason and prove nothing about scoping at all.
-       */
-      const stamped = await prisma.folioLine.count({
-        where: { id: foreign.id, propertyId: foreign.propertyId, idempotencyKey: crossKey },
+      await withBorrowedKey(foreign.id, crossKey, async () => {
+        /**
+         * The positive control.
+         *
+         * Without it `found: false` below would also pass if the UPDATE had
+         * quietly matched nothing -- the assertion would hold for the wrong
+         * reason and prove nothing about scoping at all.
+         */
+        const stamped = await prisma.folioLine.count({
+          where: { id: foreign.id, propertyId: foreign.propertyId, idempotencyKey: crossKey },
+        });
+        check(
+          'the foreign PAYMENT line really does carry the key now',
+          stamped === 1,
+          `${String(stamped)} row(s) stamped`,
+        );
+        const crossed = await byKey(cookie, crossKey);
+        check(
+          "another property's key is not found here",
+          crossed.status === 200 && crossed.payload?.found === false,
+          `HTTP ${String(crossed.status)} found=${String(crossed.payload?.found)}`,
+        );
+        check(
+          'and nothing of theirs leaked into the answer',
+          !JSON.stringify(crossed.payload ?? {}).includes(foreign.id),
+        );
       });
-      check(
-        "the foreign PAYMENT line really does carry the key now",
-        stamped === 1,
-        `${String(stamped)} row(s) stamped`,
-      );
-      const crossed = await byKey(cookie, crossKey);
-      check(
-        "another property's key is not found here",
-        crossed.status === 200 && crossed.payload?.found === false,
-        `HTTP ${String(crossed.status)} found=${String(crossed.payload?.found)}`,
-      );
-      check(
-        'and nothing of theirs leaked into the answer',
-        !JSON.stringify(crossed.payload ?? {}).includes(foreign.id),
-      );
-      await prisma.$executeRaw`
-        UPDATE folio_line SET "idempotencyKey" = NULL WHERE "id" = ${foreign.id}::uuid`;
     }
 
     const unknownProperty = await byKey(cookie, key(), '00000');
@@ -1387,6 +1529,183 @@ async function main() {
       );
     }
   }
+
+  /* ==================================================================== 19 */
+  console.log('\n19. No cookie, no payment: the endpoints refuse before anything is written.');
+  {
+    /**
+     * The gap a manual probe found: the suite checked a grant without
+     * `folio:settle` and a property the caller has no grant at, but never the
+     * plainest case of all -- nobody signed in. An endpoint that writes money
+     * should be regression-protected against that, not spot-checked.
+     */
+    // Resolved locally: this section owns no fixture and writes nothing, so it
+    // reads an existing folio at this property and only ever 401s against it.
+    /**
+     * Its own booking, not the oldest seeded one.
+     *
+     * The first version read whatever folio happened to be oldest at this
+     * property and asserted its counts were unchanged. That is seeded data
+     * nothing here owns: another suite or a stray request touching it would
+     * fail this check for a reason that has nothing to do with
+     * authentication. `bookWithFolio` registers the reservation for teardown,
+     * so this section removes exactly what it made and nothing else.
+     */
+    const own = await bookWithFolio(cookie, property.id, 44, 'unauth');
+    const { bookingCode, reservationId } = own;
+    const target = { id: own.folioId };
+
+    const before = {
+      lines: await prisma.folioLine.count({ where: { folioId: target.id } }),
+      audits: await prisma.auditLog.count({ where: { entityId: reservationId } }),
+      paid: (
+        await prisma.reservation.findUnique({
+          where: { id: reservationId },
+          select: { paidAmountMinor: true },
+        })
+      ).paidAmountMinor,
+    };
+
+    const anonKey = key();
+    const anonPost = await fetch(
+      `${API}/properties/${PROPERTY_CODE}/folios/by-booking/${bookingCode}/payment`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: 'CASH',
+          amountMinor: 100,
+          remark: null,
+          idempotencyKey: anonKey,
+        }),
+      },
+    );
+    check(
+      '19: an unauthenticated payment is refused 401',
+      anonPost.status === 401,
+      `HTTP ${String(anonPost.status)}`,
+    );
+
+    const anonRead = await fetch(
+      `${API}/properties/${PROPERTY_CODE}/folios/payments/by-key/${anonKey}`,
+    );
+    check(
+      '19: an unauthenticated by-key read is refused 401',
+      anonRead.status === 401,
+      `HTTP ${String(anonRead.status)}`,
+    );
+
+    const after = {
+      lines: await prisma.folioLine.count({ where: { folioId: target.id } }),
+      audits: await prisma.auditLog.count({ where: { entityId: reservationId } }),
+      paid: (
+        await prisma.reservation.findUnique({
+          where: { id: reservationId },
+          select: { paidAmountMinor: true },
+        })
+      ).paidAmountMinor,
+    };
+    check(
+      '19: and neither request wrote a line, an audit row or a single paisa',
+      after.lines === before.lines &&
+        after.audits === before.audits &&
+        after.paid === before.paid,
+      `lines ${String(before.lines)}->${String(after.lines)}, ` +
+        `audits ${String(before.audits)}->${String(after.audits)}, ` +
+        `paid ${String(before.paid)}->${String(after.paid)}`,
+    );
+    check(
+      '19: and the key it offered exists nowhere',
+      (await prisma.folioLine.count({ where: { idempotencyKey: anonKey } })) === 0,
+    );
+  }
+
+  /* ==================================================================== 20 */
+  console.log('\n20. A borrowed key is put back even when the body throws.');
+  {
+    /**
+     * The restoration guarantee, proven by breaking it on purpose.
+     *
+     * `withBorrowedKey` exists because the old stamp/un-stamp pairs had no
+     * `finally` and restored to NULL rather than to what was there. Asserting
+     * the happy path would not have caught either bug, so this induces a
+     * failure inside the borrowed window and then checks the column.
+     */
+    /**
+     * A line this section owns, carrying a known NON-NULL key.
+     *
+     * =====================================================================
+     * The first version borrowed whatever line was oldest at the property --
+     * seeded data, chosen by an ordering that races the suite's own inserts.
+     * Which row it landed on, and whether its key was null, varied run to
+     * run: on one run it happened to hold a real key, which is the only
+     * reason the "not NULL-by-assumption" assertion meant anything. On
+     * another it would have proved only that null restores to null, and a
+     * restore that threw would have corrupted a seeded record.
+     *
+     * So this posts its own payment, through the real endpoint, with a key it
+     * chose. The original is non-null by construction, the row is removed by
+     * teardown with the rest of the booking, and nothing seeded is touched.
+     * =====================================================================
+     */
+    const owned = await bookWithFolio(cookie, property.id, 48, 'borrow');
+    const originalKey = key();
+    const posted = await payByBooking(cookie, owned.bookingCode, {
+      method: 'CASH',
+      amountMinor: 1_500,
+      remark: 'payment suite: borrow subject',
+      idempotencyKey: originalKey,
+    });
+    if (posted.status !== 200 && posted.status !== 201) {
+      throw new Error(`borrow fixture failed: ${String(posted.status)}`);
+    }
+    const line = await prisma.folioLine.findFirst({
+      where: { folioId: owned.folioId, idempotencyKey: originalKey, kind: 'PAYMENT' },
+      select: { id: true, idempotencyKey: true },
+    });
+    check(
+      '20: the fixture line exists and its original key is NOT null',
+      line !== null && line.idempotencyKey === originalKey,
+      `key=${String(line?.idempotencyKey)}`,
+    );
+
+    const original = line.idempotencyKey;
+    const borrowed = key();
+    let threw = false;
+    try {
+      await withBorrowedKey(line.id, borrowed, async () => {
+        const during = await prisma.folioLine.findUnique({
+          where: { id: line.id },
+          select: { idempotencyKey: true },
+        });
+        check(
+          '20: the key really is borrowed inside the window',
+          during.idempotencyKey === borrowed,
+          `found ${String(during.idempotencyKey)}`,
+        );
+        throw new Error('induced failure inside the borrowed window');
+      });
+    } catch (error) {
+      threw = String(error.message).includes('induced failure');
+    }
+    check('20: the induced failure propagated, it was not swallowed', threw);
+
+    const restored = await prisma.folioLine.findUnique({
+      where: { id: line.id },
+      select: { idempotencyKey: true },
+    });
+    check(
+      '20: and the ORIGINAL non-null key is back, not NULL-by-assumption',
+      restored.idempotencyKey === original && original !== null,
+      `expected ${String(original)}, found ${String(restored.idempotencyKey)}`,
+    );
+  }
+
+  check(
+    'every borrowed key was restored',
+    restoreFailures === 0,
+    `${String(restoreFailures)} restore failure(s)`,
+  );
 }
 
 /* -------------------------------------------------------------------------- */

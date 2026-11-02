@@ -46,6 +46,19 @@ export const envSchema = z
 
     REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
 
+    /**
+     * BullMQ key prefix for the outbox queue.
+     *
+     * Defaults to `bull`, which is BullMQ's own default, so leaving this unset
+     * is byte-for-byte the behaviour every existing deployment already has --
+     * same keys, same jobs, no migration. Setting it namespaces every
+     * `bull:outbox:*` key, which is what lets a destructive test run bound its
+     * own blast radius instead of sharing one keyspace with the development
+     * worker. `Queue` and `Worker` must receive the SAME value or they
+     * silently never see each other; `outbox.prefix.ts` is the one resolver.
+     */
+    OUTBOX_QUEUE_PREFIX: z.string().min(1).default('bull'),
+
     /* -- Outbox dispatcher and worker -------------------------------------
      *
      * Read by the worker process. The API validates them too, so a typo is

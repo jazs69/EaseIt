@@ -705,14 +705,19 @@ Still to address:
 - [ ] **`test:checkout` and `test:payment` are not part of `pnpm gate:integration`**, so CI runs
       neither FD-04's nor FO-04's suite; adding them changes the gate's contents and should be a
       deliberate change of its own
-- [ ] **Server-side payment intents (production hardening).** FO-03/FO-04's client protocol is
-      `sessionStorage`-backed, so it does **not** prevent every duplicate payment: closing the tab
-      or the browser loses an unresolved intent, and a second tab mints a second key — in both
-      cases the same money can be taken twice. A `PaymentIntent` record the server can list per
-      folio would close all of it, and would also survive a crash, another device, or a shift
-      change. Needs a model, a hand-written migration, create/list/resolve endpoints, a reaper for
-      abandoned intents and its own suite; the natural time is when payments become multi-step
-      (FO-15 gateway, 3-D Secure, hosted payment link)
+- [ ] **Server-side payment intents — HIGH PRIORITY production requirement.** FO-03/FO-04's
+      client protocol is `sessionStorage`-backed, so it does **not** prevent every duplicate
+      payment. Closing the tab or the browser discards the unresolved intent, the quarantine and
+      the acknowledgement together; a second tab mints a second key; another device knows nothing.
+      In each case the same money can be taken twice. The within-tab guarantees (retry in place,
+      double-click, sheet close/reopen, reload, and the corrupt-value quarantine) are as far as
+      client state can reach. A `PaymentIntent` record the server can list per folio closes all of
+      it and additionally survives a crash, another device and a shift change — and the clerk's
+      duplicate-risk acknowledgement is the first thing that should move there, because an attested
+      acceptance of risk should not live in one browser tab. Needs a model, a hand-written
+      migration, create/list/resolve endpoints, a reaper for abandoned intents and its own suite;
+      the natural trigger is payments becoming multi-step (FO-15 gateway, 3-D Secure, hosted
+      payment link)
 - [ ] **`check-out.test.mjs` leaks 20 nights of inventory per run.** Its teardown deletes its
       reservations without releasing their nights, on the stated premise that deleting the rows
       removes what `inventory_day.sold` counts — but `sold` is a stored counter the booking path
@@ -780,6 +785,248 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-01 (thirteenth pass) - generational recovery: a corrupt recovery slot is no longer a clean slate
+
+No status transitions. Counts stay **32 `CV` / 94 `PI` / 72 `NI` / 7 `BU` = 205**.
+
+**The twelfth pass left one hole, recorded honestly and now closed.** A
+corrupt **recovery** slot did not re-quarantine. Reproduced end to end through
+the real boot path before any edit:
+
+1. corrupt primary -> QUARANTINED;
+2. the clerk reads the ledger and acknowledges -> grant written;
+3. a payment is taken into `#next` and the response is lost -> `#next` holds
+   an UNRESOLVED intent whose money may well have moved;
+4. `#next` is truncated;
+5. reload.
+
+Boot returned **`intent: null`** - a clean slate. `OPEN_SHEET` then minted a
+**brand-new key**, `persistIntent` wrote it **over the truncated bytes**, and
+SUBMIT -> DURABILITY released a **second POST** under the new key. The
+unaccounted-for first payment was now unreachable: its reference was gone, so
+no by-key read could resolve it. The corrupt _primary_ survived throughout -
+that part of the design held - but the second generation of evidence did not.
+
+**Why it happened.** The grant was open-ended. A `v: 1` acknowledgement
+carried no generation and no source slot, so it could only mean "escape the
+primary, forever". Once given, it promoted `#next` permanently, and `REHYDRATE`
+took an `acknowledged` flag that told it to skip the quarantine branch
+entirely. One boolean could express "primary" or "the one recovery slot" and
+nothing else, so a corrupt recovery slot had nowhere to go.
+
+**The design: generational slots, with generation-bound grants.** The smallest
+model that safely supports repeated recovery.
+
+- `recovered: boolean` becomes **`generation: number`** on the intent.
+  Generation 0 is the primary slot, generation _n_ is `#next{n}` (generation 1
+  keeps the `#next` spelling so keys a live tab already holds survive a
+  reload).
+- A grant lives in its own slot - `#ack`, `#ack2`, ... - and **names both the
+  generation it authorises and the exact slot whose corruption it escapes**.
+  That binding is the fix: a clerk's acceptance of risk is a statement about
+  one unreadable value, and it can no longer be spent on a different one that
+  appeared later. `v: 1` is **rejected**, not migrated; refusing it costs one
+  extra ledger check and fails closed.
+- Boot is a **bounded walk**, not a branch. From generation 0 upward: stop at
+  the first slot that is not corrupt; a corrupt slot advances only on a
+  verified grant naming _that_ slot. Corrupt with no such grant means
+  **quarantine at that generation**. `MAX_RECOVERY_GENERATIONS` is 8 and
+  exhaustion quarantines - a bound that failed open would be worse than none.
+- `REHYDRATE` lost the `acknowledged` escape altogether. Corruption in the
+  live slot quarantines unconditionally, whichever generation it is.
+
+The invariant this buys: **a corrupt slot is never the subject of a write at
+any generation.** New data always relocates forward, so no write failure can
+destroy evidence, and every corrupt generation stays byte-for-byte - verified
+after nine of them.
+
+**Verified:** `pnpm test:intent` **247/247 exit 0** (was 200), inside
+`pnpm gate`. Cases 84-90 cover the reproduced failure, second recovery end to
+end, the grant binding (wrong source slot / copied forward / filed under
+another generation's slot), missing `#next`, foreign data at a higher
+generation, four write-failure modes at the second generation, duplicate
+callbacks, and the bound. Case 75 was rewritten from documenting the gap to
+asserting the fix. Five mutations confirm the checks bite:
+
+| Mutation                                            | Failures |
+| --------------------------------------------------- | -------- |
+| corruption above generation 0 no longer quarantines | 19       |
+| the walk falls through instead of quarantining      | 14       |
+| a quarantined intent is written to storage          | 4        |
+| the grant is not bound to its source slot           | 3        |
+| the grant is not bound to its generation            | 2        |
+
+Regressions on the isolated `easeit_test`: `test:payment` 84/84,
+`pnpm gate:integration` **6/6**, `pnpm gate`, API and web-admin typecheck,
+web-admin lint - all exit 0. Both databases read-only-verified unchanged at 21
+migrations. **No browser verification was performed.**
+
+**What is still true.** The acknowledgement is an attestation, not proof. And
+all of this is `sessionStorage`: closing the tab discards every generation,
+every grant and the quarantine together, a second tab is independent, and
+another device knows nothing. Server-side payment intents remain the only
+thing that closes those, and the generational protocol is the shape that
+should move there.
+
+### 2026-11-01 (twelfth pass) - durable intents, one POST per submission, and the real boot path under test
+
+No status transitions. Counts stay **32 `CV` / 94 `PI` / 72 `NI` / 7 `BU` = 205**.
+
+**A verification pass found three gaps in the eleventh.** All three were
+places where the code was right only by accident, or where the test proving it
+was testing something else.
+
+**1. A memory-only DRAFT could still take money.** `persistIntent` returning
+`memory-only` - a `setItem` that threw, one that silently discarded, a store
+that truncated, a `getItem` that threw - recorded the failure and released the
+POST anyway. That was a deliberate trade (a clerk in a private window should
+not be unable to collect) and it was the wrong one. The asymmetry is why: a
+payment sent with no stored reference is fine until the reply is lost, and
+then it is **unrecoverable** - no key to reconcile with, no by-key read to
+perform, and nothing left but a human comparing ledgers. The cost of refusing
+is one retry. So `DURABILITY` now releases a POST only on a proven write, and
+`sendPayment` asserts it again at the network boundary, because "redundant by
+construction" stops being true the moment somebody adds a transition. The key
+is **kept**: nothing is replaced, nothing invented, the quarantine is not
+touched, and the intent returns to the state it was submitted from - DRAFT
+from a submit, UNRESOLVED from a confirm, which must never be handed back an
+editable form. The clerk is told the money was **not** taken and what to
+check.
+
+**2. `status === 'IN_FLIGHT'` was authorising network requests.** `DURABILITY`
+emitted a POST for any in-flight intent. That held only because `SUBMIT` and
+`CONFIRM` happen to be the only transitions that persist while leaving the
+status IN_FLIGHT - an invariant nothing asserted, which any future transition
+could break silently, and which said nothing at all about a duplicate
+durability callback. A submission now **names itself**: `SUBMIT` and `CONFIRM`
+mint a token (`key#attempt`, deterministic, no clock and no random source),
+the report must present the matching one, and the token is **spent on first
+use**. A report naming nothing, naming a spent token, or naming a different
+submission records the measured durability and releases nothing.
+
+**3. Every quarantine guarantee rested on a test helper that reimplemented the
+thing it tested.** The slot-choosing algorithm - classify the primary, look
+for a verified acknowledgement over a corrupt one, promote `#next` only then -
+lived inside the hook's `useState` initialiser, which the unit suite cannot
+reach. So the suite contained a second copy, and the copy could drift from
+production without one failing check. The algorithm moved into
+`payment-intent.ts` as `resolveLiveSlot` / `bootFromStorage`;
+`use-payment-intent.ts` is now the binding and nothing else; and the suite
+drives the real path against a fake store.
+
+**Verified:** `pnpm test:intent` **200/200 exit 0** (was 136), inside
+`pnpm gate`. Three mutations confirm the new checks bite rather than merely
+pass: dropping the durability requirement fails 7, never spending the
+submission token fails 7, and reading `#next` without a verified
+acknowledgement fails 11. Regressions on the isolated `easeit_test`:
+`test:payment` 84/84, `test:checkout` 108/108, `test:checkin` 23/23,
+`pnpm gate:integration` **6/6**, `pnpm gate`, API and web-admin typecheck,
+web-admin lint - all exit 0. **No browser verification was performed.**
+
+**Cases 61-63 could not be recovered.** The approved matrix was "46-63"; the
+suite went 46-60 then 64-70, and the plan file it was written from skips the
+same three numbers, so they were never authored rather than deleted. The
+original definitions are **lost**. Three substitutes now cover the ground an
+audit asked for - identifier shapes that break naive matching (whitespace,
+escaped quotes, backslashes, Unicode, regex metacharacters), and corruption
+sitting beside stale `#ack`/`#next` - and they are labelled as substitutes in
+the suite so nobody later reads them as the approved cases restored.
+
+**A known gap, recorded rather than asserted away.** A corrupt **`#next`**
+does not re-quarantine. The acknowledgement is not consumed and not
+time-limited, so once given it promotes `#next` permanently, and an unreadable
+`#next` therefore yields a clean slate instead of a second quarantine - a
+post-recovery reference can be lost silently in that one narrow window. Case
+75 deliberately does **not** assert the clean slate as correct, because a
+check that did would lock the gap in; it asserts the two properties that must
+hold whatever the fix is (the corrupt primary is still never written, and no
+payment can be submitted from what boot produced). Closing it properly needs
+generational slots - `#ack2` / `#next2`, so a second acknowledgement can
+supersede the first - which is a design change, not a patch.
+
+### 2026-11-01 (eleventh pass) - corrupt payment-intent quarantine and recovery
+
+No status transitions. Counts stay **32 `CV` / 94 `PI` / 72 `NI` / 7 `BU` = 205**.
+
+**What an audit found.** The tenth pass reported an unreadable `sessionStorage`
+value through a `storedUnreadable` flag. A verification pass then showed the
+flag was **advisory only**: it gated no submission, and the very next
+`OPEN_SHEET` wrote a fresh DRAFT into the same slot and destroyed the evidence,
+so after one reload there was no warning at all. Three concrete bypasses:
+post the payment anyway; overwrite the corrupt bytes merely by opening the
+sheet; and `blocksNewPayment()`, which read like the guard, was exported,
+unit-tested and **called nowhere in application code**.
+
+**QUARANTINED is now a real state.** A corrupt value puts the booking into it,
+and from there `OPEN_SHEET`, `SUBMIT`, `CONFIRM` and `RECONCILE` are all
+rejected. `RECONCILE` especially: there is no key, and presenting a fabricated
+one — or reading a `found: false` from a key that never existed — would
+manufacture false reassurance about money. The only instrument is a human
+reading the ledger.
+
+**Storage: the corrupt bytes are never the subject of a write.** A quarantine
+that copied the value aside and cleared the original could lose it two ways —
+the copy write fails silently (`setItem` both throws _and_ quietly discards) or
+the clear lands before the copy is verified. So nothing is copied and nothing
+is cleared. The primary slot becomes read-only for the life of that value, and
+the **new** data relocates: `#ack` for the acknowledgement, `#next` for every
+intent after it. No write failure can destroy the evidence; a failed write
+leaves the booking quarantined, which costs a deliberate re-attempt and never a
+silent second collection.
+
+**Ownership is classified conservatively, and fails closed.** The old substring
+check answered "not mine" for anything mangled past recognition — failing
+_open_ on the dangerous case. `classifyStored` now returns one of four
+verdicts: `empty`, `valid`, `foreign` (a readable record for another booking —
+**not** quarantined, that is the slot scoping working), and `corrupt` with a
+reason of `ours` or `unidentified`. **Unidentifiable means possibly ours and
+therefore blocks.** 15 classification shapes are asserted, including
+whitespace-spaced JSON and non-string input.
+
+**One authoritative guard.** `blocksPaymentSubmission` is an allow-list — only
+a live DRAFT may be submitted — so `null`, QUARANTINED, IN_FLIGHT, UNRESOLVED,
+RECONCILING, CONFLICTED and any state added later are refused. It is enforced
+at three places: the Post button, the submit handler (re-read at click time,
+not a render snapshot) and the POST dispatch path, which re-checks because an
+async continuation can arrive after the state moved on. `isFormEditable` no
+longer reports a `null` intent as editable — that was the specific hole.
+
+**Recovery, in a fixed order.** Open the ledger -> timestamp recorded ->
+clerk accepts the duplicate risk in so many words -> acknowledgement written ->
+read back and re-validated -> only then may a DRAFT be minted, into `#next` ->
+persisted and verified -> only then may a payment be submitted. Any failed step
+leaves the booking quarantined. The record carries property, booking, both
+timestamps and a protocol version, and nothing else. The copy never claims the
+earlier payment did not happen.
+
+**Verified:** `pnpm test:intent` **136/136 exit 0** (was 85), inside `pnpm gate`
+so it runs on every pull request. Regressions on the isolated `easeit_test`:
+`test:payment` 84/84, `test:checkout` 108/108, `test:checkin` 23/23,
+`test:cancellation` 229/229, `pnpm gate:integration` **6/6**, `pnpm gate`, API
+and web-admin typecheck + build, all exit 0. **No browser verification was
+performed.**
+
+**The acknowledgement is an attestation, not proof.** A clerk who ticks the box
+without reading the ledger can still cause a duplicate. That is a deliberate
+trade: the alternative is a booking that can never take payment again, with no
+recovery path, because the key is unrecoverable and no by-key read can resolve
+it.
+
+**The sessionStorage boundary, stated plainly.** This is client-side state and
+it does **not** prevent every duplicate payment:
+
+- **Closing the tab or the browser discards everything** — the corrupt value,
+  the acknowledgement and `#next` die together, so the next visit starts clean
+  with no warning and the same money can be taken twice. The quarantine is a
+  **within-tab** guarantee (it does cover reloads, which is the case it was
+  built for).
+- **A second tab is independent.** Per-tab storage means two tabs hold two
+  reference sets and neither can see the other's quarantine.
+- **Another device knows nothing at all.**
+
+Only server-side payment intents close these, which is why they are a
+**high-priority production requirement** rather than a nice-to-have.
 
 ### 2026-11-01 (tenth pass) - FO-03 / FO-04 hardened: the close-and-reopen duplicate
 

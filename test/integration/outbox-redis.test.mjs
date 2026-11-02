@@ -19,7 +19,12 @@
  * rather than passing quietly — a suite that skips itself in silence is how a
  * broken integration ships.
  *
- *   docker run -d --name easeit-redis -p 6379:6379 redis:7-alpine
+ *   docker run -d --name easeit-redis-test -p 6380:6379 redis:7-alpine
+ *
+ * Port 6380, never 6379: `OutboxQueue` sets no BullMQ prefix and this suite
+ * calls `obliterate({ force: true })`, so on the shared development instance
+ * it would destroy real queue state. `redisTestRefusals` refuses 6379 -- in
+ * both destructive modes -- before anything connects.
  *
  * Checks, in order: a bare enqueue is drained end to end with no manual
  * stepping; the handler ran exactly once; a transient failure is retried to
@@ -32,29 +37,250 @@
 // Nest's decorators need the metadata polyfill, and it lives in the API's own
 // node_modules rather than the root's under pnpm, so it is resolved by path.
 await import(new URL('../../apps/api/node_modules/reflect-metadata/Reflect.js', import.meta.url));
-import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 
-function loadEnvValue(name) {
-  for (const relative of ['../../packages/database/.env', '../../apps/api/.env', '../../.env']) {
-    try {
-      const text = readFileSync(new URL(relative, import.meta.url), 'utf8');
-      const match = new RegExp(`^${name}\\s*=\\s*"?([^"\\r\\n]+)"?`, 'm').exec(text);
-      if (match?.[1]) return match[1];
-    } catch {
-      // Next candidate.
-    }
-  }
-  return null;
-}
+/**
+ * The shared endpoint policy, imported statically and used before any I/O.
+ *
+ * Static rather than dynamic so it cannot be reordered below the socket by a
+ * later edit: an `await import` placed after the probe would read as a guard
+ * and guard nothing. `isolation-guard.mjs` has no import-time side effects.
+ */
+import { createDockerExec, verifyRedisOwnership } from '../../scripts/lib/redis-container.mjs';
+import { resolveRunIdentity } from '../../scripts/lib/run-identity.mjs';
+import {
+  assertIsolatedDatabase,
+  describeRedisTarget,
+  redisModeFrom,
+  redisTestRefusals,
+} from '../support/isolation-guard.mjs';
 
-process.env.DATABASE_URL ??= loadEnvValue('DATABASE_URL') ?? '';
+/**
+ * Both targets are REQUIRED, and neither is inferred.
+ *
+ * ===========================================================================
+ * This file used to resolve both from `packages/database/.env`, then
+ * `apps/api/.env`, then the root -- and `REDIS_URL` finally fell back to
+ * `redis://localhost:6379`, the shared development instance, on a suite whose
+ * job includes `obliterate({ force: true })`. The database guard below could
+ * not help with that: it classifies a PostgreSQL URL and knows nothing about
+ * Redis.
+ *
+ * The only refusal of port 6379 anywhere was in `require-services.mjs`, which
+ * runs from the release gate and nowhere else -- so `pnpm test:outbox:redis`
+ * reached the destructive call with no port policy in front of it at all.
+ *
+ * Both values now come from the environment or not at all. `test:outbox:redis`
+ * routes through `gate-resilience.mjs --only=outbox-redis`, which resolves,
+ * validates and exports them.
+ * ===========================================================================
+ */
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set and no .env was found. Run pnpm db:seed first.');
+  console.error(
+    'DATABASE_URL is not set.\n' +
+      'There is no default and no .env lookup: this suite creates, mutates and\n' +
+      'deletes rows, so it will not guess a target. Run it through\n' +
+      '`pnpm test:outbox:redis`, or set it explicitly to a wholly disposable\n' +
+      'test database.',
+  );
   process.exit(1);
 }
 
-const REDIS_URL = process.env.REDIS_URL ?? loadEnvValue('REDIS_URL') ?? 'redis://localhost:6379';
+if (!process.env.REDIS_URL) {
+  console.error(
+    'REDIS_URL is not set.\n' +
+      'There is no default: this suite calls `obliterate({ force: true })` on the\n' +
+      'outbox queue, and OutboxQueue sets no BullMQ prefix, so a guessed target\n' +
+      'would destroy whatever queue state is there. Run it through\n' +
+      '`pnpm test:outbox:redis`, or set it explicitly, e.g.\n' +
+      '  REDIS_URL=redis://127.0.0.1:6380',
+  );
+  process.exit(1);
+}
+
+const REDIS_URL = process.env.REDIS_URL;
+
+/** Every refusal in this file reads the same way and changes nothing. */
+function refuseToRun(reasons) {
+  console.error('\nREFUSING TO RUN. Nothing has been changed.');
+  for (const reason of reasons) console.error(`  x  ${reason}`);
+  process.exit(1);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Run identity and the queue namespace                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One run id, one prefix, decided before a single connection is opened.
+ *
+ * ===========================================================================
+ * This is what bounds `obliterate({ force: true })`.
+ *
+ * BullMQ composes every key as `` `${prefix}:${queueName}:${type}` `` and
+ * `obliterate` deletes only what hangs off `<prefix>:<queue>:` -- verified in
+ * `bullmq@6.4.2`'s `commands/obliterate-2.lua`, which derives every `DEL` from
+ * that base and contains no `SCAN`, `KEYS`, `FLUSHDB` or `FLUSHALL`. So a
+ * run-specific prefix makes the destructive call physically unable to touch
+ * another run's jobs, the development worker's jobs, or production's.
+ *
+ * The derivation lives in `scripts/lib/run-identity.mjs` rather than here,
+ * because this file cannot be imported by a unit suite -- it opens PostgreSQL
+ * and Redis at module scope -- and a rule that can only be grepped is a rule
+ * nothing executes. The unit suite calls the same function with the same
+ * inputs.
+ *
+ * It fails closed. There is no fallback to `bull`: that is the namespace
+ * production and the development worker share, and pointing `obliterate` at it
+ * is the exact catastrophe this phase removes.
+ * ===========================================================================
+ */
+const identity = resolveRunIdentity({
+  suppliedRunId: process.env.EASEIT_RUN_ID,
+  suppliedPrefix: process.env.OUTBOX_QUEUE_PREFIX,
+});
+
+if (!identity.ok) {
+  console.error('\nREFUSING TO RUN. Nothing has been changed.');
+  for (const reason of identity.reasons) console.error(`  x  ${reason}`);
+  process.exit(1);
+}
+
+/** 32 hex characters: a full UUID with the dashes removed. */
+const RUN = identity.runId;
+
+/**
+ * The BullMQ prefix EVERY client in this run uses.
+ *
+ * Both consumers take it from this one constant: the shared `configStub`
+ * below, which feeds every runtime's `OutboxQueue` and `OutboxWorker`, and the
+ * standalone destroyer `Queue` built immediately before `obliterate`. A
+ * `Queue` and a `Worker` on different prefixes do not error -- they simply
+ * never see each other's jobs -- so one constant is the only arrangement that
+ * cannot drift.
+ */
+const QUEUE_PREFIX = identity.prefix;
+
+const KEY = (suffix) => `redis-e2e:${RUN}:${suffix}`;
+
+/* -------------------------------------------------------------------------- */
+/*  The composed destructive-run policy                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Mode, boundary, database, prefix and ownership -- all decided before a
+ * single Redis socket is opened.
+ *
+ * ===========================================================================
+ * This replaces the old `redisRefusal({ url })` call, which was the
+ * *development* policy: scheme, loopback host, not-6379, approved port. It
+ * never knew what run this was, never looked at the queue namespace, and had
+ * no notion of who owns the instance. On a suite that calls
+ * `obliterate({ force: true })` that was the wrong question answered well.
+ *
+ * `redisTestRefusals` asks the right ones, and refuses on any of them:
+ *
+ *   * **mode** is explicit and fails closed. Absent, unknown or `development`
+ *     is a refusal, never a default -- an address describes a convention, not
+ *     an owner, so nothing is inferred from loopback or a port number.
+ *   * **external** -- a Redis this run did not create. The address is the only
+ *     evidence available, so it is held strictly (loopback, not 6379, port in
+ *     the approved list, database 0 or absent) AND the caller must declare
+ *     what establishes the boundary. `EASEIT_REDIS_BOUNDARY` is that
+ *     declaration; it is an assertion this layer cannot verify, and refusing
+ *     without one is the only honest thing it can do about that.
+ *   * **owned** -- a container this run created. The port allowlist is waived,
+ *     because `docker run -P` takes an ephemeral host port; in exchange the
+ *     ownership triple is required and checked against the URL.
+ *   * **prefix** must carry this run's id as a `:`-delimited segment and must
+ *     not be `bull`. Phase 3A-2 derived it; this is where it is enforced.
+ *
+ * ORDERING IS THE POINT. Everything here runs above `redisReachable`, above
+ * `createPrismaClient`, and far above any `Queue` or `Worker`. A policy
+ * evaluated after a connection would be a report, not a guard.
+ * ===========================================================================
+ */
+const REDIS_CONTAINER_ID = process.env.EASEIT_REDIS_CONTAINER;
+const REDIS_BOUNDARY = process.env.EASEIT_REDIS_BOUNDARY;
+
+/**
+ * `redisModeFrom` classifies; it does not verify.
+ *
+ * A container id present means "this run claims to own a container", which
+ * selects `owned` and therefore makes the ownership checks apply. It is not
+ * itself evidence of anything -- the triple below is, and a container id with
+ * no label match or a mismatched port is refused exactly as if none had been
+ * supplied.
+ */
+const REDIS_MODE = redisModeFrom({ containerId: REDIS_CONTAINER_ID });
+
+/**
+ * Ownership evidence, gathered from ONE `docker inspect` of the captured id.
+ *
+ * Only in `owned` mode, so a run against a supplied `REDIS_URL` needs no
+ * Docker at all. `verifyRedisOwnership` adds two checks the pure policy cannot
+ * make -- that the inspected `.Id` is the id we were given, and that the
+ * container is running -- and then the same evidence is handed to
+ * `redisTestRefusals`, which applies the guard's own rules to it. Both
+ * refusals are reported; neither is skipped on the strength of the other.
+ */
+let containerEvidence;
+
+if (REDIS_MODE === 'owned') {
+  const owned = verifyRedisOwnership({
+    exec: createDockerExec(),
+    containerId: REDIS_CONTAINER_ID,
+    runId: RUN,
+    url: REDIS_URL,
+  });
+
+  if (!owned.ok) refuseToRun(owned.reasons);
+
+  containerEvidence = {
+    id: owned.inspection.id,
+    label: owned.inspection.label,
+    mappedPort: owned.inspection.hostPort,
+  };
+}
+
+const policyProblems = redisTestRefusals({
+  mode: REDIS_MODE,
+  url: REDIS_URL,
+  prefix: QUEUE_PREFIX,
+  runId: RUN,
+  boundary: REDIS_BOUNDARY,
+  container: containerEvidence,
+});
+
+if (policyProblems.length > 0) {
+  refuseToRun([
+    ...policyProblems,
+    REDIS_MODE === 'external'
+      ? 'This run is in EXTERNAL mode because EASEIT_REDIS_CONTAINER is not set. Set ' +
+        'EASEIT_REDIS_BOUNDARY=ci-job-service for a per-job service container, or ' +
+        '=operator-declared if you are vouching for the instance yourself.'
+      : 'This run is in OWNED mode because EASEIT_REDIS_CONTAINER is set. All three of ' +
+        'the container id, its easeit.run label and its published 6379/tcp port must ' +
+        'describe the container this run created.',
+  ]);
+}
+
+/**
+ * Parsed once, by the same parser the policy used.
+ *
+ * Non-null by construction: `redisTestRefusals` above returns a reason for
+ * anything `describeRedisTarget` cannot parse, and we exited on that. Having
+ * the target here is what lets the probe below drop its own fallback port --
+ * an unreachable line, but a 6379 fallback inside the file whose whole point
+ * is refusing 6379 is a trap for the next reader.
+ *
+ * The wording avoids spelling that fallback as an operator on purpose: the
+ * unit suite asserts the construct is absent by searching this file, and a
+ * comment quoting it would satisfy the search.
+ *
+ * Safe to print: host and port only, never the credentials.
+ */
+const REDIS_TARGET = describeRedisTarget(REDIS_URL);
+const REDIS_LABEL = `${REDIS_TARGET.host}:${REDIS_TARGET.port}`;
 
 /* -------------------------------------------------------------------------- */
 /*  Preflight — Redis must actually be there                                  */
@@ -67,14 +293,11 @@ const REDIS_URL = process.env.REDIS_URL ?? loadEnvValue('REDIS_URL') ?? 'redis:/
  * first would hang for the full lease duration instead of reporting the real
  * problem.
  */
-async function redisReachable(url, timeoutMs = 3_000) {
+async function redisReachable({ host, port }, timeoutMs = 3_000) {
   const { createConnection } = await import('node:net');
-  const parsed = new URL(url);
-  const port = Number(parsed.port || 6379);
-  const host = parsed.hostname || '127.0.0.1';
 
   return await new Promise((resolve) => {
-    const socket = createConnection({ host, port });
+    const socket = createConnection({ host, port: Number(port) });
     const finish = (result) => {
       socket.destroy();
       resolve(result);
@@ -85,11 +308,11 @@ async function redisReachable(url, timeoutMs = 3_000) {
   });
 }
 
-if (!(await redisReachable(REDIS_URL))) {
-  console.error(`\nNOT RUN — Redis is not reachable at ${REDIS_URL}.`);
+if (!(await redisReachable(REDIS_TARGET))) {
+  console.error(`\nNOT RUN — Redis is not reachable at ${REDIS_LABEL}.`);
   console.error('This suite is the one part of the outbox that genuinely needs Redis.');
   console.error('Start one and run it again:');
-  console.error('  docker run -d --name easeit-redis -p 6379:6379 redis:7-alpine');
+  console.error('  docker run -d --name easeit-redis-test -p 6380:6379 redis:7-alpine');
   console.error('\nThe PostgreSQL-owned behaviour is covered without Redis by:');
   console.error('  pnpm test:outbox');
   console.error('  pnpm test:outbox:concurrency');
@@ -134,18 +357,10 @@ const { OUTBOX_QUEUE_NAME } = await load('outbox.queue.js');
 
 const prisma = createPrismaClient();
 
-/**
- * The isolation guard, shared with every other destructive suite.
- *
- * Imported here rather than relied upon from the release gate: this file is
- * reachable directly through its own npm script, and run that way the gate's
- * preflight never executes. See `test/support/isolation-guard.mjs`.
- */
-const { assertIsolatedDatabase } = await import('../support/isolation-guard.mjs');
+/* `assertIsolatedDatabase` is imported statically at the top, beside
+ * `redisTestRefusals`: this file is reachable directly, and run that way the
+ * release gate's preflight never executes. */
 const prismaStub = { client: prisma, ping: async () => true };
-
-const RUN = randomUUID().slice(0, 8);
-const KEY = (suffix) => `redis-e2e:${RUN}:${suffix}`;
 
 let failures = 0;
 
@@ -162,10 +377,29 @@ function section(title) {
   console.log(`\n${title}`);
 }
 
+/**
+ * The single configuration source every runtime is built from.
+ *
+ * There are **nine** runtime construction sites in this suite, and each one
+ * builds an `OutboxQueue`, an `OutboxWorker` and a dispatcher from the stub
+ * returned here. Nine runtimes is eighteen BullMQ clients; with the standalone
+ * destroyer `Queue` that is nineteen, and serving `OUTBOX_QUEUE_PREFIX` from
+ * this one place is what gives all of them the same namespace -- there is no
+ * per-runtime path where it could differ.
+ *
+ * (An earlier note here said "ten", counted by grepping the lines that mention
+ * `buildRuntime(` -- which includes its own declaration. The unit suite
+ * asserts nine, and cross-checks it against the nine `runtimes.push(` calls.)
+ *
+ * `redisConnectionFrom` in the application reads both keys and returns them
+ * together, so the Queue and the Worker inside one runtime cannot diverge
+ * either.
+ */
 function configStub(overrides = {}) {
   return {
     get(key, fallback) {
       if (key === 'REDIS_URL') return REDIS_URL;
+      if (key === 'OUTBOX_QUEUE_PREFIX') return QUEUE_PREFIX;
       return key in overrides ? overrides[key] : fallback;
     },
   };
@@ -219,8 +453,22 @@ async function waitForStatus(id, wanted, timeoutMs = 15_000) {
 const runtimes = [];
 
 async function main() {
-  // Before any fixture is created, mutated or deleted.
-  await assertIsolatedDatabase({ prisma, suite: 'the outbox end-to-end suite' });
+  /**
+   * Before any fixture is created, mutated or deleted.
+   *
+   * `disposableOnly` because of `obliterate({ force: true })` below:
+   * `OutboxQueue` sets no BullMQ prefix, so every process on one Redis shares
+   * `bull:outbox:*` and that call destroys all of it. A database paired with
+   * that Redis is not somewhere a developer should keep working state, so
+   * `easeit_test` is refused here even though the ordinary allowlist accepts
+   * it. The Redis port restriction is separate and still enforced by the
+   * preflight.
+   */
+  await assertIsolatedDatabase({
+    prisma,
+    suite: 'the outbox end-to-end suite',
+    disposableOnly: true,
+  });
 
   const property = await prisma.property.findFirst({
     select: { id: true, code: true, name: true },
@@ -229,8 +477,9 @@ async function main() {
   if (property === null) throw new Error('No property found. Run pnpm db:seed first.');
 
   console.log(`Property under test: ${property.code} — ${property.name}`);
-  console.log(`Redis: ${REDIS_URL}`);
-  console.log(`Run namespace: ${RUN}`);
+  console.log(`Redis: ${REDIS_LABEL}`);
+  console.log(`Run namespace: ${RUN} (${identity.source.runId})`);
+  console.log(`Queue prefix:  ${QUEUE_PREFIX} (${identity.source.prefix})`);
 
   const outbox = new OutboxService(prismaStub);
 
@@ -500,7 +749,39 @@ async function main() {
     `published=${published} status=${claimed?.status}`,
   );
 
-  const destroyer = new Queue(OUTBOX_QUEUE_NAME, { connection: { url: REDIS_URL } });
+  /**
+   * NOT YET IMPLEMENTED -- pre-destructive ownership re-verification.
+   *
+   * =========================================================================
+   * The policy above ran at module load. A container can die between then and
+   * now, and its ephemeral host port can be taken over by something else, so
+   * in `owned` mode this is where ownership must be proved again:
+   *
+   *     const again = verifyRedisOwnership({
+   *       exec: createDockerExec(), containerId: REDIS_CONTAINER_ID,
+   *       runId: RUN, url: REDIS_URL,
+   *     });
+   *     if (!again.ok) throw new Error(...);   // obliterate must not run
+   *
+   * Deliberately out of scope for this phase, so it is recorded rather than
+   * claimed. Until it exists, the window between the module-load check and
+   * this call is unguarded -- narrow, but real.
+   * =========================================================================
+   */
+
+  /**
+   * The same prefix the runtimes use, which is the point.
+   *
+   * Without it this `Queue` would default to `bull` and `obliterate` would
+   * destroy `bull:outbox:*` -- the development worker's namespace -- while the
+   * runtimes under test carried on untouched in theirs. The assertion below
+   * would then fail for a reason that has nothing to do with queue loss, and
+   * on a shared Redis it would have destroyed real state to get there.
+   */
+  const destroyer = new Queue(OUTBOX_QUEUE_NAME, {
+    connection: { url: REDIS_URL },
+    prefix: QUEUE_PREFIX,
+  });
   await destroyer.obliterate({ force: true });
   const remaining = await destroyer.getJobCountByTypes('waiting', 'delayed', 'active', 'failed');
   await destroyer.close();

@@ -44,9 +44,11 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 import {
+  blocksPaymentSubmission,
   classifyOutcome,
   conflictFields,
   isFormEditable,
+  mayDispatchPost,
   type PaymentAction as PaymentIntentAction,
   type PaymentEffect,
   type PaymentIntent,
@@ -332,6 +334,10 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
                 bookingCode: reservation.bookingCode,
                 key: crypto.randomUUID(),
                 now: new Date().toISOString(),
+                // Mint into whichever generation boot found live. Every
+                // earlier generation -- including every corrupt one -- is
+                // left exactly where it is.
+                generation: payment.generation,
               });
               setSheet('payment');
             }}
@@ -457,7 +463,7 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
           balanceDueMinor={totals.balanceDueMinor}
           intent={payment.intent}
           dispatch={payment.dispatch}
-          storedUnreadable={payment.storedUnreadable}
+          peek={payment.peek}
           onClose={() => {
             setSheet(null);
           }}
@@ -711,7 +717,7 @@ function PostingSheet({
   balanceDueMinor,
   intent,
   dispatch,
-  storedUnreadable,
+  peek,
   onClose,
   onPosted,
 }: {
@@ -725,8 +731,8 @@ function PostingSheet({
   /** The booking's payment reference, owned by `FolioView`. */
   intent: PaymentIntent | null;
   dispatch: (action: PaymentIntentAction) => PaymentEffect;
-  /** A stored reference for this booking could not be read. */
-  storedUnreadable: boolean;
+  /** The live intent, for the network boundary. Never read during render. */
+  peek: () => PaymentIntent | null;
   onClose: () => void;
   onPosted: (page: FolioPage) => void;
 }) {
@@ -738,6 +744,8 @@ function PostingSheet({
   const [method, setMethod] = useState<PaymentMethod>('CASH');
   const [remark, setRemark] = useState('');
   const [saving, setSaving] = useState(false);
+  /** Step 2 of quarantine recovery. Resets on every mount, deliberately. */
+  const [riskAccepted, setRiskAccepted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   /**
@@ -760,7 +768,25 @@ function PostingSheet({
   const unresolved = kind === 'payment' && intent !== null && intent.status === 'UNRESOLVED';
   const conflicted = kind === 'payment' && intent !== null && intent.status === 'CONFLICTED';
   const reconciling = kind === 'payment' && intent !== null && intent.status === 'RECONCILING';
+  const quarantined = kind === 'payment' && intent !== null && intent.status === 'QUARANTINED';
   const frozen = kind === 'payment' && !isFormEditable(intent);
+  /**
+   * The single authority on whether a payment may be submitted.
+   *
+   * =========================================================================
+   * One value, consulted by the button, the handler and the dispatch path.
+   *
+   * The three used to disagree. `frozen` was derived from `isFormEditable`,
+   * which returned true for a null intent — so after a corrupt slot the form
+   * was editable, the button rendered, and a payment went out under a fresh
+   * key. `blocksNewPayment` read like the guard and was called nowhere.
+   *
+   * Now every path asks `blocksPaymentSubmission`, which allows exactly one
+   * state: a live DRAFT. Null, QUARANTINED, IN_FLIGHT, UNRESOLVED,
+   * RECONCILING, CONFLICTED and anything added later are all refused.
+   * =========================================================================
+   */
+  const paymentBlocked = kind === 'payment' && blocksPaymentSubmission(intent);
   const shown = intent?.snapshot ?? null;
 
   // Rounded once, at the boundary, into integer minor units — never carried
@@ -791,7 +817,51 @@ function PostingSheet({
    * ===========================================================================
    */
   async function sendPayment(effect: PaymentEffect): Promise<void> {
+    /**
+     * The reference could not be stored, so nothing was sent — say so.
+     *
+     * This is the visible half of the durability rule. The reducer withheld
+     * the request and kept the key; this tells the clerk the money was **not**
+     * taken and what to do about it, which is the one thing they cannot work
+     * out from a form that simply did nothing.
+     */
+    if (effect.type === 'blocked') {
+      /**
+       * Nothing is set here on purpose.
+       *
+       * The reducer already recorded `lastFailure`, and the notice below
+       * renders from that in **every** state — including UNRESOLVED, where
+       * the generic error banner is suppressed. Calling `setError` as well
+       * printed the same sentence twice, one above the other.
+       */
+      return;
+    }
     if (effect.type !== 'post') return;
+
+    /**
+     * The one gate before the network, and it asks the **live** intent.
+     *
+     * =====================================================================
+     * This used to read the `intent` **prop** — the value from the last
+     * render — and that was a defect a browser found. On the confirm path
+     * the rendered intent is always UNRESOLVED, so the check refused every
+     * Confirm: the reducer had accepted it, spent the submission token and
+     * persisted IN_FLIGHT, and then the request was dropped on the floor
+     * with no outcome ever dispatched. The only way out of an unresolved
+     * payment could not send.
+     *
+     * `peek()` returns the ref the reducer actually writes, so the question
+     * is now asked of the authority. `mayDispatchPost` holds the rule, in a
+     * module the unit suite can reach — the previous version was wrong in
+     * production while every test was green, because nothing could test it.
+     *
+     * Durability is still required, and the check is strictly tighter than
+     * before: DRAFT no longer passes, and the live key must match the
+     * effect's, so a late effect from an earlier submission cannot ride a
+     * newer intent.
+     * =====================================================================
+     */
+    if (!mayDispatchPost(effect, peek())) return;
     setSaving(true);
     setError(null);
     try {
@@ -834,8 +904,22 @@ function PostingSheet({
     if (!valid || saving) return;
 
     if (kind === 'payment') {
-      // Frozen states do not submit form values; they confirm or reconcile.
-      if (frozen) return;
+      /**
+       * The outer guard. Not the authoritative one — see below.
+       *
+       * `intent` is a prop, so this reads the value from the last render, not
+       * the hook's live `held.current`. It is still worth asking here rather
+       * than reusing the `paymentBlocked` constant the button was rendered
+       * from, because it is one step fresher and costs nothing.
+       *
+       * The authority is `reducePaymentIntent`, which reduces against the ref:
+       * `SUBMIT` is rejected unless that ref is a DRAFT, which is what
+       * actually makes a duplicate click, a stale handler and a second
+       * in-flight submission impossible. An earlier comment here claimed this
+       * line read the live intent; it does not, and an audit was right to say
+       * so.
+       */
+      if (blocksPaymentSubmission(intent)) return;
       const snapshot: PaymentSnapshot = {
         folioId,
         amountMinor,
@@ -1019,17 +1103,78 @@ function PostingSheet({
           />
         ) : null}
 
-        {kind === 'payment' && storedUnreadable && !unresolved && !conflicted ? (
+        {quarantined ? (
           <div
             role="alert"
-            className="flex flex-col gap-1 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] px-3 py-2.5 text-[11px] leading-relaxed text-amber-200"
+            className="flex flex-col gap-2 rounded-lg border border-rose-500/30 bg-rose-500/[0.07] px-3 py-2.5 text-[11px] leading-relaxed text-rose-200"
           >
             <span className="font-semibold">
-              A previous payment reference for this booking could not be read.
+              A payment reference for this booking could not be read. An earlier payment attempt
+              may have succeeded, but we cannot verify it using the missing reference.
             </span>
-            <span className="text-amber-300/80">
-              Something was saved in this browser and is unreadable, so we cannot tell whether that
-              payment went through. <strong>Check the ledger before taking another payment.</strong>
+            <span className="text-rose-300/80">
+              {intent?.quarantine === 'unidentified'
+                ? 'The saved value is unreadable and does not identify a booking, so we have to treat it as this one.'
+                : 'The saved value names this booking but is unreadable.'}{' '}
+              No payment can be taken here until you check the ledger.
+            </span>
+
+            <ol className="flex flex-col gap-2 text-rose-300/90">
+              <li className="flex flex-col gap-1">
+                <span className="font-semibold text-rose-200">
+                  1. Review the folio ledger
+                </span>
+                <Link
+                  href={`/folio/${encodeURIComponent(bookingCode)}?hotelId=${encodeURIComponent(hotelId)}`}
+                  onClick={() => {
+                    // Records the fact, then lets the navigation happen. The
+                    // reducer refuses to acknowledge until this has run.
+                    dispatch({ type: 'OPEN_LEDGER', now: new Date().toISOString() });
+                  }}
+                  className="self-start rounded-lg border border-rose-400/30 px-3 py-1.5 font-semibold text-rose-100"
+                >
+                  Open the ledger
+                </Link>
+                {intent?.ledgerOpenedAt !== null && intent?.ledgerOpenedAt !== undefined ? (
+                  <span className="text-rose-300/70">
+                    Opened at {formatInstant(intent.ledgerOpenedAt)}
+                  </span>
+                ) : null}
+              </li>
+
+              <li className="flex flex-col gap-1.5">
+                <span className="font-semibold text-rose-200">2. Accept the risk</span>
+                <label className="flex items-start gap-2 text-rose-300/90">
+                  <input
+                    type="checkbox"
+                    checked={riskAccepted}
+                    disabled={intent?.ledgerOpenedAt === null || saving}
+                    onChange={(event) => {
+                      setRiskAccepted(event.target.checked);
+                    }}
+                    className="mt-0.5 size-3.5 shrink-0 accent-rose-400 disabled:opacity-40"
+                  />
+                  <span>
+                    I have reviewed the folio ledger and understand that an earlier payment attempt
+                    may still have succeeded. I accept the risk of a possible duplicate collection.
+                  </span>
+                </label>
+              </li>
+            </ol>
+
+            <button
+              type="button"
+              disabled={intent?.ledgerOpenedAt === null || !riskAccepted || saving}
+              onClick={() => {
+                dispatch({ type: 'ACKNOWLEDGE_UNREADABLE', now: new Date().toISOString() });
+              }}
+              className="self-start rounded-lg bg-rose-400 px-3 py-1.5 text-[11px] font-semibold text-rose-950 transition-colors hover:bg-rose-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Start a new payment
+            </button>
+
+            <span className="text-rose-300/60 break-all">
+              The unreadable value is kept untouched for support. Booking {bookingCode}.
             </span>
           </div>
         ) : null}
@@ -1043,8 +1188,17 @@ function PostingSheet({
             {shown !== null ? (
               <span className="tabular text-amber-300/90">
                 {money(shown.amountMinor, currency)} · {PAYMENT_METHOD_LABELS[shown.method]}
+                {/*
+                  `attempts` counts how many times the clerk asked to send —
+                  every accepted SUBMIT and CONFIRM — which is NOT the same
+                  as the number of requests that reached the server. One that
+                  failed the durability check incremented this and sent
+                  nothing. So the wording says "tries", not "attempts sent",
+                  and the sentence below is what tells them what is actually
+                  known about the money.
+                */}
                 {intent?.attempts !== undefined && intent.attempts > 1
-                  ? ` · ${String(intent.attempts)} attempts`
+                  ? ` · ${String(intent.attempts)} tries from this terminal`
                   : null}
               </span>
             ) : null}
@@ -1159,6 +1313,18 @@ function PostingSheet({
           </div>
         ) : null}
 
+        {/* Shown in every state, unlike the generic error banner below: a
+            confirm that was refused for durability lands in UNRESOLVED, and
+            that is exactly the case the clerk most needs told about. */}
+        {intent?.lastFailure?.code === 'STORAGE_NOT_DURABLE' ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 text-[11px] leading-relaxed text-amber-200"
+          >
+            {intent.lastFailure.message}
+          </p>
+        ) : null}
+
         {error !== null && !unresolved && !conflicted && !reconciling ? (
           <p className="rounded-lg border border-rose-500/25 bg-rose-500/[0.07] px-3 py-2 text-[11px] text-rose-200">
             {error}
@@ -1178,7 +1344,7 @@ function PostingSheet({
               Check again, both of which live in the panel above. A Post
               button here would invite exactly the second payment this
               feature exists to prevent. */}
-          {frozen ? null : (
+          {paymentBlocked || frozen ? null : (
             <button
               type="button"
               disabled={!valid || saving}

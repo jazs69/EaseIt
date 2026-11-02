@@ -46,25 +46,30 @@
 // node_modules rather than the root's under pnpm, so it is resolved by path.
 await import(new URL('../../apps/api/node_modules/reflect-metadata/Reflect.js', import.meta.url));
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 
-/** Same resolution as the check-in suite: the repo's `.env`, then the root one. */
-function loadDatabaseEnv() {
-  for (const relative of ['../../packages/database/.env', '../../.env']) {
-    try {
-      const text = readFileSync(new URL(relative, import.meta.url), 'utf8');
-      const match = /^DATABASE_URL\s*=\s*"?([^"\r\n]+)"?/m.exec(text);
-      if (match?.[1]) return match[1];
-    } catch {
-      // Next candidate. A missing file here is ordinary, not an error.
-    }
-  }
-  return null;
-}
-
-process.env.DATABASE_URL ??= loadDatabaseEnv() ?? '';
+/**
+ * The test database is **required**, and never inferred.
+ *
+ * ===========================================================================
+ * This used to fall back to `packages/database/.env`, then the root one --
+ * both of which name the shared development database on a developer's
+ * machine. The isolation guard below refuses it, so this was never a route to
+ * real data; but a destructive suite whose documented default is the
+ * development database is a trap regardless of what catches it, and "the
+ * guard will stop you" is the wrong first line of defence.
+ *
+ * `gate:integration` resolves, validates and exports this before spawning
+ * anything, so the supported path supplies it. Anything else stops here,
+ * before a client is created or a connection opened.
+ * ===========================================================================
+ */
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set and no .env was found. Run pnpm db:seed first.');
+  console.error(
+    'DATABASE_URL is not set.\n' +
+      'There is no default and no .env lookup: this suite creates, mutates and\n' +
+      'deletes rows, so it will not guess a target. Run it through\n' +
+      '`pnpm gate:integration`, or set it explicitly to a disposable test database.',
+  );
   process.exit(1);
 }
 
