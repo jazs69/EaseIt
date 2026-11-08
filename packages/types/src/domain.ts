@@ -413,6 +413,16 @@ export const ErrorCode = {
   NOT_FOUND: 'NOT_FOUND',
   CONFLICT: 'CONFLICT',
   ROOM_UNAVAILABLE: 'ROOM_UNAVAILABLE',
+  /**
+   * A night has no `inventory_day` row, so it cannot be sold.
+   *
+   * Distinct from `ROOM_UNAVAILABLE` on purpose: that one means the rooms are
+   * taken, this one means the calendar does not reach that far. The remedies
+   * are opposite — "try other dates" versus "extend the calendar" — and
+   * conflating them had a clerk being told the hotel was full when it had
+   * merely run out of configured nights.
+   */
+  INVENTORY_NOT_CONFIGURED: 'INVENTORY_NOT_CONFIGURED',
   INVALID_STATE_TRANSITION: 'INVALID_STATE_TRANSITION',
   FOLIO_ALREADY_CLOSED: 'FOLIO_ALREADY_CLOSED',
   /**

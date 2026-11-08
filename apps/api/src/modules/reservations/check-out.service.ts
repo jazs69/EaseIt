@@ -60,6 +60,7 @@ import {
 import { isLockTimeout, ROW_LOCK_TIMEOUT_MS, sqlState } from '../../common/errors/sql-state.js';
 import { ClockService } from '../platform/clock.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { checkOutRefusal } from './reservation.state.js';
 
 /** Room states a departing guest can leave behind, by cleanliness. */
@@ -93,8 +94,11 @@ export class CheckOutService {
     try {
       return await this.prisma.client.$transaction(
         async (tx) => {
-          // Row-level security backstop (section 3.2): the ORM extension is the
-          // primary control, and this is what saves us if a raw query below
+          // Stamps the property on the transaction-local session. NOT a security
+          // boundary today: no migration enables row-level security, so nothing
+          // reads it (section 3.2 describes RLS as a backstop; it is unimplemented).
+          // The real control is the explicit propertyId in every predicate below,
+          // including where a raw query
           // ever forgets.
           await tx.$executeRaw`SELECT set_config('app.current_property_id', ${propertyId}, true)`;
 
@@ -475,10 +479,8 @@ export class CheckOutService {
    * here.
    */
   private async authorise(userId: string, codeOrId: string): Promise<{ id: string }> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(codeOrId);
-
     const grants = await this.prisma.client.userPropertyRole.findMany({
-      where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
         role: { select: { key: true } },
         property: { select: { id: true } },

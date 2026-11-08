@@ -41,6 +41,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  Permission,
   ReservationStatus,
   type CreateReservationCommand,
   type CreatedReservation,
@@ -54,12 +55,15 @@ import { Prisma } from '@repo/database';
 import {
   DomainError,
   EntityNotFoundError,
+  InventoryNotConfiguredError,
   RoomUnavailableError,
   TenantScopeViolationError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { isRetryableSqlState, sqlState } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
+import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { PropertyTaxService } from '../properties/property-tax.service.js';
 import { postCheckIn } from './check-in-posting.js';
 import { quoteStay, nightsBetween, stayDates } from './reservation-pricing.js';
@@ -116,7 +120,11 @@ export class CreateReservationService {
     hotelId: string,
     request: ReservationQuoteRequest,
   ): Promise<ReservationQuote> {
-    const property = await this.resolveProperty(userId, hotelId);
+    const property = await this.resolveProperty(
+      userId,
+      hotelId,
+      Permission.RESERVATIONS_CREATE,
+    );
     const roomType = await this.loadRoomType(property.id, request.roomTypeId);
 
     this.assertStayWindow(request.arrivalDate, request.departureDate);
@@ -142,7 +150,11 @@ export class CreateReservationService {
     hotelId: string,
     command: CreateReservationCommand,
   ): Promise<CreatedReservation> {
-    const property = await this.resolveProperty(userId, hotelId);
+    const property = await this.resolveProperty(
+      userId,
+      hotelId,
+      Permission.RESERVATIONS_CREATE,
+    );
     const roomType = await this.loadRoomType(property.id, command.roomTypeId);
 
     this.assertStayWindow(command.arrivalDate, command.departureDate);
@@ -243,8 +255,11 @@ export class CreateReservationService {
 
     return this.prisma.client.$transaction(
       async (tx) => {
-        // The RLS backstop. The Prisma extension is the primary tenant
-        // control; this is what saves us if someone later writes a raw query
+        // Stamps the property on the transaction-local session. NOT a security
+        // boundary today: no migration enables row-level security, so nothing
+        // reads it (section 3.2 describes RLS as a backstop; it is unimplemented).
+        // The real control is the explicit propertyId in every predicate,
+        // including where a raw query
         // and forgets (section 3.2).
         await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
 
@@ -271,14 +286,24 @@ export class CreateReservationService {
           FOR UPDATE
         `;
 
-        // A night with no inventory row cannot be sold. That is a real state —
-        // the calendar simply does not extend that far — and it must fail
-        // rather than quietly booking a night nothing is tracking.
+        /**
+         * A night with no inventory row cannot be sold. That is a real state —
+         * the calendar simply does not extend that far — and it must fail
+         * rather than quietly booking a night nothing is tracking.
+         *
+         * `InventoryNotConfiguredError`, not `RoomUnavailableError`. Both are
+         * 409, but they mean opposite things to the person reading them: one
+         * says the rooms are sold, this says the calendar ends. Reporting a
+         * calendar gap as "no rooms available" told a clerk the hotel was full
+         * when nothing about availability had been consulted, and sent them
+         * hunting for other dates instead of extending the calendar.
+         */
         if (locked.length !== dates.length) {
-          throw new RoomUnavailableError({
-            reason: 'No inventory is configured for every night of this stay.',
+          throw new InventoryNotConfiguredError({
             nightsRequested: dates.length,
             nightsConfigured: locked.length,
+            firstNight: dates[0],
+            lastNight: dates[dates.length - 1],
           });
         }
 
@@ -674,9 +699,19 @@ export class CreateReservationService {
     }
   }
 
+  /**
+   * Resolves the property, then checks the caller may sell here.
+   *
+   * `findMany` because several roles at one property union into one authority
+   * (CLAUDE.md section 3.2's allowlist is per grant row, not per property).
+   * The tenancy predicate is untouched: an identifier the caller holds no
+   * grant for still comes back empty and is reported not-found, so only a
+   * caller who has already proven a grant can see the 403.
+   */
   private async resolveProperty(
     userId: string,
     codeOrId: string,
+    required: Permission,
   ): Promise<{
     id: string;
     code: string;
@@ -684,30 +719,28 @@ export class CreateReservationService {
     businessDate: Date;
     taxRatePercent: Prisma.Decimal | null;
   }> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
-    const grant = await this.prisma.client.userPropertyRole.findFirst({
-      where: {
-        userId,
-        property: isUuid ? { id: codeOrId } : { code: codeOrId },
-      },
+    const grants = await this.prisma.client.userPropertyRole.findMany({
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
+        role: { select: { key: true } },
         property: {
           select: {
-          id: true,
-          code: true,
-          currency: true,
-          businessDate: true,
-          taxRatePercent: true,
-        },
+            id: true,
+            code: true,
+            currency: true,
+            businessDate: true,
+            taxRatePercent: true,
+          },
         },
       },
     });
 
-    if (grant === null) throw new TenantScopeViolationError('Property');
-    return grant.property;
+    const first = grants[0];
+    if (first === undefined) throw new TenantScopeViolationError('Property');
+
+    requirePermissionFromGrants(grants, required);
+
+    return first.property;
   }
 
   private async loadRoomType(

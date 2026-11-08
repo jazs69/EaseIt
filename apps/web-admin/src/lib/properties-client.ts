@@ -11,6 +11,8 @@
 import {
   cancelReservationResultSchema,
   type CancelReservationCommand,
+  type ExtendInventoryHorizonResponse,
+  type InventoryHorizon,
   type CancelReservationResult,
   checkInPreflightSchema,
   folioPageSchema,
@@ -23,6 +25,8 @@ import {
   groupPerformanceSchema,
   groupPropertiesResponseSchema,
   companySummarySchema,
+  extendInventoryHorizonResponseSchema,
+  inventoryHorizonSchema,
   createdReservationSchema,
   gstinLookupSchema,
   postalLookupSchema,
@@ -760,7 +764,11 @@ export function lookupGstin(
   signal?: AbortSignal,
 ): Promise<GstinLookup> {
   return apiFetch(
-    `/properties/${encodeURIComponent(hotelId)}/lookups/gstin?gstin=${encodeURIComponent(gstin)}`,
+    // `gst/lookup`, not `lookups/gstin`: this path did not match the route the
+    // API maps (`@Get(':hotelId/gst/lookup')`), so every call 404'd and the
+    // GSTIN field silently fell back to manual entry. The sibling
+    // `lookups/postal-code` below is correct; only this one was wrong.
+    `/properties/${encodeURIComponent(hotelId)}/gst/lookup?gstin=${encodeURIComponent(gstin)}`,
     gstinLookupSchema,
     { ...(signal === undefined ? {} : { signal }) },
   );
@@ -782,6 +790,57 @@ export function lookupPostalCode(
     `/properties/${encodeURIComponent(hotelId)}/lookups/postal-code?postalCode=${encodeURIComponent(postalCode)}`,
     postalLookupSchema,
     { ...(signal === undefined ? {} : { signal }) },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Inventory horizon                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How far ahead this property can sell.
+ *
+ * Returns two horizons. `lastConfiguredDate` is the furthest inventory row
+ * that exists; `fullyConfiguredThrough` is the last date through which every
+ * room type has every date. They differ when there is a gap, and the second is
+ * the one that governs what can actually be booked -- a stay spanning a hole
+ * is refused even when the maximum is far in the future.
+ */
+export function fetchInventoryHorizon(
+  hotelId: string,
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<InventoryHorizon> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/inventory/horizon`,
+    inventoryHorizonSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/**
+ * Extends the availability calendar through `throughDate`, inclusive.
+ *
+ * Idempotent: calling it twice creates nothing the second time. The server
+ * re-walks the range from today rather than resuming from a stored maximum, so
+ * a repeat still fills a gap an earlier run left behind. Existing rows are
+ * never updated or deleted, so live sold/blocked figures are untouched.
+ */
+export function extendInventoryHorizon(
+  hotelId: string,
+  throughDate: string,
+  signal?: AbortSignal,
+): Promise<ExtendInventoryHorizonResponse> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/inventory/horizon`,
+    extendInventoryHorizonResponseSchema,
+    {
+      method: 'POST',
+      body: { throughDate },
+      ...(signal === undefined ? {} : { signal }),
+    },
   );
 }
 

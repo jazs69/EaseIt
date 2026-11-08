@@ -8,11 +8,12 @@
  */
 
 import { Injectable } from '@nestjs/common';
-import { BookingSource, OPERABLE_PROPERTY_STATUSES, ReservationStatus } from '@repo/types';
+import { BookingSource, ReservationStatus } from '@repo/types';
 import type { MasterReportDimension, MealPlan, Role } from '@repo/types';
 import { Prisma } from '@repo/database';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 
 /**
  * Statuses whose room-nights count as sold — the same set
@@ -212,18 +213,8 @@ export class ReportsRepository {
     userId: string,
     codeOrId: string,
   ): Promise<{ property: ReportPropertyRow; roles: Role[] } | null> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
     const rows = await this.prisma.client.userPropertyRole.findMany({
-      where: {
-        userId,
-        property: {
-          status: { in: [...OPERABLE_PROPERTY_STATUSES] },
-          ...(isUuid ? { id: codeOrId } : { code: codeOrId }),
-        },
-      },
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: true }),
       select: {
         role: { select: { key: true } },
         property: {

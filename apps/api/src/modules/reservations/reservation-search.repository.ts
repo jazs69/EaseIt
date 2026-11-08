@@ -19,10 +19,17 @@
  */
 
 import { Injectable } from '@nestjs/common';
-import { OPERABLE_PROPERTY_STATUSES } from '@repo/types';
 import type { BookingSource, MealPlan, ReservationStatus } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
+
+/** A resolved property plus the grant rows that proved it. See the dashboard
+ * repository for why this is `findMany`. */
+export interface GrantedSearchProperty {
+  property: SearchPropertyRow;
+  grants: readonly { readonly role: { readonly key: string | null } }[];
+}
 
 export interface SearchPropertyRow {
   id: string;
@@ -68,25 +75,22 @@ export class ReservationSearchRepository {
   async findGrantedProperty(
     userId: string,
     codeOrId: string,
-  ): Promise<SearchPropertyRow | null> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
-    const grant = await this.prisma.client.userPropertyRole.findFirst({
-      where: {
-        userId,
-        property: {
-          status: { in: [...OPERABLE_PROPERTY_STATUSES] },
-          ...(isUuid ? { id: codeOrId } : { code: codeOrId }),
-        },
-      },
+  ): Promise<GrantedSearchProperty | null> {
+    const grants = await this.prisma.client.userPropertyRole.findMany({
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: true }),
       select: {
+        role: { select: { key: true } },
         property: { select: { id: true, code: true, name: true, currency: true } },
       },
     });
 
-    return grant?.property ?? null;
+    const first = grants[0];
+    if (first === undefined) return null;
+
+    // The permission decision is the service's; a repository holds no
+    // business rules (CLAUDE.md section 5). All rows are the same property,
+    // so these are its grants and the caller's authority is their union.
+    return { property: first.property, grants };
   }
 
   /**

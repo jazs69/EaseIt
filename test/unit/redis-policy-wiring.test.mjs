@@ -25,6 +25,7 @@
 import { readFileSync } from 'node:fs';
 
 import { verifyRedisOwnership } from '../../scripts/lib/redis-container.mjs';
+import { destructiveRefusals } from '../../scripts/lib/redis-destructive-guard.mjs';
 import { REDIS_BOUNDARIES, redisModeFrom, redisTestRefusals } from '../support/isolation-guard.mjs';
 
 let failures = 0;
@@ -400,11 +401,30 @@ console.log('\nThe suite evaluates the policy before any Redis I/O (source inspe
     /const REDIS_BOUNDARY = process\.env\.EASEIT_REDIS_BOUNDARY;/.test(SUITE_CODE) &&
       /boundary: REDIS_BOUNDARY,/.test(SUITE_CODE),
   );
+  /**
+   * Inside the branch, not merely before some occurrence of the call.
+   *
+   * The first version compared byte offsets against `verifyRedisOwnership({`
+   * -- which, once the shared `inspectOwnership` closure was introduced, sits
+   * *above* the branch. The offsets then said the opposite of the truth.
+   * Reading the branch body says what was meant.
+   */
+  const startupOwnedBranch =
+    /if \(REDIS_MODE === 'owned'\) \{[\s\S]*?\n\}/.exec(SUITE_CODE)?.[0] ?? '';
   check(
     'ownership evidence is gathered only in owned mode',
-    /if \(REDIS_MODE === 'owned'\) \{/.test(SUITE_CODE) &&
-      at("if (REDIS_MODE === 'owned') {") < at('verifyRedisOwnership({'),
+    startupOwnedBranch.includes('inspectOwnership({') &&
+      startupOwnedBranch.includes('containerId: REDIS_CONTAINER_ID,'),
     'so an external run needs no Docker',
+  );
+  check(
+    'and no inspection happens outside a mode guard',
+    (() => {
+      const calls = (SUITE_CODE.match(/inspectOwnership\(\{/g) ?? []).length;
+      const inBranch = (startupOwnedBranch.match(/inspectOwnership\(\{/g) ?? []).length;
+      return calls === 1 && inBranch === 1;
+    })(),
+    'the only direct call is the start-up one; the gate is handed the closure',
   );
   check(
     'and that evidence is what the policy receives',
@@ -484,26 +504,646 @@ console.log('\nThe suite evaluates the policy before any Redis I/O (source inspe
     'the only socket in this file is the reachability probe',
   );
 
-  /* ---- pre-destructive re-verification: recorded, NOT implemented ---- */
-  const beforeObliterate = SUITE.slice(0, SUITE.indexOf('.obliterate('));
+  /**
+   * Pre-destructive re-verification is implemented, not deferred.
+   *
+   * The checks that used to assert a `NOT YET IMPLEMENTED` note are gone,
+   * because the note is gone: keeping them would assert the absence of the
+   * thing just built. The behaviour is covered by the injected-fake cases
+   * above and the call-site checks below.
+   */
   check(
-    'pre-destructive re-verification is recorded as an open requirement',
-    SUITE.includes('NOT YET IMPLEMENTED -- pre-destructive ownership re-verification'),
-    'recorded rather than claimed',
+    'no deferral note remains where the call now lives',
+    !SUITE.includes('NOT YET IMPLEMENTED'),
+    'the requirement is met, so the reminder is retired',
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  The pre-destructive gate                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `destructiveRefusals` -- the check immediately before `obliterate`.
+ *
+ * ===========================================================================
+ * The start-up policy proved the target was safe THEN. Between then and the
+ * destructive call the suite creates fixtures, starts and kills workers, and
+ * restarts runtimes. An owned container can die in that window and its
+ * ephemeral host port be taken over by another process, which leaves the URL
+ * addressing a stranger while the start-up evidence still reads as valid.
+ *
+ * Every dependency is injected, so these cases run with no daemon, no socket
+ * and no `process.env`. The two properties worth stating plainly:
+ *
+ *   * a **failed** re-verification must prevent `obliterate`, and
+ *   * a **different** container is a refusal, never a new target.
+ * ===========================================================================
+ */
+console.log('\nThe pre-destructive gate (pure, injected fakes).');
+{
+  const freshInspection = (overrides = {}) => ({
+    ok: true,
+    reasons: [],
+    inspection: { id: CID, running: true, label: RUN, hostPort: '49176', ...overrides },
+  });
+
+  /** Records every call, so "it was not called" is assertable. */
+  function spyVerify(reply = freshInspection()) {
+    const calls = [];
+    const verify = (args) => {
+      calls.push(args);
+      return typeof reply === 'function' ? reply(args) : reply;
+    };
+    verify.calls = calls;
+    return verify;
+  }
+
+  const ownedInput = (overrides = {}) => ({
+    mode: 'owned',
+    url: 'redis://127.0.0.1:49176',
+    prefix: PREFIX,
+    runId: RUN,
+    containerId: CID,
+    verifyOwnership: spyVerify(),
+    ...overrides,
+  });
+
+  const externalInput = (overrides = {}) => ({
+    mode: 'external',
+    url: 'redis://127.0.0.1:6380',
+    prefix: PREFIX,
+    runId: RUN,
+    boundary: 'ci-job-service',
+    ...overrides,
+  });
+
+  /* ---- the happy paths ---- */
+  {
+    const verify = spyVerify();
+    const verdict = destructiveRefusals(ownedInput({ verifyOwnership: verify }));
+    check(
+      'successful re-verification permits the destructive call',
+      verdict.ok === true,
+      verdict.reasons?.join(' | '),
+    );
+    check(
+      'and it is FRESH evidence, not the start-up reading',
+      verify.calls.length === 1 &&
+        verify.calls[0].containerId === CID &&
+        verify.calls[0].runId === RUN &&
+        verify.calls[0].url === 'redis://127.0.0.1:49176',
+      're-inspected with the captured id',
+    );
+    check(
+      'the returned evidence is the freshly inspected triple',
+      verdict.evidence.id === CID &&
+        verdict.evidence.label === RUN &&
+        verdict.evidence.mappedPort === '49176',
+    );
+  }
+
+  /* ---- external: no Docker, no pretence ---- */
+  {
+    const verify = spyVerify();
+    const verdict = destructiveRefusals(externalInput({ verifyOwnership: verify }));
+    check('external mode permits the destructive call', verdict.ok === true);
+    check(
+      'external mode requires NO Docker ownership evidence',
+      verify.calls.length === 0,
+      'nobody claims to own it; verifying would be theatre',
+    );
+    check('and it reports no container evidence', verdict.evidence === undefined);
+    check(
+      'external works with no verifier supplied at all',
+      destructiveRefusals(externalInput({ verifyOwnership: undefined })).ok === true,
+    );
+    check(
+      'but external still re-checks the target and the prefix',
+      !destructiveRefusals(externalInput({ url: 'redis://127.0.0.1:6379' })).ok &&
+        !destructiveRefusals(externalInput({ url: 'redis://127.0.0.1:49176' })).ok &&
+        !destructiveRefusals(externalInput({ url: 'redis://127.0.0.1:6380/7' })).ok &&
+        !destructiveRefusals(externalInput({ prefix: 'bull' })).ok &&
+        !destructiveRefusals(externalInput({ boundary: undefined })).ok,
+      'the blast radius is the prefix, so it is re-asserted',
+    );
+  }
+
+  /* ---- a failed re-verification stops obliterate ---- */
+  {
+    const failed = destructiveRefusals(
+      ownedInput({
+        verifyOwnership: spyVerify({ ok: false, reasons: ['container is not running'] }),
+      }),
+    );
+    check('a failed re-verification refuses', failed.ok === false);
+    check(
+      'and says the earlier proof no longer holds',
+      failed.reasons.some((reason) => reason.includes('cannot be confirmed now')),
+      failed.reasons[0],
+    );
+    check(
+      'the underlying reason is preserved',
+      failed.reasons.some((reason) => reason.includes('not running')),
+    );
+    check(
+      'a verifier returning nothing usable refuses',
+      destructiveRefusals(ownedInput({ verifyOwnership: () => undefined })).ok === false &&
+        destructiveRefusals(ownedInput({ verifyOwnership: () => null })).ok === false,
+    );
+    check(
+      'ok without an inspection refuses',
+      destructiveRefusals(ownedInput({ verifyOwnership: () => ({ ok: true }) })).ok === false,
+      'success must come with evidence',
+    );
+    check(
+      'owned mode with no verifier at all refuses',
+      destructiveRefusals(ownedInput({ verifyOwnership: undefined })).ok === false,
+      'rather than reusing start-up evidence',
+    );
+    check(
+      'owned mode with no captured container id refuses',
+      destructiveRefusals(ownedInput({ containerId: undefined })).ok === false &&
+        destructiveRefusals(ownedInput({ containerId: '' })).ok === false,
+    );
+  }
+
+  /* ---- a changed container is a refusal, never a new target ---- */
+  {
+    const swapped = destructiveRefusals(
+      ownedInput({ verifyOwnership: spyVerify(freshInspection({ id: 'd'.repeat(64) })) }),
+    );
+    check('a changed container id is refused', swapped.ok === false);
+    check(
+      'and is not adopted as a replacement',
+      swapped.reasons.some((reason) => reason.includes('not a new target')) &&
+        swapped.evidence === undefined,
+      'accepting one would make ownership a tautology',
+    );
+
+    const relabelled = destructiveRefusals(
+      ownedInput({ verifyOwnership: spyVerify(freshInspection({ label: OTHER_RUN })) }),
+    );
+    check('a changed run label is refused', relabelled.ok === false);
+
+    const remapped = destructiveRefusals(
+      ownedInput({ verifyOwnership: spyVerify(freshInspection({ hostPort: '6380' })) }),
+    );
+    check(
+      'a changed mapped port is refused',
+      remapped.ok === false,
+      'the container died and something else took the port',
+    );
+
+    const reprefixed = destructiveRefusals(ownedInput({ prefix: `bull:test:${OTHER_RUN}` }));
+    check('a prefix belonging to another run is refused', reprefixed.ok === false);
+  }
+
+  /* ---- no fallback to bull, in either mode ---- */
+  for (const mode of ['owned', 'external']) {
+    const input = mode === 'owned' ? ownedInput : externalInput;
+    for (const prefix of ['bull', undefined, '   ', `bull${RUN}`, 'bull:test:']) {
+      check(
+        `${mode} refuses prefix ${JSON.stringify(prefix)} rather than defaulting`,
+        destructiveRefusals(input({ prefix })).ok === false,
+      );
+    }
+  }
+  check(
+    'and a refusal never hands back a usable prefix or evidence',
+    (() => {
+      const verdict = destructiveRefusals(ownedInput({ prefix: 'bull' }));
+      return verdict.ok === false && verdict.evidence === undefined && verdict.prefix === undefined;
+    })(),
+  );
+
+  /* ---- it delegates to the composed policy rather than reimplementing ---- */
+  {
+    let seen = null;
+    const verdict = destructiveRefusals(
+      ownedInput({
+        testRefusals: (input) => {
+          seen = input;
+          return [];
+        },
+      }),
+    );
+    check('the composed policy is what decides', verdict.ok === true && seen !== null);
+    check(
+      'and it receives the fresh evidence, the prefix and the run id',
+      seen.mode === 'owned' &&
+        seen.prefix === PREFIX &&
+        seen.runId === RUN &&
+        seen.container.id === CID &&
+        seen.container.mappedPort === '49176',
+      'one policy, two moments',
+    );
+  }
+
+  /* ---- invalid mode ---- */
+  for (const mode of [undefined, null, '', 'development', 'OWNED']) {
+    check(
+      `mode ${JSON.stringify(mode)} refuses at the destructive gate too`,
+      destructiveRefusals({ ...externalInput(), mode }).ok === false,
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  The suite calls it, immediately before obliterate                         */
+/* -------------------------------------------------------------------------- */
+
+console.log('\nThe suite re-verifies before obliterate (source inspection).');
+{
+  const at = (needle) => SUITE_CODE.indexOf(needle);
+
+  check(
+    'the suite defines the pre-destructive gate',
+    /function assertStillIsolated\(operation\) \{/.test(SUITE_CODE) &&
+      /const verdict = destructiveRefusals\(\{/.test(SUITE_CODE),
   );
   check(
-    'and it is honestly reported as absent',
-    (
-      SUITE_CODE.slice(0, SUITE_CODE.indexOf('.obliterate(')).match(/verifyRedisOwnership\(\{/g) ??
-      []
-    ).length === 1,
-    'exactly one call, at module load; none immediately before obliterate',
+    'it throws on refusal, so obliterate is never reached',
+    (() => {
+      const start = SUITE_CODE.indexOf('function assertStillIsolated(operation) {');
+      const body = SUITE_CODE.slice(start, SUITE_CODE.indexOf('\n}', start));
+      return (
+        body.includes('if (!verdict.ok) {') &&
+        body.includes('throw new Error(') &&
+        !body.includes('return false')
+      );
+    })(),
+    'a gate that returns is a log line',
   );
   check(
-    'the note sits where the call would go',
-    beforeObliterate.lastIndexOf('NOT YET IMPLEMENTED') >
-      beforeObliterate.lastIndexOf('async function'),
+    'the gate is called before the destroyer Queue is constructed',
+    at("assertStillIsolated('") !== -1 &&
+      at("assertStillIsolated('") < at('const destroyer = new Queue(') &&
+      at("assertStillIsolated('") < at('.obliterate('),
+    'the only thing standing between a dead container and obliterate',
   );
+  check(
+    'nothing awaited separates the gate from the Queue it guards',
+    (() => {
+      const between = SUITE_CODE.slice(
+        at("assertStillIsolated('") + 1,
+        at('const destroyer = new Queue('),
+      );
+      return !between.includes('await ') && between.split('\n').length < 8;
+    })(),
+    'awaited work in between would widen the window the gate exists to close',
+  );
+  /**
+   * Scoped to the GATE's own call, not the file.
+   *
+   * The first version searched the whole suite for
+   * `containerId: REDIS_CONTAINER_ID,` -- which also appears in the start-up
+   * owned branch. Swapping the GATE's argument for a rediscovered
+   * `containerEvidence?.id` therefore went unnoticed, which is exactly the
+   * "silently accept a different container" failure this phase forbids.
+   * Mutation testing found it.
+   */
+  const gateCall =
+    /const verdict = destructiveRefusals\(\{[\s\S]*?\n  \}\);/.exec(SUITE_CODE)?.[0] ?? '';
+  check(
+    'the gate passes the CAPTURED container id, never a rediscovered one',
+    gateCall.includes('containerId: REDIS_CONTAINER_ID,') &&
+      !gateCall.includes('containerEvidence'),
+    gateCall === '' ? 'gate call not found' : 'inside the gate call, not merely in the file',
+  );
+  check(
+    'and the gate reads the same run id, prefix and url as the start-up policy',
+    [
+      'mode: REDIS_MODE,',
+      'url: REDIS_URL,',
+      'prefix: QUEUE_PREFIX,',
+      'runId: RUN,',
+      'boundary: REDIS_BOUNDARY,',
+    ].every((field) => gateCall.includes(field)),
+    'one policy, two moments, identical inputs',
+  );
+  check(
+    'the verifier is supplied only in owned mode',
+    /verifyOwnership: REDIS_MODE === 'owned' \? inspectOwnership : undefined,/.test(SUITE_CODE),
+    'external mode performs no Docker inspection',
+  );
+  check(
+    'both gates inspect through the same closure',
+    /const inspectOwnership = \(\{ containerId, runId, url \}\) =>/.test(SUITE_CODE) &&
+      (SUITE_CODE.match(/inspectOwnership/g) ?? []).length === 3,
+    'declaration, the start-up gate and the pre-destructive gate',
+  );
+  check(
+    'and that closure builds a fresh executor per call',
+    /verifyRedisOwnership\(\{ exec: createDockerExec\(\), containerId, runId, url \}\)/.test(
+      SUITE_CODE,
+    ),
+    'so the second inspection is a new docker inspect, not a cached answer',
+  );
+
+  /* ---- B: exactly one Redis policy path remains ---- */
+  check(
+    'the retired standalone redisRefusal gate is gone from the code',
+    !SUITE_CODE.includes('redisRefusal'),
+    'no two competing policy paths',
+  );
+  check(
+    'and the composed policy is the only Redis gate at module scope',
+    (SUITE_CODE.match(/redisTestRefusals\(\{/g) ?? []).length === 1 &&
+      (SUITE_CODE.match(/destructiveRefusals\(\{/g) ?? []).length === 1,
+    'one at start-up, one before the destructive call',
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  A throwing verifier is a refusal, not a crash                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The gap a read-only audit found: `verifyOwnership` could raise.
+ *
+ * ===========================================================================
+ * `destructiveRefusals` promises `{ ok, reasons }`, and every other failure
+ * mode honoured it -- but the verifier shells out to Docker, so it can throw
+ * rather than return: no `docker` binary, a dead daemon, a spawn that itself
+ * raises. The exception propagated, which broke the contract in the one place
+ * it matters: a caller written as `if (!destructiveRefusals(…).ok)` would
+ * crash instead of refusing, and the crash would read as a harness bug rather
+ * than as "ownership could not be confirmed".
+ *
+ * It was never unsafe at the single existing call site -- `assertStillIsolated`
+ * throws on refusal anyway, so `obliterate` was unreachable either way. The
+ * problem was the contract, and 3A-4 adds a second caller.
+ *
+ * Two properties are asserted here. The refusal must be **useful** -- it names
+ * the error type and an errno-shaped code, so "Docker is not installed" is
+ * distinguishable from "the daemon timed out". And it must be **silent about
+ * everything else**: a Docker failure can carry the command line, Docker's
+ * stderr, a Redis URL with credentials in its userinfo, or a `REDISCLI_AUTH=`
+ * fragment, and these refusals are printed into terminals and CI logs.
+ * ===========================================================================
+ */
+console.log('\nA throwing verifier fails closed (pure, injected fakes).');
+{
+  const inspection = { id: CID, running: true, label: RUN, hostPort: '49176' };
+  const ownedWith = (verifyOwnership, overrides = {}) => ({
+    mode: 'owned',
+    url: 'redis://127.0.0.1:49176',
+    prefix: PREFIX,
+    runId: RUN,
+    containerId: CID,
+    verifyOwnership,
+    ...overrides,
+  });
+  const throwing = (thrown) => () => {
+    throw thrown;
+  };
+  const verdictFor = (thrown) => destructiveRefusals(ownedWith(throwing(thrown)));
+
+  /* ---- an ordinary Error ---- */
+  {
+    const verdict = verdictFor(new Error('boom'));
+    check('an ordinary Error becomes a refusal, not a crash', verdict.ok === false);
+    check(
+      'the refusal says the re-check threw',
+      verdict.reasons[0].includes('threw') && verdict.reasons[0].includes('Error'),
+      verdict.reasons[0].slice(0, 72),
+    );
+    check(
+      'and explains that an unverifiable container is not a verified one',
+      verdict.reasons.some((reason) => reason.includes('unverifiable container')),
+    );
+    check('two reasons: what happened, and what follows from it', verdict.reasons.length === 2);
+  }
+
+  /* ---- the reason is useful: type and errno survive ---- */
+  check(
+    'an errno-shaped code survives, so ENOENT is distinguishable',
+    verdictFor(
+      Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' }),
+    ).reasons[0].includes('Error: ENOENT'),
+    'enough to tell "Docker is not installed" from "the daemon timed out"',
+  );
+  check(
+    'the error subclass survives',
+    verdictFor(new TypeError('x is not a function')).reasons[0].includes('TypeError'),
+  );
+  check(
+    'a timeout code survives',
+    verdictFor(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })).reasons[0].includes(
+      'ETIMEDOUT',
+    ),
+  );
+
+  /* ---- non-Error throws still fail closed ---- */
+  for (const [label, thrown] of [
+    ['a thrown string', 'plain string'],
+    ['a thrown null', null],
+    ['a thrown undefined', undefined],
+    ['a thrown number', 42],
+    ['a thrown bare object', {}],
+  ]) {
+    const verdict = verdictFor(thrown);
+    check(`${label} fails closed`, verdict.ok === false && verdict.reasons.length === 2);
+    check(
+      `and ${label} is described without inventing a type`,
+      verdict.reasons[0].includes('a non-Error value'),
+    );
+  }
+
+  /* ---- nothing sensitive is reproduced ---- */
+  {
+    const loaded = Object.assign(
+      new Error(
+        'docker: Error response from daemon: ' +
+          'redis://admin:hunter2@127.0.0.1:6380/0 REDISCLI_AUTH=s3cr3t ' +
+          '--requirepass topsecret /home/jayesh/.docker/config.json',
+      ),
+      { code: 'ENOENT', stack: 'at hunter2 (/home/jayesh/secret.js:1:1)' },
+    );
+    const verdict = destructiveRefusals(ownedWith(throwing(loaded)));
+    const text = verdict.reasons.join(' ');
+
+    check('a sensitive-looking error still refuses', verdict.ok === false);
+    for (const secret of [
+      'hunter2',
+      's3cr3t',
+      'topsecret',
+      'REDISCLI_AUTH',
+      '--requirepass',
+      'redis://',
+      'admin',
+      '127.0.0.1',
+      '6380',
+      'Error response from daemon',
+      '/home/jayesh',
+      'config.json',
+    ]) {
+      check(`the refusal does not reproduce ${JSON.stringify(secret)}`, !text.includes(secret));
+    }
+    check(
+      'not even a truncated fragment of the message',
+      !text.includes('hunt') && !text.includes('s3cr') && !text.includes('topsec'),
+      'a truncated secret is still a leaked prefix',
+    );
+    check(
+      'but the safe part is still reported',
+      text.includes('ENOENT') && text.includes('threw'),
+      'useful without being revealing',
+    );
+    check(
+      'the message is never quoted verbatim, however long',
+      !text.includes(loaded.message) && !text.includes(loaded.message.slice(0, 20)),
+    );
+  }
+
+  /* ---- a hostile name/code cannot smuggle text through ---- */
+  {
+    const verdict = verdictFor({ name: 'redis://u:p@h:6380', code: 'hunter2' });
+    const text = verdict.reasons.join(' ');
+    check(
+      'a name that is not a plain identifier is dropped, not truncated',
+      verdict.ok === false &&
+        text.includes('a non-Error value') &&
+        !text.includes('redis://') &&
+        !text.includes('hunter2'),
+      'the pattern is an allowlist, so anything odd is discarded',
+    );
+    check(
+      'a lowercase code is not errno-shaped and is dropped',
+      !verdictFor({ name: 'Error', code: 'hunter2' }).reasons[0].includes('hunter2'),
+    );
+    check(
+      'an over-long code is dropped',
+      !verdictFor({ name: 'Error', code: 'A'.repeat(64) }).reasons[0].includes('AAAA'),
+    );
+  }
+
+  /* ---- nothing destructive is authorized ---- */
+  {
+    const verdict = verdictFor(new Error('boom'));
+    check('no evidence is returned after a throw', verdict.evidence === undefined);
+    check('and the verdict is not ok, so a caller must refuse', verdict.ok !== true);
+    check(
+      'the composed policy is never consulted after a throw',
+      (() => {
+        let consulted = 0;
+        destructiveRefusals(
+          ownedWith(throwing(new Error('boom')), {
+            testRefusals: () => {
+              consulted += 1;
+              return [];
+            },
+          }),
+        );
+        return consulted === 0;
+      })(),
+      'a throw cannot be overridden by an empty policy result',
+    );
+    check(
+      'even a permissive injected policy cannot authorize it',
+      destructiveRefusals(ownedWith(throwing(new Error('boom')), { testRefusals: () => [] })).ok ===
+        false,
+      'the refusal is returned before the policy runs',
+    );
+  }
+
+  /* ---- external mode cannot reach a throwing verifier at all ---- */
+  check(
+    'external mode never calls the verifier, so it cannot throw',
+    destructiveRefusals({
+      mode: 'external',
+      url: 'redis://127.0.0.1:6380',
+      prefix: PREFIX,
+      runId: RUN,
+      boundary: 'ci-job-service',
+      containerId: CID,
+      verifyOwnership: throwing(new Error('must not be called')),
+    }).ok === true,
+    'the call sits inside the owned branch',
+  );
+
+  /* ---- every previously covered path is unchanged ---- */
+  {
+    const returning = (reply) => () => reply;
+    check(
+      'successful verification still succeeds',
+      destructiveRefusals(ownedWith(returning({ ok: true, reasons: [], inspection }))).ok === true,
+    );
+    check(
+      'failed verification still refuses, preserving its reason',
+      (() => {
+        const verdict = destructiveRefusals(
+          ownedWith(returning({ ok: false, reasons: ['container is not running'] })),
+        );
+        return verdict.ok === false && verdict.reasons.some((r) => r.includes('not running'));
+      })(),
+    );
+    check(
+      'a malformed result still refuses',
+      destructiveRefusals(ownedWith(returning(null))).ok === false &&
+        destructiveRefusals(ownedWith(returning(undefined))).ok === false,
+    );
+    check(
+      'ok without inspection evidence still refuses',
+      destructiveRefusals(ownedWith(returning({ ok: true }))).ok === false,
+    );
+    check(
+      'a container-id mismatch still refuses',
+      destructiveRefusals(
+        ownedWith(returning({ ok: true, inspection: { ...inspection, id: 'd'.repeat(64) } })),
+      ).ok === false,
+    );
+    check(
+      'a missing verifier still refuses',
+      destructiveRefusals(ownedWith(undefined)).ok === false,
+      'and is distinguishable from one that threw',
+    );
+    check(
+      'the missing-verifier and threw-verifier messages differ',
+      !destructiveRefusals(ownedWith(undefined)).reasons[0].includes('threw'),
+    );
+  }
+
+  /* ---- the module itself quotes nothing ---- */
+  {
+    const guard = readFileSync(
+      new URL('../../scripts/lib/redis-destructive-guard.mjs', import.meta.url),
+      'utf8',
+    );
+    const code = guard.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    check(
+      'only the verifier call is inside the try',
+      /try \{\s*\n\s*again = verifyOwnership\(\{ containerId, runId, url \}\);\s*\n\s*\} catch/.test(
+        code,
+      ),
+      'a bug in this module must surface as a bug, not as "the verifier misbehaved"',
+    );
+    check(
+      'the catch never reads the message, the stack or the output',
+      (() => {
+        const start = code.indexOf('} catch (error) {');
+        const body = code.slice(start, code.indexOf('\n    }', start));
+        return (
+          !body.includes('error.message') &&
+          !body.includes('.stack') &&
+          !body.includes('String(error)') &&
+          !body.includes('${error}')
+        );
+      })(),
+      'it calls describeThrow, which allowlists name and code',
+    );
+    check(
+      'describeThrow allowlists rather than sanitises',
+      /\/\^\[A-Za-z\]\{1,40\}\$\//.test(code) && /\/\^\[A-Z\]\[A-Z0-9_\]\{1,31\}\$\//.test(code),
+      'a value that does not match is dropped, not truncated',
+    );
+    check(
+      'the catch is not empty and does not swallow',
+      code.includes('} catch (error) {') && /catch \(error\) \{\s*\n\s*return \{/.test(code),
+      'CLAUDE.md section 5: translated into the typed refusal this layer speaks',
+    );
+  }
 }
 
 console.log(

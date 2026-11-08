@@ -3,6 +3,9 @@ import { SlidersHorizontal } from 'lucide-react';
 import { redirect } from 'next/navigation';
 
 import { PlaceholderScreen } from '@/components/dashboard/placeholder-screen';
+import { InventoryHorizonCard } from '@/components/inventory/inventory-horizon-card';
+import { fetchInventoryHorizon } from '@/lib/properties-client';
+import { requireSession } from '@/lib/server-session';
 
 export const metadata: Metadata = {
   title: 'Rates & inventory',
@@ -62,13 +65,26 @@ export default async function RatesInventoryPage({
     redirect('/group-dashboard');
   }
 
+  /**
+   * The horizon is real; the rest of this screen is not yet.
+   *
+   * Fetched server-side so the first paint already carries it, and the
+   * permission comes from the session rather than being guessed: the API
+   * refuses a POST without `property:settings` regardless, but a button that
+   * always 403s is worse than one that explains itself.
+   */
+  const { session, cookieHeader } = await requireSession();
+  const horizon = await fetchInventoryHorizon(hotelId, { cookieHeader });
+  const canExtend = session.permissions.includes('property:settings');
+
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col px-4 py-8 sm:px-6">
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6">
+      <InventoryHorizonCard hotelId={hotelId} horizon={horizon} canExtend={canExtend} />
       <PlaceholderScreen
         icon={SlidersHorizontal}
         title="Rates & inventory"
         summary="Rack rates, stop-sells, minimum stay restrictions and channel distribution for this property."
-        blockedBy="Needs the rates, inventory-restriction and channels modules. There is no RatePlan table, inventory_day carries no restriction columns, and nothing can push ARI to the OTAs yet — so any rate shown or saved here would disagree with what the channels are actually selling."
+        blockedBy="Rates and restrictions need the rates and channels modules. There is no RatePlan table, inventory_day still carries no restriction columns, and nothing can push ARI to the OTAs yet — so any rate shown or saved here would disagree with what the channels are actually selling."
       />
     </main>
   );

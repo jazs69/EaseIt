@@ -14,6 +14,7 @@ import { ReservationsModule } from './modules/reservations/reservations.module.j
 import { PropertiesModule } from './modules/properties/properties.module.js';
 import { PropertyDashboardModule } from './modules/property-dashboard/property-dashboard.module.js';
 import { TimelineModule } from './modules/timeline/timeline.module.js';
+import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { RbacModule } from './modules/rbac/rbac.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
@@ -49,6 +50,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     CalendarModule,
     PropertyDashboardModule,
     TimelineModule,
+    InventoryModule,
     RbacModule,
     AccessControlModule,
   ],

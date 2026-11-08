@@ -52,6 +52,7 @@ import {
 } from '../../common/errors/domain-error.js';
 import { sqlState } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import {
   CANCEL_MAX_ATTEMPTS,
   cancelBackoffMs,
@@ -474,10 +475,8 @@ export class CancelReservationService {
    * this slice adds no new permission.
    */
   private async authorise(userId: string, codeOrId: string): Promise<{ id: string; code: string }> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(codeOrId);
-
     const grants = await this.prisma.client.userPropertyRole.findMany({
-      where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
         role: { select: { key: true } },
         property: { select: { id: true, code: true } },

@@ -18,6 +18,7 @@
 
 import { Injectable } from '@nestjs/common';
 import {
+  Permission,
   type MatchedField,
   type PropertyId,
   type ReservationSearchHit,
@@ -26,6 +27,7 @@ import {
 } from '@repo/types';
 
 import { TenantScopeViolationError } from '../../common/errors/domain-error.js';
+import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import {
   ReservationSearchRepository,
   type ReservationSearchRow,
@@ -79,12 +81,24 @@ export class ReservationSearchService {
     hotelId: string,
     query: ReservationSearchQuery,
   ): Promise<ReservationSearchResponse> {
-    const property = await this.repository.findGrantedProperty(userId, hotelId);
-    if (property === null) {
+    const granted = await this.repository.findGrantedProperty(userId, hotelId);
+    if (granted === null) {
       // Not-found rather than forbidden: a 403 would confirm the property
       // exists to somebody with no grant at it (CLAUDE.md section 3.2).
       throw new TenantScopeViolationError('Property');
     }
+
+    /**
+     * Results carry guest names, email addresses, phone numbers and amounts,
+     * so a grant alone is not enough. HOUSEKEEPING holds no
+     * `reservations:read` and is refused here by design.
+     *
+     * 403, not 404: the grant above is already proven, so this caller knows
+     * the property exists.
+     */
+    requirePermissionFromGrants(granted.grants, Permission.RESERVATIONS_READ);
+
+    const property = granted.property;
 
     // Already trimmed and length-checked by the zod schema at the boundary.
     const cleanQuery = query.q;

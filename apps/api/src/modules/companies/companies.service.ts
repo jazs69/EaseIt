@@ -23,11 +23,12 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import type {
-  CompanySummary,
-  CreateCompanyCommand,
-  GstinLookup,
-  PostalLookup,
+import {
+  Permission,
+  type CompanySummary,
+  type CreateCompanyCommand,
+  type GstinLookup,
+  type PostalLookup,
 } from '@repo/types';
 
 import {
@@ -35,6 +36,8 @@ import {
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
+import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { GstService } from './gst.service.js';
 import { inspectGstin } from './gstin.js';
 
@@ -56,7 +59,11 @@ export class CompaniesService {
   /* -------------------------------------------------------------------- */
 
   async list(userId: string, hotelId: string): Promise<CompanySummary[]> {
-    const propertyId = await this.resolveProperty(userId, hotelId);
+    const propertyId = await this.resolveProperty(
+      userId,
+      hotelId,
+      Permission.RESERVATIONS_READ,
+    );
 
     const rows = await this.prisma.client.company.findMany({
       where: { propertyId },
@@ -89,7 +96,14 @@ export class CompaniesService {
     hotelId: string,
     command: CreateCompanyCommand,
   ): Promise<CompanySummary> {
-    const propertyId = await this.resolveProperty(userId, hotelId);
+    // Billing master data, not a booking action: this is the approved
+    // single-hotel pilot policy (property:settings), so reception cannot
+    // create a corporate account while an admin can.
+    const propertyId = await this.resolveProperty(
+      userId,
+      hotelId,
+      Permission.PROPERTY_SETTINGS,
+    );
 
     // Validated server-side, not merely in the form: a malformed GSTIN on a
     // tax invoice is the hotel's problem, not the browser's.
@@ -169,8 +183,18 @@ export class CompaniesService {
   /*  Lookups                                                             */
   /* -------------------------------------------------------------------- */
 
-  /** Delegated: the provider strategy and its tagging live in `GstService`. */
-  lookupGstin(gstin: string): Promise<GstinLookup> {
+  /**
+   * Delegated: the provider strategy and its tagging live in `GstService`.
+   *
+   * Authorised first, and the order is the point. This route is nested under
+   * `:hotelId` but used to ignore it entirely — no grant check, no permission
+   * — so any authenticated user could spend the hotel's GSTIN provider quota
+   * against any property's path. The grant is resolved before
+   * `this.gst.lookup` is reached, so an unauthorised caller never causes an
+   * outbound call.
+   */
+  async lookupGstin(userId: string, hotelId: string, gstin: string): Promise<GstinLookup> {
+    await this.resolveProperty(userId, hotelId, Permission.RESERVATIONS_READ);
     return this.gst.lookup(gstin);
   }
 
@@ -182,7 +206,21 @@ export class CompaniesService {
    * operator can do anything about, and all of them have the same remedy:
    * type the address.
    */
-  async lookupPostalCode(postalCode: string): Promise<PostalLookup> {
+  async lookupPostalCode(
+    userId: string,
+    hotelId: string,
+    postalCode: string,
+  ): Promise<PostalLookup> {
+    /**
+     * Authorised before anything else, including the format check.
+     *
+     * Not merely before the outbound call: an unauthorised caller must not get
+     * a 200 `found: false` for a malformed code either, because a shaped
+     * answer tells them the route exists and works. Grant first, then the
+     * property's data, then the provider.
+     */
+    await this.resolveProperty(userId, hotelId, Permission.RESERVATIONS_READ);
+
     const code = postalCode.trim();
 
     if (!/^[1-9][0-9]{5}$/.test(code)) {
@@ -266,17 +304,34 @@ export class CompaniesService {
 
   /* -------------------------------------------------------------------- */
 
-  private async resolveProperty(userId: string, codeOrId: string): Promise<string> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
-    const grant = await this.prisma.client.userPropertyRole.findFirst({
-      where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
-      select: { propertyId: true },
+  /**
+   * Resolves the property and checks the caller may do this here.
+   *
+   * `findMany`, not `findFirst`: a caller may hold several roles at one
+   * property and their authority is the union of them, so taking only the
+   * first row would refuse a clerk who holds the permission through their
+   * second role. The tenancy predicate is unchanged — `grantedPropertyWhere`
+   * still joins through the caller's own grants, so an unheld identifier is
+   * not-found (404) and only a held one can reach the 403 below.
+   */
+  private async resolveProperty(
+    userId: string,
+    codeOrId: string,
+    required: Permission,
+  ): Promise<string> {
+    const grants = await this.prisma.client.userPropertyRole.findMany({
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
+      select: {
+        role: { select: { key: true } },
+        propertyId: true,
+      },
     });
 
-    if (grant === null) throw new TenantScopeViolationError('Property');
-    return grant.propertyId;
+    const first = grants[0];
+    if (first === undefined) throw new TenantScopeViolationError('Property');
+
+    requirePermissionFromGrants(grants, required);
+
+    return first.propertyId;
   }
 }

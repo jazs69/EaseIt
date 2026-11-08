@@ -65,6 +65,36 @@ export class RoomUnavailableError extends DomainError {
   }
 }
 
+/**
+ * A night of the stay has no `inventory_day` row at all.
+ *
+ * ===========================================================================
+ * Separate from `RoomUnavailableError`, and the distinction is the whole
+ * point. Both are 409, but they mean opposite things to the person reading
+ * them:
+ *
+ *   ROOM_UNAVAILABLE          the rooms are sold   -> offer other dates
+ *   INVENTORY_NOT_CONFIGURED  the calendar ends    -> extend the calendar
+ *
+ * `create-reservation` has always detected the second case — it counts the
+ * rows it locked against the nights it needs — but reported it as the first,
+ * so a clerk trying to book next season was told the hotel was full. Nothing
+ * about availability had been consulted.
+ * ===========================================================================
+ */
+export class InventoryNotConfiguredError extends DomainError {
+  readonly code = ErrorCode.INVENTORY_NOT_CONFIGURED;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(details?: Record<string, unknown>) {
+    super(
+      'Inventory has not been set up for every night of this stay. ' +
+        'Extend the availability calendar to cover these dates, then try again.',
+      details,
+    );
+  }
+}
+
 export class InvalidStateTransitionError extends DomainError {
   readonly code = ErrorCode.INVALID_STATE_TRANSITION;
   readonly httpStatus = HttpStatus.CONFLICT;

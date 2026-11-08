@@ -9,6 +9,7 @@
 
 import { Injectable } from '@nestjs/common';
 import {
+  Permission,
   ReservationStatus,
   TIMELINE,
   currentDateInTimeZone,
@@ -32,6 +33,7 @@ import {
 } from '@repo/types';
 
 import { TenantScopeViolationError } from '../../common/errors/domain-error.js';
+import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { ClockService } from '../platform/clock.service.js';
 import {
   TimelineRepository,
@@ -163,10 +165,22 @@ export class TimelineService {
     hotelId: string,
     query: TimelineCalendarQuery,
   ): Promise<TimelineCalendar> {
-    const property = await this.repository.findGrantedProperty(userId, hotelId);
-    if (property === null) {
+    const granted = await this.repository.findGrantedProperty(userId, hotelId);
+    if (granted === null) {
       throw new TenantScopeViolationError('Property');
     }
+
+    /**
+     * The grid carries guest names, contact details, amounts and ADR, so a
+     * grant alone is not enough. HOUSEKEEPING holds no `reservations:read`
+     * and is refused — which is the stated intent of
+     * HOUSEKEEPING_PERMISSIONS, not a new policy.
+     *
+     * 403, not 404: the grant above is already proven.
+     */
+    requirePermissionFromGrants(granted.grants, Permission.RESERVATIONS_READ);
+
+    const property = granted.property;
 
     const businessDate = toBusinessDate(property.businessDate);
 

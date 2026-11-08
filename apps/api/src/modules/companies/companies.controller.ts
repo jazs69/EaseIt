@@ -65,8 +65,12 @@ export class CompaniesController {
       'whether the name is VERIFIED, MOCK or UNVERIFIED — mock data is ' +
       'synthetic and tagged so it can never pass for a registry result.',
   })
-  lookupGstin(@Query('gstin') gstin: string): Promise<GstinLookup> {
-    return this.companies.lookupGstin(gstin ?? '');
+  lookupGstin(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Query('gstin') gstin: string,
+  ): Promise<GstinLookup> {
+    return this.companies.lookupGstin(this.userId(request), hotelId, gstin ?? '');
   }
 
   @Get(':hotelId/lookups/postal-code')
@@ -77,8 +81,12 @@ export class CompaniesController {
       'returns found:false rather than an error — the remedy is always to ' +
       'type the address, and a booking must not be blocked by a slow lookup.',
   })
-  lookupPostalCode(@Query('postalCode') postalCode: string): Promise<PostalLookup> {
-    return this.companies.lookupPostalCode(postalCode ?? '');
+  lookupPostalCode(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Query('postalCode') postalCode: string,
+  ): Promise<PostalLookup> {
+    return this.companies.lookupPostalCode(this.userId(request), hotelId, postalCode ?? '');
   }
 
   private userId(request: FastifyRequest): string {

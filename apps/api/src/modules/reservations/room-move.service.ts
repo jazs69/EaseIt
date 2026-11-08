@@ -51,6 +51,7 @@ import {
   sqlState,
 } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 
 const DAY_MS = 86_400_000;
 const MAX_ATTEMPTS = 3;
@@ -543,12 +544,8 @@ export class RoomMoveService {
     userId: string,
     codeOrId: string,
   ): Promise<{ id: string; code: string }> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
     const grants = await this.prisma.client.userPropertyRole.findMany({
-      where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
         role: { select: { key: true } },
         property: { select: { id: true, code: true } },

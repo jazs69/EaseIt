@@ -9,6 +9,7 @@
 
 import { Injectable } from '@nestjs/common';
 import {
+  Permission,
   ReservationStatus,
   currentDateInTimeZone,
   type AvailabilityBreakdown,
@@ -24,6 +25,7 @@ import {
 } from '@repo/types';
 
 import { TenantScopeViolationError } from '../../common/errors/domain-error.js';
+import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { ClockService } from '../platform/clock.service.js';
 import {
   PropertyDashboardRepository,
@@ -60,13 +62,29 @@ export class PropertyDashboardService {
     hotelId: string,
     query: DashboardSummaryQuery,
   ): Promise<PropertyDashboard> {
-    const property = await this.repository.findGrantedProperty(userId, hotelId);
+    const granted = await this.repository.findGrantedProperty(userId, hotelId);
 
-    if (property === null) {
+    if (granted === null) {
       // Covers "no such property", "retired" and "you hold no role there"
       // indistinguishably, on purpose.
       throw new TenantScopeViolationError('Property');
     }
+
+    /**
+     * A grant is not enough to read this.
+     *
+     * The summary carries guest names, contact details and money, and
+     * HOUSEKEEPING is blind to financials by design (`rbac.ts`'s
+     * HOUSEKEEPING_PERMISSIONS says so and withholds every folio and report
+     * permission). Before this check a housekeeping grant reached all of it.
+     *
+     * 403 here, not 404: the caller has already proven a grant above, so the
+     * property's existence is not a secret from them (CLAUDE.md section 3.2
+     * is about hiding *other* tenants, not one's own).
+     */
+    requirePermissionFromGrants(granted.grants, Permission.RESERVATIONS_READ);
+
+    const property = granted.property;
 
     /**
      * The default day is **today at the property**.

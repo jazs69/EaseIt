@@ -9,9 +9,10 @@
  */
 
 import { Injectable } from '@nestjs/common';
-import { OPERABLE_PROPERTY_STATUSES, ReservationStatus, type RoomStatus } from '@repo/types';
+import { ReservationStatus, type RoomStatus } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 
 /** Statuses that occupy a room, and so draw a block on the grid. */
 const OCCUPYING_STATUSES = [
@@ -27,6 +28,13 @@ const CONSUMING_STATUSES = [
   ReservationStatus.CHECKED_IN,
   ReservationStatus.CHECKED_OUT,
 ] as const;
+
+/** A resolved property plus the grant rows that proved it. `findMany` because
+ * several roles at one property union into one authority. */
+export interface GrantedTimelineProperty {
+  property: TimelinePropertyRow;
+  grants: readonly { readonly role: { readonly key: string | null } }[];
+}
 
 export interface TimelinePropertyRow {
   id: string;
@@ -106,20 +114,11 @@ export class TimelineRepository {
   async findGrantedProperty(
     userId: string,
     codeOrId: string,
-  ): Promise<TimelinePropertyRow | null> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
-    const grant = await this.prisma.client.userPropertyRole.findFirst({
-      where: {
-        userId,
-        property: {
-          status: { in: [...OPERABLE_PROPERTY_STATUSES] },
-          ...(isUuid ? { id: codeOrId } : { code: codeOrId }),
-        },
-      },
+  ): Promise<GrantedTimelineProperty | null> {
+    const grants = await this.prisma.client.userPropertyRole.findMany({
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: true }),
       select: {
+        role: { select: { key: true } },
         property: {
           select: {
             id: true,
@@ -136,7 +135,12 @@ export class TimelineRepository {
       },
     });
 
-    return grant?.property ?? null;
+    const first = grants[0];
+    if (first === undefined) return null;
+
+    // The permission decision belongs to the service; a repository holds no
+    // business rules (CLAUDE.md section 5).
+    return { property: first.property, grants };
   }
 
   /** Rooms for the left axis, filtered and ordered for display. */

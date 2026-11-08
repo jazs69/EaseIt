@@ -13,12 +13,25 @@ import { Injectable } from '@nestjs/common';
 import { ReservationStatus, type MealPlan } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 
 /** Statuses that count as "currently in the hotel". */
 const IN_HOUSE_STATUSES = [ReservationStatus.CHECKED_IN] as const;
 
 /** Statuses that are still live bookings for arrival/departure purposes. */
 const LIVE_STATUSES = [ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN] as const;
+
+/**
+ * A resolved property together with the grant rows that proved it.
+ *
+ * `findMany`, not `findFirst`: several roles at one property union into one
+ * authority, so the service needs all of them to answer "may they?". The
+ * tenancy answer is still the presence or absence of any row at all.
+ */
+export interface GrantedDashboardProperty {
+  property: DashboardPropertyRow;
+  grants: readonly { readonly role: { readonly key: string | null } }[];
+}
 
 export interface DashboardPropertyRow {
   id: string;
@@ -99,17 +112,11 @@ export class PropertyDashboardRepository {
   async findGrantedProperty(
     userId: string,
     codeOrId: string,
-  ): Promise<DashboardPropertyRow | null> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
-    const grant = await this.prisma.client.userPropertyRole.findFirst({
-      where: {
-        userId,
-        property: isUuid ? { id: codeOrId } : { code: codeOrId },
-      },
+  ): Promise<GrantedDashboardProperty | null> {
+    const grants = await this.prisma.client.userPropertyRole.findMany({
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
+        role: { select: { key: true } },
         property: {
           select: {
             id: true,
@@ -126,7 +133,14 @@ export class PropertyDashboardRepository {
       },
     });
 
-    return grant?.property ?? null;
+    const first = grants[0];
+    if (first === undefined) return null;
+
+    // Every row is the same property, so the roles are its grant set and the
+    // caller's authority here is their union. The permission decision itself
+    // belongs to the service: a repository carries no business rules
+    // (CLAUDE.md section 5).
+    return { property: first.property, grants };
   }
 
   /**

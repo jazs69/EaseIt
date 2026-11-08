@@ -49,6 +49,7 @@ import {
   sqlState,
 } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { ClockService } from '../platform/clock.service.js';
 import {
   isCleanRoomState,
@@ -276,8 +277,12 @@ export class CheckInService {
     const roomChargeMinor = nightTotalMinor - taxMinor;
 
     return this.prisma.client.$transaction(async (tx) => {
-      // The RLS backstop. The Prisma extension is the primary tenant control;
-      // this is what saves us if a raw query later forgets (section 3.2).
+      // Stamps the property on the transaction-local session, as every other
+      // writer does. NOTE: this is NOT a security boundary today — no migration
+      // enables row-level security or creates a policy, so nothing reads the
+      // variable. CLAUDE.md section 3.2 describes RLS as a backstop; it is not
+      // yet implemented. Tenancy here rests on the explicit propertyId in every
+      // predicate below.
       await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
 
       /**
@@ -631,12 +636,8 @@ export class CheckInService {
     userId: string,
     codeOrId: string,
   ): Promise<{ id: string; code: string; businessDate: Date; timezone: string }> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
     const grants = await this.prisma.client.userPropertyRole.findMany({
-      where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
         role: { select: { key: true } },
         property: { select: { id: true, code: true, businessDate: true, timezone: true } },

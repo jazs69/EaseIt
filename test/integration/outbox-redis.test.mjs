@@ -45,6 +45,7 @@ await import(new URL('../../apps/api/node_modules/reflect-metadata/Reflect.js', 
  * later edit: an `await import` placed after the probe would read as a guard
  * and guard nothing. `isolation-guard.mjs` has no import-time side effects.
  */
+import { destructiveRefusals } from '../../scripts/lib/redis-destructive-guard.mjs';
 import { createDockerExec, verifyRedisOwnership } from '../../scripts/lib/redis-container.mjs';
 import { resolveRunIdentity } from '../../scripts/lib/run-identity.mjs';
 import {
@@ -223,11 +224,22 @@ const REDIS_MODE = redisModeFrom({ containerId: REDIS_CONTAINER_ID });
  * `redisTestRefusals`, which applies the guard's own rules to it. Both
  * refusals are reported; neither is skipped on the strength of the other.
  */
+/**
+ * One way to ask Docker, used by both gates.
+ *
+ * A fresh `createDockerExec()` per call, so the second gate's inspection is
+ * genuinely a new `docker inspect` rather than a cached answer. The captured
+ * id is always the one passed in -- `verifyRedisOwnership` compares the
+ * inspected `.Id` against it, so a different container is a refusal rather
+ * than a new target.
+ */
+const inspectOwnership = ({ containerId, runId, url }) =>
+  verifyRedisOwnership({ exec: createDockerExec(), containerId, runId, url });
+
 let containerEvidence;
 
 if (REDIS_MODE === 'owned') {
-  const owned = verifyRedisOwnership({
-    exec: createDockerExec(),
+  const owned = inspectOwnership({
     containerId: REDIS_CONTAINER_ID,
     runId: RUN,
     url: REDIS_URL,
@@ -262,6 +274,48 @@ if (policyProblems.length > 0) {
         'the container id, its easeit.run label and its published 6379/tcp port must ' +
         'describe the container this run created.',
   ]);
+}
+
+/**
+ * The gate immediately before anything destructive. Throws; never returns false.
+ *
+ * ===========================================================================
+ * The start-up policy proved the target was safe THEN. This proves it now.
+ *
+ * In `owned` mode a container can have died since module load and had its
+ * ephemeral host port taken over by something else, which would leave the URL
+ * addressing a stranger while the earlier evidence still read as valid. So the
+ * container is inspected again, with the captured id -- never a replacement --
+ * and the fresh triple goes through the same composed policy.
+ *
+ * In `external` mode no Docker inspection happens, because nobody claims to
+ * own that instance; the target, database, port, boundary and prefix are
+ * re-asserted instead. Pretending to verify ownership there would be theatre.
+ *
+ * It throws rather than exiting: `main()` is wrapped, so a throw aborts the
+ * scenario, records a failure and still runs teardown. `obliterate` does not
+ * run.
+ * ===========================================================================
+ */
+function assertStillIsolated(operation) {
+  const verdict = destructiveRefusals({
+    mode: REDIS_MODE,
+    url: REDIS_URL,
+    prefix: QUEUE_PREFIX,
+    runId: RUN,
+    boundary: REDIS_BOUNDARY,
+    containerId: REDIS_CONTAINER_ID,
+    verifyOwnership: REDIS_MODE === 'owned' ? inspectOwnership : undefined,
+  });
+
+  if (!verdict.ok) {
+    throw new Error(
+      `REFUSING ${operation}: the Redis target is no longer provably isolated.\n` +
+        verdict.reasons.map((reason) => `  x  ${reason}`).join('\n'),
+    );
+  }
+
+  return verdict;
 }
 
 /**
@@ -750,24 +804,19 @@ async function main() {
   );
 
   /**
-   * NOT YET IMPLEMENTED -- pre-destructive ownership re-verification.
+   * Ownership re-proved HERE, on fresh evidence, before anything is destroyed.
    *
    * =========================================================================
-   * The policy above ran at module load. A container can die between then and
-   * now, and its ephemeral host port can be taken over by something else, so
-   * in `owned` mode this is where ownership must be proved again:
+   * The start-up policy is not enough on its own: it ran before the fixtures,
+   * the workers and the restarts above, and an owned container could have died
+   * in that time with its ephemeral port picked up by another process.
    *
-   *     const again = verifyRedisOwnership({
-   *       exec: createDockerExec(), containerId: REDIS_CONTAINER_ID,
-   *       runId: RUN, url: REDIS_URL,
-   *     });
-   *     if (!again.ok) throw new Error(...);   // obliterate must not run
-   *
-   * Deliberately out of scope for this phase, so it is recorded rather than
-   * claimed. Until it exists, the window between the module-load check and
-   * this call is unguarded -- narrow, but real.
+   * This throws on any doubt, and the throw is what stops `obliterate`: the
+   * `new Queue` below is never constructed and the destructive call never
+   * reached.
    * =========================================================================
    */
+  assertStillIsolated('to obliterate the outbox queue');
 
   /**
    * The same prefix the runtimes use, which is the point.

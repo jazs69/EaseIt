@@ -46,6 +46,7 @@ import {
 import { Prisma } from '@repo/database';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { ClockService } from '../platform/clock.service.js';
 import { PropertyTaxService } from '../properties/property-tax.service.js';
 import { inclusiveRatePercentFor } from '../properties/tax-engine.js';
@@ -1656,12 +1657,8 @@ export class FoliosService {
     checkOutTime: string;
     taxRatePercent: Prisma.Decimal | null;
   }> {
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      codeOrId,
-    );
-
     const grants = await this.prisma.client.userPropertyRole.findMany({
-      where: { userId, property: isUuid ? { id: codeOrId } : { code: codeOrId } },
+      where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {
         role: { select: { key: true } },
         property: {
