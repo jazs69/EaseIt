@@ -124,6 +124,7 @@ export function useFolioSummaryRows(
           0,
         ),
         correctionCount: tariff.reduce((sum, entry) => sum + entry.correctionCount, 0),
+        refundableMinor: null,
         paymentMethod: null,
         reversesLineId: null,
         postedAt: first.postedAt,

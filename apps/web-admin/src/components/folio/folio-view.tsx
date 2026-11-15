@@ -32,12 +32,14 @@ import {
   IdCard,
   Link2,
   Loader2,
+  Lock,
   Mail,
   Percent,
   Plus,
   Printer,
   RotateCcw,
   TriangleAlert,
+  Undo2,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -75,6 +77,8 @@ import {
   fetchPaymentByKey,
   postFolioPayment,
   postFolioPaymentByBooking,
+  postFolioRefund,
+  closeFolio,
 } from '@/lib/properties-client';
 
 /** `₹1,234.50` from integer minor units. Never a float (section 3.4). */
@@ -157,6 +161,7 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
   };
   const [tab, setTab] = useState<TabId>('summary');
   const [sheet, setSheet] = useState<'payment' | 'charge' | 'discount' | null>(null);
+  const [settleSheet, setSettleSheet] = useState<'refund' | 'close' | null>(null);
   const router = useRouter();
 
   /**
@@ -178,6 +183,11 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
   const { reservation, totals, breakdown } = folio;
   const currency = totals.currency;
   const settled = totals.balanceDueMinor <= 0;
+  const folioOpen = folio.folioId !== null && folio.folioStatus === 'OPEN';
+  const stayClosable = CLOSABLE_STAY_STATUSES.has(reservation.status);
+  const refundablePayments = folio.transactions.filter(
+    (entry) => entry.kind === 'PAYMENT' && entry.isPosted && (entry.refundableMinor ?? 0) > 0,
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -306,6 +316,32 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             }}
             disabled={folio.folioId === null}
             disabledReason="No folio yet — one opens at check-in"
+          />
+          {/* FO-12: refund against a posted payment. FO-13: close a settled
+              folio for a stay that is no longer accruing charges. */}
+          <ActionPill
+            icon={Undo2}
+            label="Refund"
+            onClick={() => {
+              setSettleSheet('refund');
+            }}
+            disabled={!folioOpen || refundablePayments.length === 0}
+            disabledReason={
+              !folioOpen ? 'The folio is not open' : 'No payment with anything left to refund'
+            }
+          />
+          <ActionPill
+            icon={Lock}
+            label="Close folio"
+            onClick={() => {
+              setSettleSheet('close');
+            }}
+            disabled={!folioOpen || !stayClosable}
+            disabledReason={
+              !folioOpen
+                ? 'The folio is not open'
+                : 'Upcoming and in-house stays close their folio at check-out'
+            }
           />
           <ActionPill icon={Mail} label="Email folio" needs="the platform module's mail outbox" />
           <ActionPill icon={RotateCcw} label="Rollback" needs="reversing entries in the folios module" />
@@ -452,6 +488,24 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
           </span>
         </section>
       </footer>
+
+      {settleSheet === null || folio.folioId === null ? null : (
+        <SettleSheet
+          kind={settleSheet}
+          hotelId={hotelId}
+          folioId={folio.folioId}
+          currency={currency}
+          balanceDueMinor={totals.balanceDueMinor}
+          payments={refundablePayments}
+          onClose={() => {
+            setSettleSheet(null);
+          }}
+          onPosted={(page) => {
+            setFolio(page);
+            setSettleSheet(null);
+          }}
+        />
+      )}
 
       {sheet === null ? null : (
         <PostingSheet
@@ -1357,6 +1411,197 @@ function PostingSheet({
               Post
             </button>
           )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Refund and close (FO-12, FO-13)                                            */
+/* -------------------------------------------------------------------------- */
+
+/** Stays whose folio closes here rather than at check-out (mirrors the API). */
+const CLOSABLE_STAY_STATUSES: ReadonlySet<string> = new Set([
+  'CANCELLED',
+  'NO_SHOW',
+  'CHECKED_OUT',
+]);
+
+function SettleSheet({
+  kind,
+  hotelId,
+  folioId,
+  currency,
+  balanceDueMinor,
+  payments,
+  onClose,
+  onPosted,
+}: {
+  kind: 'refund' | 'close';
+  hotelId: string;
+  folioId: string;
+  currency: string;
+  balanceDueMinor: number;
+  payments: readonly FolioTransaction[];
+  onClose: () => void;
+  onPosted: (page: FolioPage) => void;
+}) {
+  const [paymentId, setPaymentId] = useState(payments[0]?.id ?? '');
+  const selected = payments.find((entry) => entry.id === paymentId) ?? null;
+  const refundable = selected?.refundableMinor ?? 0;
+  // Prefilled with what clears a credit, capped at what the payment can return.
+  const [amount, setAmount] = useState(() => {
+    const suggested = Math.min(refundable, Math.max(0, -balanceDueMinor));
+    return suggested > 0 ? String(suggested / 100) : '';
+  });
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // One key per refund the clerk intends, kept across retries of it: a lost
+  // response resent with the same key is answered as the original refund.
+  const [refundKey] = useState(() => crypto.randomUUID());
+
+  const amountMinor = amount.trim() === '' ? 0 : Math.round(Number(amount) * 100);
+  const valid =
+    kind === 'close'
+      ? true
+      : selected !== null &&
+        Number.isFinite(amountMinor) &&
+        amountMinor > 0 &&
+        amountMinor <= refundable &&
+        reason.trim().length > 0;
+
+  async function submit(): Promise<void> {
+    if (!valid || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const page =
+        kind === 'refund'
+          ? await postFolioRefund(hotelId, folioId, paymentId, {
+              amountMinor,
+              reason: reason.trim(),
+              idempotencyKey: refundKey,
+            })
+          : await closeFolio(hotelId, folioId, {
+              reason: reason.trim() === '' ? null : reason.trim(),
+            });
+      onPosted(page);
+    } catch (caught) {
+      // Surfaced, never swallowed: a refund that silently failed leaves a
+      // clerk believing money went back.
+      setError(caught instanceof Error ? caught.message : 'That could not be saved.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const title = kind === 'refund' ? 'Refund a payment' : 'Close folio';
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={() => {
+          if (!saving) onClose();
+        }}
+        className="fixed inset-0 z-50 cursor-default bg-black/60"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="fixed top-1/2 left-1/2 z-50 flex w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-2xl border border-white/[0.08] bg-[#0f141f] p-5 shadow-2xl"
+      >
+        <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
+
+        {kind === 'refund' ? (
+          <>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">
+                Payment
+              </span>
+              <select
+                value={paymentId}
+                onChange={(event) => {
+                  setPaymentId(event.target.value);
+                }}
+                className="h-10 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+              >
+                {payments.map((entry) => (
+                  <option key={entry.id} value={entry.id} className="bg-zinc-900">
+                    {`${formatDate(entry.date)} · ${
+                      entry.paymentMethod === null
+                        ? 'Payment'
+                        : PAYMENT_METHOD_LABELS[entry.paymentMethod]
+                    } · ${money(entry.refundableMinor ?? 0, currency)} refundable`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">
+                Amount (returned by the same method)
+              </span>
+              <input
+                inputMode="decimal"
+                value={amount}
+                onChange={(event) => {
+                  setAmount(event.target.value);
+                }}
+                placeholder={currency}
+                className="tabular h-10 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500/50"
+              />
+            </label>
+          </>
+        ) : (
+          <p className="text-[11px] leading-relaxed text-zinc-400">
+            {balanceDueMinor === 0
+              ? 'The folio sums to zero. Closing it is final: nothing more can be posted to it.'
+              : `The folio is not settled (${money(balanceDueMinor, currency)} due). It can only be closed at exactly zero.`}
+          </p>
+        )}
+
+        <input
+          value={reason}
+          onChange={(event) => {
+            setReason(event.target.value);
+          }}
+          placeholder={kind === 'refund' ? 'Reason (required)' : 'Note (optional)'}
+          className="h-9 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-blue-500/50"
+        />
+
+        {error !== null ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-500/25 bg-rose-500/[0.07] px-3 py-2 text-[11px] text-rose-200"
+          >
+            {error}
+          </p>
+        ) : null}
+
+        <div className="mt-1 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-lg border border-white/[0.08] px-3 py-2 text-xs text-zinc-300 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!valid || saving}
+            onClick={() => {
+              void submit();
+            }}
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-emerald-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null}
+            {kind === 'refund' ? 'Refund' : 'Close folio'}
+          </button>
         </div>
       </div>
     </>

@@ -30,6 +30,8 @@ import {
   type PostFolioDiscountCommand,
   type PaymentByKeyResult,
   type PostFolioPaymentCommand,
+  type CloseFolioCommand,
+  type PostFolioRefundCommand,
   type PropertyId,
   type Role,
   type TaxSlab,
@@ -39,12 +41,14 @@ import {
   FolioAlreadyClosedError,
   ForbiddenError,
   IdempotencyKeyReusedError,
+  OutstandingBalanceError,
   TenantScopeViolationError,
   TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { Prisma } from '@repo/database';
 
+import { isLockTimeout, ROW_LOCK_TIMEOUT_MS } from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { ClockService } from '../platform/clock.service.js';
@@ -55,6 +59,69 @@ const DAY_MS = 86_400_000;
 
 /** The DTO's key shape, mirrored so a malformed key never reaches a query. */
 const PAYMENT_KEY_SHAPE = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** A replayed refund key is the same refund only if the money is the same (FO-12). */
+function assertSameRefundIntent(
+  existing: { folioId: string; amountMinor: number; kind: string; reversesLineId: string | null },
+  folioId: string,
+  paymentLineId: string,
+  command: { amountMinor: number },
+): void {
+  const differing: string[] = [];
+  if (existing.folioId !== folioId) differing.push('folioId');
+  if (existing.kind !== 'REFUND') differing.push('kind');
+  if (existing.reversesLineId !== paymentLineId) differing.push('paymentLineId');
+  if (existing.amountMinor !== command.amountMinor) differing.push('amountMinor');
+  if (differing.length > 0) throw new IdempotencyKeyReusedError(differing);
+}
+
+/**
+ * What is left to refund on one payment: received (the payment plus any
+ * PAYMENT correction to it, stored negative) less every REFUND against it.
+ * The same rule `toTransactions` reports as `refundableMinor`.
+ */
+function refundableFrom(
+  paymentId: string,
+  lines: readonly { id: string; kind: string; amountMinor: number; derivedFromLineId: string | null; reversesLineId: string | null }[],
+): number {
+  let received = 0;
+  let refunded = 0;
+  for (const line of lines) {
+    if (line.kind === 'PAYMENT' && (line.id === paymentId || line.derivedFromLineId === paymentId)) {
+      received -= line.amountMinor;
+    } else if (line.kind === 'REFUND' && line.reversesLineId === paymentId) {
+      refunded += line.amountMinor;
+    }
+  }
+  return Math.max(0, received - refunded);
+}
+
+async function refundableOf(
+  tx: Prisma.TransactionClient,
+  propertyId: string,
+  paymentId: string,
+): Promise<number> {
+  const lines = await tx.folioLine.findMany({
+    where: {
+      propertyId,
+      OR: [
+        { id: paymentId },
+        { derivedFromLineId: paymentId, kind: 'PAYMENT' },
+        { reversesLineId: paymentId, kind: 'REFUND' },
+      ],
+    },
+    select: { id: true, kind: true, amountMinor: true, derivedFromLineId: true, reversesLineId: true },
+  });
+  return refundableFrom(paymentId, lines);
+}
+
+/** Stays whose folio still accrues charges, so it closes at check-out, not here (FO-13). */
+const STAYS_STILL_ACCRUING: ReadonlySet<string> = new Set([
+  ReservationStatus.TENTATIVE,
+  ReservationStatus.ON_HOLD,
+  ReservationStatus.CONFIRMED,
+  ReservationStatus.CHECKED_IN,
+]);
 
 /** The one shape every "no such payment" answer takes. */
 const NOT_FOUND_PAYMENT: PaymentByKeyResult = {
@@ -399,8 +466,7 @@ export class FoliosService {
      */
     const chargeDate = command.chargeDate ?? toBusinessDate(property.businessDate);
 
-    await this.prisma.client.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+    await this.inFolioWrite(property.id, folio, async (tx) => {
 
       const charge = await tx.folioLine.create({
         data: {
@@ -647,8 +713,7 @@ export class FoliosService {
     const businessDate = toBusinessDate(property.businessDate);
 
     try {
-      await this.prisma.client.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+      await this.inFolioWrite(property.id, folio, async (tx) => {
 
         await tx.folioLine.create({
           data: {
@@ -831,6 +896,13 @@ export class FoliosService {
 
     if (line === null) throw new TenantScopeViolationError('Folio line');
 
+    // A refund is money returned; it is not edited (FO-12).
+    if (line.kind === 'REFUND') {
+      throw new ValidationFailedError({
+        lineId: 'A refund cannot be corrected. Post a payment to undo it.',
+      });
+    }
+
     // A correction corrects the original line, not another correction.
     if (line.derivedFrom !== null) {
       throw new ValidationFailedError({
@@ -921,8 +993,7 @@ export class FoliosService {
       : deltaGrossMinor;
     const deltaTaxMinor = deltaGrossMinor - deltaNetMinor;
 
-    await this.prisma.client.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+    await this.inFolioWrite(property.id, folio, async (tx) => {
 
       const adjustment = await tx.folioLine.create({
         data: {
@@ -1227,8 +1298,7 @@ export class FoliosService {
       shares = targetPerNight.map((target, index) => target - (currentPerNight[index] ?? 0));
     }
 
-    await this.prisma.client.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+    await this.inFolioWrite(property.id, folio, async (tx) => {
 
       for (const [index, charge] of charges.entries()) {
         const shareGrossMinor = shares[index] ?? 0;
@@ -1325,8 +1395,7 @@ export class FoliosService {
     const folio = await this.loadOpenFolio(property.id, folioId);
     const businessDate = toBusinessDate(property.businessDate);
 
-    await this.prisma.client.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
+    await this.inFolioWrite(property.id, folio, async (tx) => {
 
       await tx.folioLine.create({
         data: {
@@ -1453,9 +1522,12 @@ export class FoliosService {
           // Charges and money movements alike. A mistyped payment is as
           // real a mistake as a mistyped tariff, and both are corrected the
           // same way: by posting the difference, never by overwriting.
-          isCorrectable: line.derivedFromLineId === null,
+          // A refund is not corrected by editing it either: a wrong refund is
+          // put right with a payment, the way money actually moves (FO-12).
+          isCorrectable: line.derivedFromLineId === null && line.kind !== 'REFUND',
           originalGrossMinor: chargeOnlyGrossMinor,
           correctionCount: correctionCount.get(line.id) ?? 0,
+          refundableMinor: line.kind === 'PAYMENT' ? refundableFrom(line.id, lines) : null,
           paymentMethod: line.paymentMethod as FolioTransaction['paymentMethod'],
           reversesLineId: line.reversesLineId,
           postedAt: line.createdAt.toISOString(),
@@ -1626,6 +1698,7 @@ export class FoliosService {
         isCorrectable: false,
         originalGrossMinor: grossMinor,
         correctionCount: 0,
+        refundableMinor: null,
         paymentMethod: null,
         reversesLineId: null,
         postedAt: `${date}T00:00:00.000Z`,
@@ -1662,6 +1735,7 @@ export class FoliosService {
         isCorrectable: false,
         originalGrossMinor: -unrecorded,
         correctionCount: 0,
+        refundableMinor: null,
         paymentMethod: null,
         reversesLineId: null,
         postedAt: `${date}T00:00:00.000Z`,
@@ -1745,6 +1819,276 @@ export class FoliosService {
       balanceDueMinor:
         subtotalMinor + taxMinor - paymentsReceivedMinor + refundsIssuedMinor,
     };
+  }
+
+  /* -------------------------------------------------------------------- */
+  /*  Refunds and settlement (FO-12, FO-13)                                */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Return money against one posted payment (FO-12).
+   *
+   * ===========================================================================
+   * A REFUND line pointing at the payment through `reversesLineId`: the
+   * payment is never touched (section 3.4), and the ledger shows what came in
+   * and what went back, linked. Stored positive (the sign CHECK requires it),
+   * so the balance stays one plain sum. Method and card detail are copied
+   * from the payment: money goes back the way it came.
+   *
+   * **Capped per payment, under the lock.** What is left to refund is what
+   * the payment received (after any correction to it) less every refund
+   * already posted against it, computed after the reservation and folio rows
+   * are locked, so two concurrent refunds cannot both pass the check and
+   * return more than was received.
+   *
+   * **Idempotent per key.** The key is looked up under the same lock before
+   * anything is checked, so a replay of a refund that emptied the payment is
+   * answered as the original success rather than refused as "nothing left to
+   * refund". The unique index stays the backstop for the same key on another
+   * folio.
+   * ===========================================================================
+   */
+  async postRefund(
+    userId: string,
+    hotelId: string,
+    folioId: string,
+    paymentLineId: string,
+    command: PostFolioRefundCommand,
+  ): Promise<FolioPage> {
+    const property = await this.authorise(userId, hotelId, Permission.FOLIO_REFUND);
+    const folio = await this.loadOpenFolio(property.id, folioId);
+    const businessDate = toBusinessDate(property.businessDate);
+
+    try {
+      await this.inFolioWrite(property.id, folio, async (tx) => {
+        const replayed = await tx.folioLine.findFirst({
+          where: { propertyId: property.id, idempotencyKey: command.idempotencyKey },
+          select: { folioId: true, amountMinor: true, kind: true, reversesLineId: true },
+        });
+        if (replayed !== null) {
+          assertSameRefundIntent(replayed, folio.id, paymentLineId, command);
+          return;
+        }
+
+        const payment = await tx.folioLine.findFirst({
+          where: { id: paymentLineId, folioId: folio.id, propertyId: property.id },
+          select: {
+            id: true,
+            kind: true,
+            paymentMethod: true,
+            cardLast4: true,
+            paymentIssuer: true,
+            derivedFromLineId: true,
+          },
+        });
+        if (payment === null) throw new TenantScopeViolationError('Folio line');
+        if (payment.kind !== 'PAYMENT' || payment.derivedFromLineId !== null) {
+          throw new ValidationFailedError({
+            paymentLineId:
+              'Only a posted payment can be refunded. Refund the original payment, not a correction to it.',
+          });
+        }
+
+        const refundableMinor = await refundableOf(tx, property.id, payment.id);
+        if (command.amountMinor > refundableMinor) {
+          throw new ValidationFailedError({
+            amountMinor: `At most ${String(refundableMinor)} can still be refunded on this payment.`,
+          });
+        }
+
+        await tx.folioLine.create({
+          data: {
+            propertyId: property.id,
+            folioId: folio.id,
+            kind: 'REFUND',
+            description: `Refund (${payment.paymentMethod ?? 'OTHER'}) — ${command.reason}`,
+            amountMinor: command.amountMinor,
+            currency: folio.currency,
+            // The open accounting day, never now() (section 3.3).
+            chargeDate: toUtcMidnight(businessDate),
+            paymentMethod: payment.paymentMethod,
+            cardLast4: payment.cardLast4,
+            paymentIssuer: payment.paymentIssuer,
+            reversesLineId: payment.id,
+            remark: command.reason,
+            postedById: userId,
+            idempotencyKey: command.idempotencyKey,
+          },
+        });
+
+        // The reservation's mirror of money taken, in the same transaction.
+        await tx.reservation.update({
+          where: { id: folio.reservationId },
+          data: { paidAmountMinor: { decrement: command.amountMinor } },
+        });
+
+        await this.writeAudit(tx, property.id, userId, folio.reservationId, 'FOLIO_REFUND_POSTED', {
+          paymentLineId: payment.id,
+          method: payment.paymentMethod,
+          amountMinor: command.amountMinor,
+          refundableBeforeMinor: refundableMinor,
+          reason: command.reason,
+          businessDate,
+          idempotencyKey: command.idempotencyKey,
+        });
+      });
+    } catch (cause) {
+      // The same key landed on another folio between the lookup and the
+      // insert: the index decided, so compare against what it kept.
+      if (!isIdempotencyKeyCollision(cause)) throw cause;
+      const existing = await this.prisma.client.folioLine.findFirst({
+        where: { propertyId: property.id, idempotencyKey: command.idempotencyKey },
+        select: { folioId: true, amountMinor: true, kind: true, reversesLineId: true },
+      });
+      if (existing === null) throw new TransactionConflictError('folio refund');
+      assertSameRefundIntent(existing, folio.id, paymentLineId, command);
+    }
+
+    return this.byBookingCode(userId, hotelId, folio.bookingCode);
+  }
+
+  /**
+   * Close a settled folio outside check-out (FO-13).
+   *
+   * ===========================================================================
+   * Check-out closes an in-house stay's folio. This closes the rest: a
+   * cancelled or no-show stay whose deposit has been refunded, or anything
+   * else no longer accruing charges. An upcoming or in-house stay is refused:
+   * its nights are still to be charged, and closing would block them.
+   *
+   * **Only at exactly zero**, summed from the lines under the lock (never the
+   * cached `paidAmountMinor`, section 3.4). Owing or in credit is the typed
+   * `OutstandingBalanceError`. The lock is what makes "zero" true at the
+   * moment of closing: every folio write takes the same reservation and folio
+   * rows first, so no payment, charge or refund can land between the sum and
+   * the close.
+   *
+   * Closing a closed folio is an idempotent success, not an error: the
+   * caller's intent already holds, and `closedAt` is not moved.
+   * ===========================================================================
+   */
+  async closeFolio(
+    userId: string,
+    hotelId: string,
+    folioId: string,
+    command: CloseFolioCommand,
+  ): Promise<FolioPage> {
+    const property = await this.authorise(userId, hotelId, Permission.FOLIO_SETTLE);
+    const folio = await this.prisma.client.folio.findFirst({
+      where: { id: folioId, propertyId: property.id },
+      select: {
+        id: true,
+        currency: true,
+        reservationId: true,
+        reservation: { select: { confirmationCode: true } },
+      },
+    });
+    if (folio === null) throw new TenantScopeViolationError('Folio');
+
+    await this.runFolioTransaction(async (tx) => {
+      const status = await this.lockFolio(tx, property.id, folio);
+      if (status === 'CLOSED') return;
+      if (status !== 'OPEN') throw new FolioAlreadyClosedError(folio.id);
+
+      const stay = await tx.reservation.findFirst({
+        where: { id: folio.reservationId, propertyId: property.id },
+        select: { status: true },
+      });
+      const stayStatus: string | null = stay?.status ?? null;
+      if (stayStatus !== null && STAYS_STILL_ACCRUING.has(stayStatus)) {
+        throw new ValidationFailedError({
+          folioId:
+            stayStatus === ReservationStatus.CHECKED_IN
+              ? 'The guest is in house. The folio closes at check-out.'
+              : 'This stay has not happened yet. Cancel it or mark it a no-show before closing its folio.',
+        });
+      }
+
+      const balanceMinor =
+        (
+          await tx.folioLine.aggregate({
+            where: { folioId: folio.id, propertyId: property.id },
+            _sum: { amountMinor: true },
+          })
+        )._sum.amountMinor ?? 0;
+      if (balanceMinor !== 0) {
+        throw new OutstandingBalanceError(balanceMinor, folio.currency, 'close');
+      }
+
+      await tx.folio.updateMany({
+        where: { id: folio.id, propertyId: property.id, status: 'OPEN' },
+        data: { status: 'CLOSED', closedAt: this.clock.now() },
+      });
+
+      await this.writeAudit(tx, property.id, userId, folio.reservationId, 'FOLIO_CLOSED', {
+        folioId: folio.id,
+        balanceMinor,
+        stayStatus,
+        reason: command.reason,
+      });
+    });
+
+    return this.byBookingCode(userId, hotelId, folio.reservation.confirmationCode);
+  }
+
+  /**
+   * Every folio write runs here: the reservation row, then the folio row,
+   * both FOR UPDATE, then a re-check that the folio is still open.
+   *
+   * ===========================================================================
+   * The same order check-in, check-out and cancellation use (reservation
+   * first, section 3.1.1), so a folio write and a stay operation queue rather
+   * than deadlock. It is what lets FO-13 promise "closed at exactly zero": a
+   * posting cannot commit between a close's balance read and its update, and
+   * a posting that queued behind a close sees CLOSED here and is refused.
+   *
+   * The wait is bounded by the shared `ROW_LOCK_TIMEOUT_MS`, set locally
+   * before the first blocking statement. `55P03` becomes the typed 409 and
+   * is not retried: a folio write is never retried (a check-in posting has no
+   * key, so a retry could double-post).
+   * ===========================================================================
+   */
+  private async inFolioWrite(
+    propertyId: string,
+    folio: { id: string; reservationId: string },
+    work: (tx: Prisma.TransactionClient) => Promise<void>,
+  ): Promise<void> {
+    await this.runFolioTransaction(async (tx) => {
+      const status = await this.lockFolio(tx, propertyId, folio);
+      // Re-checked under the lock: the pre-flight `loadOpenFolio` may be stale.
+      if (status !== 'OPEN') throw new FolioAlreadyClosedError(folio.id);
+      await work(tx);
+    });
+  }
+
+  private async runFolioTransaction(
+    work: (tx: Prisma.TransactionClient) => Promise<void>,
+  ): Promise<void> {
+    try {
+      await this.prisma.client.$transaction(work);
+    } catch (error) {
+      if (isLockTimeout(error)) throw new TransactionConflictError('folio');
+      throw error;
+    }
+  }
+
+  /** Bounded wait, tenant stamp, reservation then folio FOR UPDATE; returns the folio status. */
+  private async lockFolio(
+    tx: Prisma.TransactionClient,
+    propertyId: string,
+    folio: { id: string; reservationId: string },
+  ): Promise<string | null> {
+    await tx.$executeRaw`SELECT set_config('lock_timeout', ${String(ROW_LOCK_TIMEOUT_MS)}, true)`;
+    await tx.$executeRaw`SELECT set_config('app.current_property_id', ${propertyId}, true)`;
+    await tx.$queryRaw`
+      SELECT 1 FROM "reservation"
+       WHERE "id" = ${folio.reservationId}::uuid AND "propertyId" = ${propertyId}::uuid
+         FOR UPDATE`;
+    const rows = await tx.$queryRaw<{ status: string }[]>`
+      SELECT "status"::text AS status FROM "folio"
+       WHERE "id" = ${folio.id}::uuid AND "propertyId" = ${propertyId}::uuid
+         FOR UPDATE`;
+    return rows[0]?.status ?? null;
   }
 
   /* -------------------------------------------------------------------- */

@@ -103,6 +103,12 @@ export const folioTransactionSchema = z.object({
   /** How many corrections have been folded in. */
   correctionCount: z.number().int().nonnegative(),
   /**
+   * FO-12: on a posted PAYMENT row, how much of it can still be refunded —
+   * what was received (after corrections) less every refund already posted
+   * against it. Null on every other row.
+   */
+  refundableMinor: z.number().int().nonnegative().nullable(),
+  /**
    * What this row is, for grouping.
    *
    * The Summary tab rolls every `ROOM_TARIFF` row into one "Booking Price";
@@ -289,6 +295,33 @@ export const postFolioPaymentSchema = z.object({
 });
 
 export type PostFolioPaymentCommand = z.infer<typeof postFolioPaymentSchema>;
+
+/**
+ * FO-12: return money against one posted payment.
+ *
+ * The method is not sent: a refund goes back the way the money came in, so it
+ * is taken from the payment. `amountMinor` is the positive amount returned and
+ * may be partial; the server refuses more than is left to refund on that
+ * payment. The key has the same contract as a payment's: one per intent,
+ * reused on every retry, so a double-click cannot return money twice.
+ */
+export const postFolioRefundSchema = z.object({
+  amountMinor: z.number().int().positive(),
+  reason: z.string().trim().min(1).max(200),
+  idempotencyKey: postFolioPaymentSchema.shape.idempotencyKey,
+});
+
+export type PostFolioRefundCommand = z.infer<typeof postFolioRefundSchema>;
+
+/**
+ * FO-13: close a settled folio outside check-out (a cancelled or no-show
+ * stay). Refused unless the ledger sums to exactly zero.
+ */
+export const closeFolioSchema = z.object({
+  reason: z.string().trim().max(200).nullable().default(null),
+});
+
+export type CloseFolioCommand = z.infer<typeof closeFolioSchema>;
 
 /**
  * What an idempotency key resolves to, right now, in the database.

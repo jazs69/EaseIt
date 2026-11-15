@@ -139,13 +139,14 @@ export class OutstandingBalanceError extends DomainError {
   readonly code = ErrorCode.OUTSTANDING_BALANCE;
   readonly httpStatus = HttpStatus.CONFLICT;
 
-  constructor(balanceMinor: number, currency: string) {
+  /** `action` names what was refused: a check-out, or closing the folio (FO-13). */
+  constructor(balanceMinor: number, currency: string, action: 'check-out' | 'close' = 'check-out') {
+    const what = action === 'close' ? 'the folio cannot be closed' : 'it cannot be checked out';
     super(
       balanceMinor > 0
-        ? 'This stay still has an amount due, so it cannot be checked out. ' +
-            'Settle the folio first.'
-        : 'This stay is in credit, so it cannot be checked out. Refund the ' +
-            'balance first rather than closing the folio over it.',
+        ? `This stay still has an amount due, so ${what}. Settle the folio first.`
+        : `This stay is in credit, so ${what}. Refund the balance first rather than ` +
+            'closing the folio over it.',
       { balanceMinor, currency },
     );
   }

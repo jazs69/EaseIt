@@ -317,9 +317,10 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
   lock-ordering audit found no two-party cycle among the five writers of these tables; that is an
   argument, not a proof.
 - **Three-way races** (any interleaving of three or more of cancel / check-in / move / book).
-- **Folio interleavings.** `folios.service.ts` writes `reservation.paidAmountMinor` with an atomic
-  `{ increment }` and takes no row lock, no `lock_timeout` and no retry. It holds nothing the other
-  paths want, but its interaction with them is untested. There is deliberately **no retry wrapper
+- **Folio interleavings.** Since FO-12/FO-13, every `folios.service.ts` write locks the reservation
+  row then the folio row `FOR UPDATE` under the shared `lock_timeout` (`lockFolio`), re-checks the
+  folio is OPEN, and maps `55P03` to `TransactionConflictError`. Close vs payment and refund vs refund
+  are race-tested (`folio-settlement.test.mjs`); interleavings with the other stay operations are not. There is deliberately **no retry wrapper
   around folio payments**: a check-in opens the folio and posts the arrival night with no idempotency
   key, so retrying could double-post.
 - **Create-reservation racing cancellation or a room move** on the same room type and dates.

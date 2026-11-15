@@ -30,6 +30,10 @@ import {
   postFolioChargeSchema,
   postFolioDiscountSchema,
   postFolioPaymentSchema,
+  postFolioRefundSchema,
+  closeFolioSchema,
+  type CloseFolioCommand,
+  type PostFolioRefundCommand,
   type CorrectFolioChargeCommand,
   type CorrectRoomChargesCommand,
   type FolioPage,
@@ -232,6 +236,51 @@ export class FoliosController {
     @Body(new ZodValidationPipe(postFolioDiscountSchema)) body: PostFolioDiscountCommand,
   ): Promise<FolioPage> {
     return this.folios.postDiscount(this.userId(request), hotelId, folioId, body);
+  }
+
+  @Post(':hotelId/folios/:folioId/payments/:paymentLineId/refund')
+  @ApiOperation({
+    summary: 'Refund a payment',
+    description:
+      'Posts a REFUND line reversing (part of) one payment, by the same method. ' +
+      'Capped at what is left to refund on that payment. Idempotent per key: a ' +
+      'replay answers the original success; the same key with different money is 409.',
+  })
+  @ApiOkResponse({ description: 'The recomputed folio page.' })
+  @ApiBadRequestResponse({ description: 'More than is left to refund, or not a payment.' })
+  @ApiConflictResponse({ description: 'The folio is closed, or the key was reused.' })
+  @ApiForbiddenResponse({ description: 'Requires folio:refund.' })
+  @ApiNotFoundResponse({ description: 'No such folio or payment at this property.' })
+  refund(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('folioId') folioId: string,
+    @Param('paymentLineId') paymentLineId: string,
+    @Body(new ZodValidationPipe(postFolioRefundSchema)) body: PostFolioRefundCommand,
+  ): Promise<FolioPage> {
+    return this.folios.postRefund(this.userId(request), hotelId, folioId, paymentLineId, body);
+  }
+
+  @Post(':hotelId/folios/:folioId/close')
+  @ApiOperation({
+    summary: 'Close a settled folio',
+    description:
+      'For a stay that is no longer accruing charges (cancelled, no-show, checked ' +
+      'out). Refused with OUTSTANDING_BALANCE unless the lines sum to exactly zero. ' +
+      'Closing a closed folio is a no-op success.',
+  })
+  @ApiOkResponse({ description: 'The recomputed folio page.' })
+  @ApiBadRequestResponse({ description: 'The stay is upcoming or in house.' })
+  @ApiConflictResponse({ description: 'The balance is not zero.' })
+  @ApiForbiddenResponse({ description: 'Requires folio:settle.' })
+  @ApiNotFoundResponse({ description: 'No such folio at this property.' })
+  close(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('folioId') folioId: string,
+    @Body(new ZodValidationPipe(closeFolioSchema)) body: CloseFolioCommand,
+  ): Promise<FolioPage> {
+    return this.folios.closeFolio(this.userId(request), hotelId, folioId, body);
   }
 
   private userId(request: FastifyRequest): string {

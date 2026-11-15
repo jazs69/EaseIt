@@ -108,6 +108,8 @@ import {
   type FolioPage,
   type PostFolioChargeCommand,
   type PostFolioDiscountCommand,
+  type PostFolioRefundCommand,
+  type CloseFolioCommand,
   paymentByKeyResultSchema,
   type PaymentByKeyResult,
   type PostFolioPaymentCommand,
@@ -623,6 +625,37 @@ export function correctRoomCharges(
 ): Promise<FolioPage> {
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/room-charges/correct`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+/**
+ * FO-12: refund (part of) one payment. The key is minted once per refund the
+ * clerk intends and reused on every retry, so a double-click cannot return
+ * money twice.
+ */
+export function postFolioRefund(
+  hotelId: string,
+  folioId: string,
+  paymentLineId: string,
+  body: PostFolioRefundCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/payments/${encodeURIComponent(paymentLineId)}/refund`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+/** FO-13: close a settled folio (refused unless it sums to exactly zero). */
+export function closeFolio(
+  hotelId: string,
+  folioId: string,
+  body: CloseFolioCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/close`,
     folioPageSchema,
     { method: 'POST', body },
   );

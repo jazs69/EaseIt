@@ -27,7 +27,6 @@ const UNAVAILABLE = [
   'night_audit:read',
   'night_audit:execute',
   'housekeeping:read',
-  'folio:refund',
   'channels:read',
   'channels:sync',
 ];

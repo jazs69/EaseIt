@@ -207,6 +207,19 @@ export class CheckOutService {
            * with its reservation's is then simply not found, which is the
            * behaviour the rest of the repository has (`folios.service.ts:1375`).
            */
+          /**
+           * The folio row, locked after the reservation row (FO-13).
+           *
+           * Every folio write takes reservation then folio FOR UPDATE
+           * (`folios.service.ts` `lockFolio`), so the reservation lock above
+           * already keeps a posting out; locking the folio too states the
+           * order explicitly and matches the close endpoint. Bounded by the
+           * transaction-local `lock_timeout` this transaction already set.
+           */
+          await tx.$queryRaw`
+            SELECT 1 FROM "folio"
+             WHERE "reservationId" = ${reservationId}::uuid AND "propertyId" = ${propertyId}::uuid
+               FOR UPDATE`;
           const folio = await tx.folio.findFirst({
             where: { reservationId, propertyId },
             select: { id: true, status: true, currency: true },
