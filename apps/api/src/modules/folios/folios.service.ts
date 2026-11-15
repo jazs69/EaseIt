@@ -980,6 +980,17 @@ export class FoliosService {
         });
       }
 
+      if (line.kind === 'ROOM_CHARGE') {
+        await this.applyRoomCorrectionToBooking(
+          tx,
+          property.id,
+          folio.reservationId,
+          line.chargeDate,
+          deltaNetMinor,
+          deltaTaxMinor,
+        );
+      }
+
       if (isCredit) {
         // The reservation mirrors what has been taken. Corrected in the same
         // transaction as the line, or the two disagree the moment one fails.
@@ -1266,6 +1277,15 @@ export class FoliosService {
             },
           });
         }
+
+        await this.applyRoomCorrectionToBooking(
+          tx,
+          property.id,
+          folio.reservationId,
+          charge.chargeDate,
+          shareNetMinor,
+          shareTaxMinor,
+        );
       }
 
       await this.writeAudit(
@@ -1519,30 +1539,54 @@ export class FoliosService {
      * then gets printed next to the one the guest agreed to.
      * ===========================================================================
      */
+    /**
+     * Room-charge corrections are carried onto the reservation's total and tax
+     * (`applyRoomCorrectionToBooking`), but they only ever touch POSTED nights.
+     * The even split below is for the nights still to come, so it works from
+     * the total as booked: backing the corrections out keeps an unposted
+     * night of a pre-F9 stay at its agreed price instead of absorbing a share
+     * of a correction made to a different night.
+     */
+    const byId = new Map(lines.map((line) => [line.id, line]));
+    let correctionGrossMinor = 0;
+    let correctionTaxMinor = 0;
+    for (const line of lines) {
+      const parent = line.derivedFromLineId === null ? undefined : byId.get(line.derivedFromLineId);
+      if (parent === undefined) continue;
+      const correctsRoomCharge =
+        (line.kind === 'ADJUSTMENT' && !line.isTaxAdjustment && parent.kind === 'ROOM_CHARGE') ||
+        (isTaxLine(line) &&
+          parent.kind === 'ADJUSTMENT' &&
+          parent.derivedFromLineId !== null &&
+          byId.get(parent.derivedFromLineId)?.kind === 'ROOM_CHARGE');
+      if (!correctsRoomCharge) continue;
+      correctionGrossMinor += line.amountMinor;
+      if (isTaxLine(line)) correctionTaxMinor += line.amountMinor;
+    }
+    const bookedTotalMinor = reservation.totalAmountMinor - correctionGrossMinor;
+    const bookedTaxMinor =
+      reservation.taxAmountMinor > 0 ? reservation.taxAmountMinor - correctionTaxMinor : 0;
+
     const agreedTaxMinor = (() => {
       if (reservation.isTaxExempt) return 0;
-      if (reservation.taxAmountMinor > 0) return reservation.taxAmountMinor;
+      if (bookedTaxMinor > 0) return bookedTaxMinor;
 
       // Resolved from the net the total implies, not from the total divided by
       // nights: a gross nightly figure can sit above a slab boundary its net
       // does not, and rating on it would over-derive the tax by a whole band.
-      const ratePercent = inclusiveRatePercentFor(
-        reservation.totalAmountMinor,
-        nights,
-        taxSlabs,
-      );
+      const ratePercent = inclusiveRatePercentFor(bookedTotalMinor, nights, taxSlabs);
       if (ratePercent <= 0) return 0;
 
       // Integer minor units throughout. `gross - round(gross / (1 + rate))`
       // keeps net + tax === gross exactly, which rounding each half
       // independently does not (section 3.4).
-      const net = Math.round(reservation.totalAmountMinor / (1 + ratePercent / 100));
-      return reservation.totalAmountMinor - net;
+      const net = Math.round(bookedTotalMinor / (1 + ratePercent / 100));
+      return bookedTotalMinor - net;
     })();
 
-    const nightlyTotal = Math.floor(reservation.totalAmountMinor / nights);
+    const nightlyTotal = Math.floor(bookedTotalMinor / nights);
     const nightlyTax = Math.floor(agreedTaxMinor / nights);
-    const totalRemainder = reservation.totalAmountMinor - nightlyTotal * nights;
+    const totalRemainder = bookedTotalMinor - nightlyTotal * nights;
     const taxRemainder = agreedTaxMinor - nightlyTax * nights;
 
     const pricedByDate = new Map(
@@ -1706,6 +1750,51 @@ export class FoliosService {
   /* -------------------------------------------------------------------- */
   /*  Shared                                                               */
   /* -------------------------------------------------------------------- */
+
+  /**
+   * Carry a room-charge correction onto the booking itself.
+   *
+   * The folio is the ledger, but the stay total, its tax and the per-night
+   * tariff on the reservation are what the master report's total and balance,
+   * the dashboards, the calendar and the performance figures read. Leaving
+   * them at the original price made every one of those disagree with the
+   * corrected folio. Applied in the same transaction as the folio lines, so
+   * the two cannot drift if either write fails.
+   *
+   * Atomic increments, scoped by `propertyId` in the same predicate (3.2).
+   * `taxAmountMinor` is moved only when the booking recorded one: a legacy
+   * stay with 0 has its tax derived from the total, which now moves anyway.
+   * Floors at 0 guard the non-negative CHECKs against a paisa of rounding on
+   * a night corrected to nothing. A night without a `reservation_night` row
+   * (a stay booked before F9) has nothing to update there.
+   */
+  private async applyRoomCorrectionToBooking(
+    tx: Prisma.TransactionClient,
+    propertyId: string,
+    reservationId: string,
+    chargeDate: Date,
+    deltaNetMinor: number,
+    deltaTaxMinor: number,
+  ): Promise<void> {
+    const deltaGrossMinor = deltaNetMinor + deltaTaxMinor;
+    await tx.$executeRaw`
+      UPDATE "reservation"
+         SET "totalAmountMinor" = GREATEST(0, "totalAmountMinor" + ${deltaGrossMinor}::int),
+             "taxAmountMinor" = CASE WHEN "taxAmountMinor" > 0
+                                     THEN GREATEST(0, "taxAmountMinor" + ${deltaTaxMinor}::int)
+                                     ELSE "taxAmountMinor" END
+       WHERE "id" = ${reservationId}::uuid AND "propertyId" = ${propertyId}::uuid
+    `;
+    await tx.$executeRaw`
+      UPDATE "reservation_night"
+         SET "rateMinor" = GREATEST(0, "rateMinor" + ${deltaNetMinor}::int),
+             "taxMinor" = GREATEST(0, "taxMinor" + ${deltaTaxMinor}::int),
+             "rateSource" = 'MANUAL'
+       WHERE "reservationId" = ${reservationId}::uuid
+         AND "propertyId" = ${propertyId}::uuid
+         AND "stayDate" = ${chargeDate}::date
+    `;
+  }
 
   private async writeAudit(
     tx: Prisma.TransactionClient,

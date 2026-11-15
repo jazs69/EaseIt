@@ -565,8 +565,12 @@ export class ReportsRepository {
     >`
       SELECT
         f."reservationId"                                                   AS "reservationId",
-        COALESCE(SUM(CASE WHEN l."kind" = 'ROOM_CHARGE'
-                           AND l."reversesLineId" IS NULL
+        -- Room revenue at the corrected rate: the posted charges plus the net
+        -- of every correction hung off one (a non-tax ADJUSTMENT whose parent
+        -- is a ROOM_CHARGE). The correction's tax is in roomTax below.
+        COALESCE(SUM(CASE WHEN (l."kind" = 'ROOM_CHARGE' AND l."reversesLineId" IS NULL)
+                             OR (l."kind" = 'ADJUSTMENT' AND NOT l."isTaxAdjustment"
+                                 AND p."kind" = 'ROOM_CHARGE')
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "roomRevenue",
         -- Tax is TAX or a flagged negative tax ADJUSTMENT, attributed to the
         -- charge it ultimately derives from: directly (the charge's own tax)
@@ -576,8 +580,9 @@ export class ReportsRepository {
                            AND (p."kind" = 'ROOM_CHARGE'
                                 OR (p."kind" = 'ADJUSTMENT' AND gp."kind" = 'ROOM_CHARGE'))
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "roomTax",
-        COALESCE(SUM(CASE WHEN l."kind" = 'SERVICE_CHARGE'
-                           AND l."reversesLineId" IS NULL
+        COALESCE(SUM(CASE WHEN (l."kind" = 'SERVICE_CHARGE' AND l."reversesLineId" IS NULL)
+                             OR (l."kind" = 'ADJUSTMENT' AND NOT l."isTaxAdjustment"
+                                 AND p."kind" = 'SERVICE_CHARGE')
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "serviceNet",
         COALESCE(SUM(CASE WHEN (l."kind" = 'TAX' OR l."isTaxAdjustment")
                            AND (p."kind" = 'SERVICE_CHARGE'

@@ -491,6 +491,17 @@ async function body() {
       },
     });
 
+    // The booking's own figures before any correction, to prove each one is
+    // carried onto the reservation and its nights (not just the folio).
+    const bookingBefore = await prisma.reservation.findFirst({
+      where: { propertyId: fixture.propertyId, id: desk.payload?.id },
+      select: { totalAmountMinor: true, taxAmountMinor: true },
+    });
+    const nightsBefore = await prisma.reservationNight.findMany({
+      where: { propertyId: fixture.propertyId, reservationId: desk.payload?.id },
+      select: { stayDate: true, rateMinor: true, taxMinor: true },
+    });
+
     const correct = await h.call(
       'POST',
       `${base}/folios/${deskFolio.id}/room-charges/correct`,
@@ -616,6 +627,64 @@ async function body() {
       report.status === 200 && reportRow?.roomTaxMinor === finalTax,
       `HTTP ${String(report.status)} report ${String(reportRow?.roomTaxMinor)} ledger ${String(finalTax)}`,
     );
+
+    // Room revenue at the corrected rate, not the originally posted one.
+    const finalNet = stayCharges.reduce((s, c) => s + perNight(rows, c).net, 0);
+    h.check(
+      'the master report’s room revenue is the corrected net',
+      reportRow?.roomRevenueMinor === finalNet,
+      `report ${String(reportRow?.roomRevenueMinor)} ledger ${String(finalNet)}`,
+    );
+
+    // Every correction is carried onto the booking: total, tax, and each night.
+    // A correction line: an ADJUSTMENT hung off something (its net, or a flagged
+    // negative tax), or a TAX hung off an ADJUSTMENT.
+    const adjustmentIds = new Set(rows.filter((l) => l.kind === 'ADJUSTMENT').map((l) => l.id));
+    const corrections = rows.filter(
+      (l) =>
+        (l.kind === 'ADJUSTMENT' && l.derivedFromLineId !== null) ||
+        (l.kind === 'TAX' && adjustmentIds.has(l.derivedFromLineId)),
+    );
+    const correctionGross = corrections.reduce((s, l) => s + l.amountMinor, 0);
+    const correctionTax = corrections.filter((l) => l.kind === 'TAX' || l.isTaxAdjustment).reduce((s, l) => s + l.amountMinor, 0);
+    const bookingAfter = await prisma.reservation.findFirst({
+      where: { propertyId: fixture.propertyId, id: desk.payload?.id },
+      select: { totalAmountMinor: true, taxAmountMinor: true },
+    });
+    h.check(
+      'the booking total moved by exactly the corrections (gross)',
+      bookingAfter.totalAmountMinor - bookingBefore.totalAmountMinor === correctionGross,
+      `moved ${String(bookingAfter.totalAmountMinor - bookingBefore.totalAmountMinor)} corrections ${String(correctionGross)}`,
+    );
+    h.check(
+      'the booking tax moved by exactly the correction tax',
+      bookingAfter.taxAmountMinor - bookingBefore.taxAmountMinor === correctionTax,
+      `moved ${String(bookingAfter.taxAmountMinor - bookingBefore.taxAmountMinor)} corrections ${String(correctionTax)}`,
+    );
+    h.check(
+      'the master report total is the corrected booking total',
+      reportRow?.totalMinor === bookingAfter.totalAmountMinor,
+      `report ${String(reportRow?.totalMinor)} booking ${String(bookingAfter.totalAmountMinor)}`,
+    );
+
+    const nightsAfter = await prisma.reservationNight.findMany({
+      where: { propertyId: fixture.propertyId, reservationId: desk.payload?.id },
+      select: { stayDate: true, rateMinor: true, taxMinor: true, rateSource: true },
+    });
+    for (const after of nightsAfter) {
+      const date = after.stayDate.toISOString().slice(0, 10);
+      const before = nightsBefore.find((n) => n.stayDate.getTime() === after.stayDate.getTime());
+      const onDate = corrections.filter((l) => l.chargeDate.getTime() === after.stayDate.getTime());
+      const dNet = onDate.filter((l) => !(l.kind === 'TAX' || l.isTaxAdjustment)).reduce((s, l) => s + l.amountMinor, 0);
+      const dTax = onDate.filter((l) => l.kind === 'TAX' || l.isTaxAdjustment).reduce((s, l) => s + l.amountMinor, 0);
+      h.check(
+        `night ${date} carries its corrections (rate and tax)${onDate.length > 0 ? ', marked MANUAL' : ''}`,
+        after.rateMinor - before.rateMinor === dNet &&
+          after.taxMinor - before.taxMinor === dTax &&
+          (onDate.length === 0 || after.rateSource === 'MANUAL'),
+        `rate ${String(before.rateMinor)}->${String(after.rateMinor)} (Δ${String(dNet)}) tax ${String(before.taxMinor)}->${String(after.taxMinor)} (Δ${String(dTax)}) ${after.rateSource}`,
+      );
+    }
   }
 
   /* -------------------------------------------------------------- 6 */

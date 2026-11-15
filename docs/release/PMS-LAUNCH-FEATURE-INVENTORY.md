@@ -796,6 +796,23 @@ compliance.
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
 
+### 2026-11-15 (nineteenth pass) - corrected room rates reach the booking and the reports
+
+**Owner decision.** The master report, and everything else, shows the corrected rate.
+
+**Implemented.** Master report room revenue and service net now include the net of each
+correction hung off a charge (a non-tax ADJUSTMENT whose parent is ROOM_CHARGE / SERVICE_CHARGE).
+A room-charge correction (either path) now also updates, in the same transaction:
+`reservation.totalAmountMinor`, `reservation.taxAmountMinor` (only when the booking recorded a tax),
+and the night's `reservation_night` rate/tax, marked `MANUAL`. So the report total and balance, the
+folio's agreed total, the calendar, the dashboard and the performance figures (all read the
+booking) follow the correction. Unposted nights of pre-F9 stays still split the total as booked.
+No schema change. No status change (FO-06 stays `PI`).
+
+**Tests.** `rate-pricing` adds 6 checks: report room revenue equals the corrected ledger net,
+booking total and tax move by exactly the correction lines, the report total equals the booking,
+and each night carries its own corrections. `pnpm gate:integration` → 17/17 suites pass.
+
 ### 2026-11-15 (eighteenth pass) - negative tax on corrections as flagged adjustments
 
 **Owner decision.** Keep `folio_line_sign_matches_kind` (TAX >= 0); post a negative tax delta as an
