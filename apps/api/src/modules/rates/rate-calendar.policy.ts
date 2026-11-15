@@ -216,3 +216,32 @@ export function parseRange(
 export function isRangeRefusal(value: ParsedRange | RangeRefusal): value is RangeRefusal {
   return 'kind' in value;
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Derived (linked) plans — AV-06                                            */
+/* -------------------------------------------------------------------------- */
+
+export type DerivationKind = 'PERCENT' | 'FIXED';
+
+export interface Derivation {
+  parentRatePlanId: string;
+  kind: DerivationKind;
+  /** PERCENT: signed basis points (-1000 = 10% off). FIXED: signed minor units per night. */
+  value: number;
+}
+
+/**
+ * A derived plan's night from its parent's night.
+ *
+ * Integer in, integer out, rounded ONCE (half-up for the non-negative rates
+ * this sees): `rate * (10000 + bp) / 10000` is exact rational arithmetic on
+ * integers before the single `Math.round`. Never below zero -- a discount
+ * larger than the rate makes the night free, not a credit.
+ */
+export function applyDerivation(parentRateMinor: number, derivation: Derivation): number {
+  const raw =
+    derivation.kind === 'PERCENT'
+      ? Math.round((parentRateMinor * (10_000 + derivation.value)) / 10_000)
+      : parentRateMinor + derivation.value;
+  return Math.max(0, raw);
+}

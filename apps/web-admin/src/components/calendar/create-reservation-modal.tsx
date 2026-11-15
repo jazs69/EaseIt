@@ -236,6 +236,9 @@ export function CreateReservationModal({
   /** Active rate plans, and the chosen one. Empty string = the rack rate. */
   const [ratePlans, setRatePlans] = useState<readonly RatePlanView[]>([]);
   const [ratePlanId, setRatePlanId] = useState('');
+  /** What the clerk typed, and the code actually sent once applied. */
+  const [promoInput, setPromoInput] = useState('');
+  const [promoCode, setPromoCode] = useState('');
 
   const [isTaxExempt, setTaxExempt] = useState(false);
   const [overrideOn, setOverrideOn] = useState(false);
@@ -425,6 +428,11 @@ export function CreateReservationModal({
               ...(overrideMinor === undefined ? {} : { overrideNightlyRateMinor: overrideMinor }),
               ...(targetMinor === undefined ? {} : { targetTotalMinor: targetMinor }),
               ...(effectivePlanId === '' ? {} : { ratePlanId: effectivePlanId }),
+              // The party prices extra guests on a plan; ignored without one.
+              adults,
+              children,
+              infants,
+              ...(effectivePlanId === '' || promoCode === '' ? {} : { promoCode }),
             },
             controller.signal,
           );
@@ -454,6 +462,10 @@ export function CreateReservationModal({
     targetMinor,
     nights,
     effectivePlanId,
+    adults,
+    children,
+    infants,
+    promoCode,
   ]);
 
   /**
@@ -519,6 +531,7 @@ export function CreateReservationModal({
         ...(overrideMinor === undefined ? {} : { overrideNightlyRateMinor: overrideMinor }),
         ...(targetMinor === undefined ? {} : { targetTotalMinor: targetMinor }),
         ...(effectivePlanId === '' ? {} : { ratePlanId: effectivePlanId }),
+        ...(effectivePlanId === '' || promoCode === '' ? {} : { promoCode }),
         isInstantCheckIn: instantCheckIn,
         payment: collectPayment
           ? {
@@ -792,6 +805,37 @@ export function CreateReservationModal({
                         ))}
                       </select>
                     </Field>
+                    {effectivePlanId === '' ? null : (
+                      <div className="mt-3">
+                        <Field label="Promo code">
+                          <input
+                            value={promoInput}
+                            onChange={(event) => {
+                              setPromoInput(event.target.value);
+                            }}
+                            // Applied on blur or Enter, not per keystroke: a
+                            // half-typed code would be refused on every key.
+                            onBlur={() => {
+                              setPromoCode(promoInput.trim());
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                setPromoCode(promoInput.trim());
+                              }
+                            }}
+                            placeholder="Optional"
+                            className={inputClass}
+                          />
+                        </Field>
+                        {quote?.promotion != null ? (
+                          <p className="mt-1 text-[10px] text-emerald-300">
+                            {quote.promotion.promotionName}: −
+                            {formatMoney(quote.promotion.discountTotalMinor, quote.currency)}
+                          </p>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-3 grid grid-cols-3 gap-3">

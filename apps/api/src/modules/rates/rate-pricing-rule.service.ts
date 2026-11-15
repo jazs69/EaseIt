@@ -72,6 +72,8 @@ interface PlanContext {
   ratePlanId: string;
   currency: string;
   isEditable: boolean;
+  /** AV-06: a derived plan is priced from its parent and holds no rules. */
+  isDerived: boolean;
   /** Room type ids currently assigned to the plan. */
   assignedRoomTypeIds: string[];
 }
@@ -390,6 +392,7 @@ export class RatePricingRuleService {
         currency: true,
         isActive: true,
         archivedAt: true,
+        parentRatePlanId: true,
         roomTypes: { select: { roomTypeId: true } },
       },
     });
@@ -401,6 +404,7 @@ export class RatePricingRuleService {
       ratePlanId,
       currency: plan.currency,
       isEditable: plan.isActive && plan.archivedAt === null,
+      isDerived: plan.parentRatePlanId !== null,
       assignedRoomTypeIds: plan.roomTypes.map((entry) => entry.roomTypeId),
     };
   }
@@ -427,6 +431,9 @@ export class RatePricingRuleService {
 
   /** An inactive or archived plan's rules are read-only (scope requirement D). */
   private requireEditable(plan: PlanContext): void {
+    if (plan.isDerived) {
+      throw new InvalidStateTransitionError('rate plan', 'DERIVED', 'repriced');
+    }
     if (!plan.isEditable) {
       throw new InvalidStateTransitionError('rate plan', 'ARCHIVED_OR_INACTIVE', 'repriced');
     }

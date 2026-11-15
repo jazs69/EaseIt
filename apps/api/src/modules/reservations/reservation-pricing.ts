@@ -58,6 +58,10 @@ export interface PlannedNight {
   stayDate: string;
   rateMinor: number;
   source: 'DATE_OVERRIDE' | 'SEASONAL' | 'WEEKDAY' | 'WEEKEND' | 'DEFAULT';
+  /** Occupancy extra already included in `rateMinor`. */
+  extraGuestMinor: number;
+  /** Promotion discount already taken off `rateMinor`. */
+  discountMinor: number;
 }
 
 export interface QuoteInput {
@@ -72,7 +76,18 @@ export interface QuoteInput {
    * band. An override or a target total still wins over it for every night:
    * a clerk's agreed price is a decision about the whole stay.
    */
-  plan?: { ratePlanId: string; ratePlanCode: string; nights: readonly PlannedNight[] } | undefined;
+  plan?:
+    | {
+        ratePlanId: string;
+        ratePlanCode: string;
+        nights: readonly PlannedNight[];
+        promotion: {
+          promotionId: string;
+          promotionName: string;
+          promoCodeId: string | null;
+        } | null;
+      }
+    | undefined;
   overrideNightlyRateMinor?: number | undefined;
   /** Solve backwards from this gross total instead. */
   targetTotalMinor?: number | undefined;
@@ -180,13 +195,19 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
    */
   const priced = dates.map((stayDate, index) => {
     if (flatRateMinor !== undefined) {
-      return { stayDate, rateMinor: flatRateMinor, source: 'MANUAL' as const };
+      return { stayDate, rateMinor: flatRateMinor, source: 'MANUAL' as const, extraGuestMinor: 0, discountMinor: 0 };
     }
     const planned = plan?.nights[index];
     if (planned !== undefined) {
-      return { stayDate, rateMinor: planned.rateMinor, source: planned.source };
+      return {
+        stayDate,
+        rateMinor: planned.rateMinor,
+        source: planned.source,
+        extraGuestMinor: planned.extraGuestMinor,
+        discountMinor: planned.discountMinor,
+      };
     }
-    return { stayDate, rateMinor: input.baseNightlyRateMinor, source: 'RACK' as const };
+    return { stayDate, rateMinor: input.baseNightlyRateMinor, source: 'RACK' as const, extraGuestMinor: 0, discountMinor: 0 };
   });
 
   /**
@@ -214,6 +235,8 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
     taxMinor: taxOnNight(night.rateMinor, night.taxRatePercent),
     taxRatePercent: night.taxRatePercent,
     rateSource: night.source,
+    extraGuestMinor: night.extraGuestMinor,
+    discountMinor: night.discountMinor,
   }));
 
   const arrival = perNight[0];
@@ -235,6 +258,14 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
     isRateVarying: nightly.some((line) => line.nightlyRateMinor !== nightlyRateMinor),
     ratePlanId: plan?.ratePlanId ?? null,
     ratePlanCode: plan?.ratePlanCode ?? null,
+    extraGuestTotalMinor: nightly.reduce((sum, line) => sum + line.extraGuestMinor, 0),
+    promotion:
+      plan?.promotion == null
+        ? null
+        : {
+            ...plan.promotion,
+            discountTotalMinor: nightly.reduce((sum, line) => sum + line.discountMinor, 0),
+          },
     exTaxMinor,
     taxMinor,
     totalMinor,

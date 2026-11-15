@@ -30,6 +30,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@repo/database';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import type { Derivation } from './rate-calendar.policy.js';
 
 /** The assignment a calendar read or write is about, as stored. */
 export interface AssignmentRow {
@@ -43,6 +44,8 @@ export interface AssignmentRow {
   baseOccupancy: number;
   isActive: boolean;
   archivedAt: Date | null;
+  /** AV-06: null unless the plan is priced from a parent plan. */
+  derivation: Derivation | null;
 }
 
 export interface WriteOutcome {
@@ -78,7 +81,17 @@ export class RateCalendarRepository {
         roomTypeId: true,
         defaultRateMinor: true,
         baseOccupancy: true,
-        ratePlan: { select: { code: true, currency: true, isActive: true, archivedAt: true } },
+        ratePlan: {
+          select: {
+            code: true,
+            currency: true,
+            isActive: true,
+            archivedAt: true,
+            parentRatePlanId: true,
+            derivationKind: true,
+            derivationValue: true,
+          },
+        },
         roomType: { select: { code: true, name: true } },
       },
     });
@@ -96,6 +109,16 @@ export class RateCalendarRepository {
       baseOccupancy: row.baseOccupancy,
       isActive: row.ratePlan.isActive,
       archivedAt: row.ratePlan.archivedAt,
+      derivation:
+        row.ratePlan.parentRatePlanId === null ||
+        row.ratePlan.derivationValue === null ||
+        (row.ratePlan.derivationKind !== 'PERCENT' && row.ratePlan.derivationKind !== 'FIXED')
+          ? null
+          : {
+              parentRatePlanId: row.ratePlan.parentRatePlanId,
+              kind: row.ratePlan.derivationKind,
+              value: row.ratePlan.derivationValue,
+            },
     };
   }
 

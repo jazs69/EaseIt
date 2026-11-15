@@ -46,6 +46,7 @@ import {
   type CreateReservationCommand,
   type CreatedReservation,
   type PropertyId,
+  type PreviewPromotionRequest,
   type ReservationQuote,
   type ReservationQuoteRequest,
   type TaxSlab,
@@ -56,6 +57,7 @@ import {
   DomainError,
   EntityNotFoundError,
   InventoryNotConfiguredError,
+  RateNotBookableError,
   RoomUnavailableError,
   TenantScopeViolationError,
   ValidationFailedError,
@@ -65,6 +67,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { PropertyTaxService } from '../properties/property-tax.service.js';
+import { PromotionService } from '../rates/promotion.service.js';
 import { RateCalendarService } from '../rates/rate-calendar.service.js';
 import { postCheckIn } from './check-in-posting.js';
 import { quoteStay, nightsBetween, stayDates, type QuoteInput } from './reservation-pricing.js';
@@ -86,6 +89,7 @@ export class CreateReservationService {
     private readonly prisma: PrismaService,
     private readonly tax: PropertyTaxService,
     private readonly rates: RateCalendarService,
+    private readonly promotions: PromotionService,
   ) {}
 
   /**
@@ -97,26 +101,101 @@ export class CreateReservationService {
    * rather than silently priced some other way.
    */
   private async planFor(
-    propertyId: string,
+    property: { id: string; businessDate: Date },
     roomType: { id: string; currency: string },
-    request: { ratePlanId?: string | undefined; arrivalDate: string; departureDate: string },
+    request: {
+      ratePlanId?: string | undefined;
+      arrivalDate: string;
+      departureDate: string;
+      adults?: number | undefined;
+      children?: number | undefined;
+      infants?: number | undefined;
+      promoCode?: string | undefined;
+    },
   ): Promise<QuoteInput['plan']> {
-    if (request.ratePlanId === undefined) return undefined;
+    if (request.ratePlanId === undefined) {
+      if (request.promoCode !== undefined) {
+        throw new ValidationFailedError({
+          promoCode: 'A promo code applies to a rate plan. Choose a plan first.',
+        });
+      }
+      return undefined;
+    }
+
+    // Validation (active, not archived, assigned, same currency) and the base
+    // rate's source per night.
     const resolved = await this.rates.resolveStay(
-      propertyId,
+      property.id,
       request.ratePlanId,
       roomType.id,
       roomType.currency,
       stayDates(request.arrivalDate, request.departureDate),
     );
+
+    /**
+     * Occupancy extras and the promotion, through the SAME pricing the
+     * promotion preview uses, so what the rates screen previews is what the
+     * desk charges. Eligibility is judged on the property's business date,
+     * never the server clock (section 3.3).
+     */
+    // Brand casts are safe: both stay dates were validated by the request
+    // schema at the boundary, and the business date is a @db.Date column
+    // rendered as YYYY-MM-DD -- the brand is restored, not invented.
+    const priced = await this.promotions.priceStay(property.id, {
+      ratePlanId: resolved.ratePlanId,
+      roomTypeId: roomType.id,
+      arrivalDate: request.arrivalDate as PreviewPromotionRequest['arrivalDate'],
+      departureDate: request.departureDate as PreviewPromotionRequest['departureDate'],
+      bookingDate: property.businessDate
+        .toISOString()
+        .slice(0, 10) as PreviewPromotionRequest['bookingDate'],
+      adults: request.adults ?? 1,
+      children: request.children ?? 0,
+      infants: request.infants ?? 0,
+      promoCode: request.promoCode ?? null,
+    });
+
+    if (priced.occupancyRefusals.length > 0) {
+      throw new ValidationFailedError(
+        Object.fromEntries(
+          priced.occupancyRefusals.map((refusal) => [refusal.field ?? 'adults', refusal.message]),
+        ),
+      );
+    }
+
+    // A code the clerk typed must actually be the thing applied. Silently
+    // pricing without it would quote a figure the guest was not promised.
+    if (request.promoCode !== undefined && priced.selectedCodeId === null) {
+      throw new ValidationFailedError({
+        promoCode: 'That promo code does not apply to this stay.',
+      });
+    }
+
     return {
       ratePlanId: resolved.ratePlanId,
       ratePlanCode: resolved.ratePlanCode,
-      nights: resolved.nights.map((night) => ({
-        stayDate: night.stayDate,
-        rateMinor: night.rateMinor,
-        source: night.source,
-      })),
+      nights: resolved.nights.map((night, index) => {
+        const line = priced.perNight[index];
+        if (line === undefined || line.stayDate !== night.stayDate) {
+          throw new Error('Promotion pricing and the stay dates disagree.');
+        }
+        return {
+          stayDate: night.stayDate,
+          // Base + extra guests - discount: what the night is sold for, before tax.
+          rateMinor: line.finalNightlyMinor,
+          source: night.source,
+          extraGuestMinor: line.adultExtraChargeMinor + line.childExtraChargeMinor,
+          discountMinor: line.discountMinor,
+        };
+      }),
+      promotion:
+        priced.selectedPromotionId === null || priced.selectedPromotionName === null
+          ? null
+          : {
+              promotionId: priced.selectedPromotionId,
+              promotionName: priced.selectedPromotionName,
+              promoCodeId: priced.selectedCodeId,
+            },
     };
   }
 
@@ -167,7 +246,7 @@ export class CreateReservationService {
       arrivalDate: request.arrivalDate,
       departureDate: request.departureDate,
       baseNightlyRateMinor: roomType.baseRateMinor,
-      plan: await this.planFor(property.id, roomType, request),
+      plan: await this.planFor(property, roomType, request),
       overrideNightlyRateMinor: request.overrideNightlyRateMinor,
       targetTotalMinor: request.targetTotalMinor,
       isTaxExempt: request.isTaxExempt,
@@ -225,7 +304,7 @@ export class CreateReservationService {
       arrivalDate: command.arrivalDate,
       departureDate: command.departureDate,
       baseNightlyRateMinor: roomType.baseRateMinor,
-      plan: await this.planFor(property.id, roomType, command),
+      plan: await this.planFor(property, roomType, command),
       overrideNightlyRateMinor: command.overrideNightlyRateMinor,
       targetTotalMinor: command.targetTotalMinor,
       isTaxExempt: command.isTaxExempt,
@@ -427,6 +506,61 @@ export class CreateReservationService {
             rateSource: night.rateSource,
           })),
         });
+
+        /**
+         * Redeem the promotion, atomically, per the consumption contract in
+         * migration 20261110230000_promotions_and_discounts:
+         *
+         *   1. INSERT the redemption -- unique per reservation, so a retried
+         *      booking cannot redeem twice.
+         *   2. Increment the counter CONDITIONALLY in one statement. Zero rows
+         *      means the promotion was exhausted by a concurrent booking; the
+         *      bound is re-tested by the same statement that writes, so two
+         *      bookings cannot both take the last redemption.
+         *   3. The same for the promo code, when one was used.
+         *
+         * Lock order: these rows are taken AFTER inventory_day, and no writer
+         * of `promotion` or `promo_code` touches inventory, so no cycle forms.
+         */
+        if (quote.promotion !== null) {
+          const promotion = quote.promotion;
+          await tx.promotionRedemption.create({
+            data: {
+              propertyId: property.id,
+              promotionId: promotion.promotionId,
+              promoCodeId: promotion.promoCodeId,
+              reservationId: reservation.id,
+              discountAppliedMinor: promotion.discountTotalMinor,
+            },
+            select: { id: true },
+          });
+
+          const consumed = await tx.$executeRaw`
+            UPDATE "promotion" SET "redeemedCount" = "redeemedCount" + 1
+             WHERE "id" = ${promotion.promotionId}::uuid
+               AND "propertyId" = ${property.id}::uuid
+               AND ("maxRedemptions" IS NULL OR "redeemedCount" < "maxRedemptions")
+          `;
+          if (consumed !== 1) {
+            throw new RateNotBookableError('the promotion has been fully redeemed.', {
+              promotionId: promotion.promotionId,
+            });
+          }
+
+          if (promotion.promoCodeId !== null) {
+            const codeConsumed = await tx.$executeRaw`
+              UPDATE "promo_code" SET "redeemedCount" = "redeemedCount" + 1
+               WHERE "id" = ${promotion.promoCodeId}::uuid
+                 AND "propertyId" = ${property.id}::uuid
+                 AND ("maxRedemptions" IS NULL OR "redeemedCount" < "maxRedemptions")
+            `;
+            if (codeConsumed !== 1) {
+              throw new RateNotBookableError('that promo code has been fully redeemed.', {
+                promotionId: promotion.promotionId,
+              });
+            }
+          }
+        }
 
         /**
          * Room collision check.

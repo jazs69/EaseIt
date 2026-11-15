@@ -278,6 +278,8 @@ export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, pris
       async (tx) => {
         await tx.folioLine.deleteMany({ where: { folio: { propertyId } } });
         await tx.folio.deleteMany({ where: scope });
+        // Redemptions RESTRICT the reservation they consumed, so they go first.
+        await tx.promotionRedemption.deleteMany({ where: scope });
         await tx.reservationGuest.deleteMany({ where: scope });
         await tx.reservationRoom.deleteMany({ where: scope });
         await tx.reservation.deleteMany({ where: scope });
@@ -285,11 +287,15 @@ export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, pris
         await tx.roomBlock.deleteMany({ where: scope });
         // Promotions and rate plans reference room types (and each other) with
         // RESTRICT; plans cascade to their assignments, days, rules and prices.
-        await tx.promotionRedemption.deleteMany({ where: scope });
         await tx.promoCode.deleteMany({ where: scope });
         await tx.promotionRoomType.deleteMany({ where: scope });
         await tx.promotionRatePlan.deleteMany({ where: scope });
         await tx.promotion.deleteMany({ where: scope });
+        // Derived plans RESTRICT their parent, checked per row: unlink first.
+        await tx.ratePlan.updateMany({
+          where: scope,
+          data: { parentRatePlanId: null, derivationKind: null, derivationValue: null },
+        });
         await tx.ratePlan.deleteMany({ where: scope });
         await tx.room.deleteMany({ where: scope });
         await tx.inventoryDay.deleteMany({ where: scope });

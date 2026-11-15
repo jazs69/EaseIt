@@ -183,10 +183,29 @@ export const reservationQuoteRequestSchema = z.object({
    * still wins over the plan, for every night.
    */
   ratePlanId: z.uuid().optional(),
+  /**
+   * The party, for the plan's occupancy pricing. Omitted adults means the
+   * plan's base occupancy (no extra-guest charge). Ignored without a plan.
+   */
+  adults: z.number().int().min(1).max(20).optional(),
+  children: z.number().int().min(0).max(20).default(0),
+  infants: z.number().int().min(0).max(20).default(0),
+  /** A promo code to apply. Only meaningful with a plan; refused if it does not apply. */
+  promoCode: z.string().trim().min(1).max(32).optional(),
   isTaxExempt: z.boolean().default(false),
 });
 
 export type ReservationQuoteRequest = z.infer<typeof reservationQuoteRequestSchema>;
+
+/** The promotion a plan-priced stay received, if any. */
+export const appliedPromotionSchema = z.object({
+  promotionId: z.uuid(),
+  promotionName: z.string(),
+  promoCodeId: z.uuid().nullable(),
+  discountTotalMinor: z.number().int().nonnegative(),
+});
+
+export type AppliedPromotion = z.infer<typeof appliedPromotionSchema>;
 
 /** Which tier priced a night. RACK = room type base rate; MANUAL = override or target total. */
 export const nightRateSourceSchema = z.enum([
@@ -208,6 +227,10 @@ export const nightlyLineSchema = z.object({
   /** The GST band THIS night fell in. Nights of one stay can differ. */
   taxRatePercent: z.number(),
   rateSource: nightRateSourceSchema,
+  /** Extra-guest charge included in `nightlyRateMinor` (plan occupancy pricing). */
+  extraGuestMinor: z.number().int().nonnegative(),
+  /** Promotion discount already taken off `nightlyRateMinor`. */
+  discountMinor: z.number().int().nonnegative(),
 });
 
 export type NightlyLine = z.infer<typeof nightlyLineSchema>;
@@ -224,6 +247,10 @@ export const reservationQuoteSchema = z.object({
   /** The plan the stay was priced from; null for the rack rate or a manual price. */
   ratePlanId: z.uuid().nullable(),
   ratePlanCode: z.string().nullable(),
+  /** Sum of the nights' extra-guest charges, before tax. */
+  extraGuestTotalMinor: z.number().int().nonnegative(),
+  /** The promotion applied, or null. Its discount is already in the nightly rates. */
+  promotion: appliedPromotionSchema.nullable(),
   /** Room charge before tax. */
   exTaxMinor: z.number().int().nonnegative(),
   taxMinor: z.number().int().nonnegative(),
@@ -313,6 +340,8 @@ export const createReservationSchema = z.object({
   targetTotalMinor: z.number().int().nonnegative().optional(),
   /** As on the quote: price each night from this plan. */
   ratePlanId: z.uuid().optional(),
+  /** As on the quote. Redeemed atomically with the booking. */
+  promoCode: z.string().trim().min(1).max(32).optional(),
 
   /** Straight to CHECKED_IN rather than CONFIRMED. */
   isInstantCheckIn: z.boolean().default(false),

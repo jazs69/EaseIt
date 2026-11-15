@@ -455,6 +455,77 @@ async function body() {
       scheduled?.netMinor === secondRate && scheduled?.taxMinor === taxOf(secondRate),
       JSON.stringify(scheduled ?? null),
     );
+
+    /* ------------------------------------------------------------ 5b */
+    console.log('\n5b. Correcting room charges across two GST bands.');
+    // Night 2 as night audit would post it: 8,000 at 18%. Night audit does not
+    // exist yet, so this suite-owned folio gets the line directly.
+    const deskFolio = await prisma.folio.findFirst({
+      where: { propertyId: fixture.propertyId, reservationId: desk.payload?.id },
+      select: { id: true, currency: true },
+    });
+    const night2 = await prisma.folioLine.create({
+      data: {
+        propertyId: fixture.propertyId,
+        folioId: deskFolio.id,
+        kind: 'ROOM_CHARGE',
+        description: 'Room tariff (fixture night 2)',
+        amountMinor: 800000,
+        currency: deskFolio.currency,
+        chargeDate: utcMidnight(shiftDays(today, 1)),
+        postedById: fixture.users.clerk.id,
+      },
+      select: { id: true },
+    });
+    await prisma.folioLine.create({
+      data: {
+        propertyId: fixture.propertyId,
+        folioId: deskFolio.id,
+        kind: 'TAX',
+        description: 'GST (fixture night 2)',
+        amountMinor: 144000,
+        currency: deskFolio.currency,
+        chargeDate: utcMidnight(shiftDays(today, 1)),
+        derivedFromLineId: night2.id,
+        postedById: fixture.users.clerk.id,
+      },
+    });
+
+    const correct = await h.call(
+      'POST',
+      `${base}/folios/${deskFolio.id}/room-charges/correct`,
+      clerk,
+      { netAmountMinor: 1600000, reason: 'Upgrade agreed' },
+    );
+    h.check('correction: 2xx', correct.status === 200 || correct.status === 201, `HTTP ${String(correct.status)} ${JSON.stringify(correct.payload?.details ?? correct.payload?.message ?? '')}`);
+
+    // Per night: everything hanging off that night's charge, net and tax.
+    const lines = await prisma.folioLine.findMany({
+      where: { propertyId: fixture.propertyId, folioId: deskFolio.id },
+      select: { id: true, kind: true, amountMinor: true, derivedFromLineId: true, chargeDate: true },
+    });
+    const charges = lines.filter((l) => l.kind === 'ROOM_CHARGE' && l.derivedFromLineId === null);
+    const night = (charge) => {
+      const adjustments = lines.filter((l) => l.kind === 'ADJUSTMENT' && l.derivedFromLineId === charge.id);
+      const adjIds = new Set(adjustments.map((a) => a.id));
+      const net = charge.amountMinor + adjustments.reduce((s, a) => s + a.amountMinor, 0);
+      const tax = lines
+        .filter((l) => l.kind === 'TAX' && (l.derivedFromLineId === charge.id || adjIds.has(l.derivedFromLineId)))
+        .reduce((s, l) => s + l.amountMinor, 0);
+      return { net, tax };
+    };
+    let netSum = 0;
+    for (const charge of charges.sort((a, b) => a.chargeDate - b.chargeDate)) {
+      const { net, tax } = night(charge);
+      netSum += net;
+      const rate = charge.amountMinor === 800000 ? 18 : 5;
+      h.check(
+        `${charge.chargeDate.toISOString().slice(0, 10)} keeps its own ${String(rate)}% band after correction`,
+        Math.abs(tax - Math.round((net * rate) / 100)) <= 1,
+        `net ${String(net)} tax ${String(tax)} (${((tax / net) * 100).toFixed(3)}%)`,
+      );
+    }
+    h.check('the corrected nights total the agreed net within a paisa per night', Math.abs(netSum - 1600000) <= charges.length, `net ${String(netSum)}`);
   }
 
   /* -------------------------------------------------------------- 6 */

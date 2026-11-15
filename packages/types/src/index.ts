@@ -22,6 +22,7 @@ export * from './dto/room.dto.js';
 export * from './dto/room-block.dto.js';
 export * from './dto/rate-plan.dto.js';
 export * from './dto/rate-calendar.dto.js';
+export * from './dto/rate-restriction.dto.js';
 export * from './dto/rate-pricing-rule.dto.js';
 export * from './dto/occupancy-pricing.dto.js';
 export * from './dto/promotion.dto.js';

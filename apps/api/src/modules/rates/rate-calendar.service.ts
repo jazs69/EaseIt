@@ -52,14 +52,16 @@ import { grantedPropertyWhere } from '../../common/property-scope/property-ident
 import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import {
+  applyDerivation,
   buildCalendarWindow,
   isRangeRefusal,
   parseRange,
   type RangeRefusal,
 } from './rate-calendar.policy.js';
 import { RateCalendarRepository, type AssignmentRow } from './rate-calendar.repository.js';
-import { resolveRate, type RateSource } from './rate-pricing.policy.js';
+import { resolveRate, type RateResolution, type RateSource } from './rate-pricing.policy.js';
 import { RatePricingRuleRepository } from './rate-pricing-rule.repository.js';
+import { RateRestrictionRepository } from './rate-restriction.repository.js';
 
 @Injectable()
 export class RateCalendarService {
@@ -71,6 +73,8 @@ export class RateCalendarService {
      * the queries here. The calendar consults them; it does not own them.
      */
     private readonly rules: RatePricingRuleRepository,
+    /** AV-07: restrictions are enforced here, the one place a stay resolves a plan. */
+    private readonly restrictions: RateRestrictionRepository,
   ) {}
 
   async read(
@@ -286,26 +290,124 @@ export class RateCalendarService {
       });
     }
 
-    const [overrides, rules, weekendDays] = await Promise.all([
-      this.repository.findOverrides(propertyId, ratePlanId, roomTypeId, first, last),
-      this.rules.findForResolution(propertyId, ratePlanId, roomTypeId),
-      this.rules.weekendDays(propertyId),
-    ]);
+    await this.requireUnrestricted(propertyId, ratePlanId, roomTypeId, dates);
+
+    const resolved = await this.baseNights(propertyId, assignment, dates);
 
     return {
       ratePlanId: assignment.ratePlanId,
       ratePlanCode: assignment.ratePlanCode,
-      nights: dates.map((stayDate) => {
-        const resolved = resolveRate({
-          stayDate,
-          defaultRateMinor: assignment.defaultRateMinor,
-          overrideRateMinor: overrides.get(stayDate) ?? null,
-          rules,
-          weekendDays,
-        });
-        return { stayDate, rateMinor: resolved.effectiveRateMinor, source: resolved.source };
-      }),
+      nights: resolved.map((night) => ({
+        stayDate: night.stayDate,
+        rateMinor: night.effectiveRateMinor,
+        source: night.source,
+      })),
     };
+  }
+
+  /**
+   * Each night's base rate under a plan, before occupancy and promotions.
+   *
+   * THE one resolver for base rates: the quote, the calendar read and the
+   * promotion preview all come through here, so a derived plan cannot be
+   * priced one way on screen and another at the desk.
+   *
+   * A derived plan (AV-06) has no prices of its own: each night is its
+   * parent's resolution for the same room type, adjusted. Computed now, so it
+   * always follows the parent. One level only, enforced when the derivation
+   * is set, so this never recurses.
+   */
+  async baseNights(
+    propertyId: string,
+    assignment: AssignmentRow,
+    dates: readonly string[],
+  ): Promise<RateResolution[]> {
+    const first = dates[0];
+    const last = dates.at(-1);
+    if (first === undefined || last === undefined) return [];
+
+    const derivation = assignment.derivation;
+    let source = assignment;
+    if (derivation !== null) {
+      const parent = await this.repository.findAssignment(
+        propertyId,
+        derivation.parentRatePlanId,
+        assignment.roomTypeId,
+      );
+      if (parent === null) {
+        throw new RateNotBookableError("its parent plan does not price this room type.", {
+          ratePlanId: assignment.ratePlanId,
+          parentRatePlanId: derivation.parentRatePlanId,
+        });
+      }
+      source = parent;
+    }
+
+    const [overrides, rules, weekendDays] = await Promise.all([
+      this.repository.findOverrides(propertyId, source.ratePlanId, source.roomTypeId, first, last),
+      this.rules.findForResolution(propertyId, source.ratePlanId, source.roomTypeId),
+      this.rules.weekendDays(propertyId),
+    ]);
+
+    return dates.map((stayDate) => {
+      const resolved = resolveRate({
+        stayDate,
+        defaultRateMinor: source.defaultRateMinor,
+        overrideRateMinor: overrides.get(stayDate) ?? null,
+        rules,
+        weekendDays,
+      });
+      if (derivation === null) return resolved;
+      return { ...resolved, effectiveRateMinor: applyDerivation(resolved.effectiveRateMinor, derivation) };
+    });
+  }
+
+  /**
+   * Refuse a stay the plan's restrictions forbid (AV-07).
+   *
+   * Read from exactly two dates: the ARRIVAL night carries MinLOS and CTA, the
+   * DEPARTURE date carries CTD (the morning the guest leaves -- not a night of
+   * the stay, which is why it is looked up separately). A typed 409 naming
+   * the restriction, so the desk can tell the guest which rule they hit.
+   */
+  private async requireUnrestricted(
+    propertyId: string,
+    ratePlanId: string,
+    roomTypeId: string,
+    dates: readonly string[],
+  ): Promise<void> {
+    const arrival = dates[0];
+    const lastNight = dates.at(-1);
+    if (arrival === undefined || lastNight === undefined) return;
+    const departure = new Date(Date.parse(`${lastNight}T00:00:00.000Z`) + 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+
+    const rows = await this.restrictions.findDates(propertyId, ratePlanId, roomTypeId, [
+      arrival,
+      departure,
+    ]);
+    const onArrival = rows.get(arrival);
+    const onDeparture = rows.get(departure);
+
+    if (onArrival?.closedToArrival === true) {
+      throw new RateNotBookableError(`arrivals are closed on ${arrival}.`, {
+        restriction: 'CLOSED_TO_ARRIVAL',
+        date: arrival,
+      });
+    }
+    if (onArrival?.minLos != null && dates.length < onArrival.minLos) {
+      throw new RateNotBookableError(
+        `stays arriving on ${arrival} must be at least ${String(onArrival.minLos)} nights.`,
+        { restriction: 'MIN_LOS', date: arrival, minLos: onArrival.minLos, nights: dates.length },
+      );
+    }
+    if (onDeparture?.closedToDeparture === true) {
+      throw new RateNotBookableError(`departures are closed on ${departure}.`, {
+        restriction: 'CLOSED_TO_DEPARTURE',
+        date: departure,
+      });
+    }
   }
 
   /**
@@ -324,10 +426,29 @@ export class RateCalendarService {
     const range = parseRange(fromDate, toDate, MAX_RATE_CALENDAR_DAYS);
     if (isRangeRefusal(range)) throw rangeError(range);
 
+    // AV-06: a derived plan shows its PARENT's window, adjusted. Same source as
+    // `baseNights`, so the grid and the desk cannot disagree.
+    const derivation = assignment.derivation;
+    let pricing = assignment;
+    if (derivation !== null) {
+      const parent = await this.repository.findAssignment(
+        propertyId,
+        derivation.parentRatePlanId,
+        assignment.roomTypeId,
+      );
+      if (parent === null) {
+        throw new RateNotBookableError('its parent plan does not price this room type.', {
+          ratePlanId: assignment.ratePlanId,
+          parentRatePlanId: derivation.parentRatePlanId,
+        });
+      }
+      pricing = parent;
+    }
+
     const overrides = await this.repository.findOverrides(
       propertyId,
-      assignment.ratePlanId,
-      assignment.roomTypeId,
+      pricing.ratePlanId,
+      pricing.roomTypeId,
       fromDate,
       toDate,
     );
@@ -343,20 +464,34 @@ export class RateCalendarService {
      * price rows to resolve one column of the grid.
      */
     const [rules, weekendDays] = await Promise.all([
-      this.rules.findForResolution(propertyId, assignment.ratePlanId, assignment.roomTypeId),
+      this.rules.findForResolution(propertyId, pricing.ratePlanId, pricing.roomTypeId),
       this.rules.weekendDays(propertyId),
     ]);
 
     // The ONE place a day's price is decided, via the shared resolver. The
     // controller does not decide it, the repository does not, and the frontend
     // explicitly does not.
-    const days = buildCalendarWindow(
+    const resolvedDays = buildCalendarWindow(
       range.dates,
-      assignment.defaultRateMinor,
+      pricing.defaultRateMinor,
       overrides,
       rules,
       weekendDays,
     );
+    const adjust = (amount: number | null): number | null =>
+      amount === null || derivation === null ? amount : applyDerivation(amount, derivation);
+    const days =
+      derivation === null
+        ? resolvedDays
+        : resolvedDays.map((day) => ({
+            ...day,
+            effectiveRateMinor: adjust(day.effectiveRateMinor) ?? 0,
+            defaultRateMinor: adjust(day.defaultRateMinor) ?? 0,
+            overrideRateMinor: adjust(day.overrideRateMinor),
+            ruleRateMinor: adjust(day.ruleRateMinor),
+            // The parent's override, not this plan's: nothing here is editable.
+            hasOverride: false,
+          }));
 
     return {
       ratePlanId: assignment.ratePlanId,
@@ -378,7 +513,8 @@ export class RateCalendarService {
         (day) => day.source === 'SEASONAL' || day.source === 'WEEKDAY' || day.source === 'WEEKEND',
       ).length,
       ambiguousCount: days.filter((day) => day.isAmbiguous).length,
-      isEditable: assignment.isActive && assignment.archivedAt === null,
+      isEditable:
+        assignment.isActive && assignment.archivedAt === null && assignment.derivation === null,
     } as RateCalendarResponse;
   }
 
@@ -411,6 +547,10 @@ export class RateCalendarService {
    * of refusal as editing an archived plan.
    */
   private requireEditable(assignment: AssignmentRow): void {
+    // AV-06: a derived plan's prices come from its parent; it holds none of its own.
+    if (assignment.derivation !== null) {
+      throw new InvalidStateTransitionError('rate plan', 'DERIVED', 'repriced');
+    }
     if (assignment.archivedAt !== null) {
       throw new InvalidStateTransitionError('rate plan', 'ARCHIVED', 'repriced');
     }

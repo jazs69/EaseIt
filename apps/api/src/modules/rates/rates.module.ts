@@ -11,6 +11,11 @@ import { OccupancyPricingService } from './occupancy-pricing.service.js';
 import { RateCalendarRepository } from './rate-calendar.repository.js';
 import { RateCalendarService } from './rate-calendar.service.js';
 import { RatePlanController } from './rate-plan.controller.js';
+import { RateDerivationController } from './rate-derivation.controller.js';
+import { RateDerivationService } from './rate-derivation.service.js';
+import { RateRestrictionController } from './rate-restriction.controller.js';
+import { RateRestrictionRepository } from './rate-restriction.repository.js';
+import { RateRestrictionService } from './rate-restriction.service.js';
 import { RatePricingRuleController } from './rate-pricing-rule.controller.js';
 import { RatePricingRuleRepository } from './rate-pricing-rule.repository.js';
 import { RatePricingRuleService } from './rate-pricing-rule.service.js';
@@ -54,8 +59,13 @@ import { RatePlanService } from './rate-plan.service.js';
     RatePricingRuleController,
     OccupancyPricingController,
     PromotionController,
+    RateRestrictionController,
+    RateDerivationController,
   ],
   providers: [
+    RateDerivationService,
+    RateRestrictionService,
+    RateRestrictionRepository,
     RatePlanService,
     RatePlanRepository,
     RateCalendarService,
@@ -76,6 +86,13 @@ import { RatePlanService } from './rate-plan.service.js';
   // total for a real guest composition at quote time. The pure formula lives in
   // `occupancy-pricing.policy.ts` and can be imported without the service at
   // all, which is the form F9 should prefer.
-  exports: [RatePlanService, RateCalendarService, RatePricingRuleService, OccupancyPricingService],
+  exports: [
+    RatePlanService,
+    RateCalendarService,
+    RatePricingRuleService,
+    OccupancyPricingService,
+    // F9: the booking path prices occupancy and promotions through priceStay.
+    PromotionService,
+  ],
 })
 export class RatesModule {}

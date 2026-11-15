@@ -73,9 +73,8 @@ import {
 } from './promotion.policy.js';
 import { PromotionRepository, type PromotionRow } from './promotion.repository.js';
 import { enumerateInclusive, parseCalendarDate } from './rate-calendar.policy.js';
+import { RateCalendarService } from './rate-calendar.service.js';
 import { RateCalendarRepository } from './rate-calendar.repository.js';
-import { resolveRate } from './rate-pricing.policy.js';
-import { RatePricingRuleRepository } from './rate-pricing-rule.repository.js';
 
 @Injectable()
 export class PromotionService {
@@ -86,8 +85,8 @@ export class PromotionService {
     private readonly occupancy: OccupancyPricingRepository,
     /** F2's overrides. Read only. */
     private readonly calendar: RateCalendarRepository,
-    /** F3's rules and the property's weekend definition. Read only. */
-    private readonly rules: RatePricingRuleRepository,
+    /** The one base-rate resolver, derived plans included (AV-06). */
+    private readonly rateCalendar: RateCalendarService,
   ) {}
 
   /* -- Promotions --------------------------------------------------------- */
@@ -535,11 +534,19 @@ export class PromotionService {
     request: PreviewPromotionRequest,
   ): Promise<PromotionPreview> {
     const property = await this.authorise(userId, codeOrId, Permission.RATES_READ);
+    return this.priceStay(property.id, request);
+  }
 
+  /**
+   * The pricing behind the preview, for internal callers that have already
+   * authorised (F9: the booking path). `propertyId` is a resolved id, never a
+   * client value; every read below is scoped by it. Read-only, like the preview.
+   */
+  async priceStay(propertyId: string, request: PreviewPromotionRequest): Promise<PromotionPreview> {
     // The assignment also proves the room type is assigned to the plan, and
     // carries F4's configuration and the room's capacity.
     const assignment = await this.occupancy.findAssignment(
-      property.id,
+      propertyId,
       request.ratePlanId,
       request.roomTypeId,
     );
@@ -586,33 +593,28 @@ export class PromotionService {
      * across the whole window, F3's rules for this category, the property's
      * weekend definition, and every promotion of the property.
      */
-    const firstNight = stayDates[0] ?? request.arrivalDate;
-    const finalNight = stayDates.at(-1) ?? request.arrivalDate;
 
-    const [overrides, rules, weekendDays, promotions] = await Promise.all([
-      this.calendar.findOverrides(
-        property.id,
-        request.ratePlanId,
-        request.roomTypeId,
-        firstNight,
-        finalNight,
-      ),
-      this.rules.findForResolution(property.id, request.ratePlanId, request.roomTypeId),
-      this.rules.weekendDays(property.id),
-      this.repository.findAllForEvaluation(property.id),
+    // Base rates through the ONE base resolver (derived plans included, AV-06),
+    // so a preview, the calendar and a booking cannot disagree about a night.
+    const calendarAssignment = await this.calendar.findAssignment(
+      propertyId,
+      request.ratePlanId,
+      request.roomTypeId,
+    );
+    if (calendarAssignment === null) throw new TenantScopeViolationError('Rate plan assignment');
+    const [baseNights, promotions] = await Promise.all([
+      this.rateCalendar.baseNights(propertyId, calendarAssignment, stayDates),
+      this.repository.findAllForEvaluation(propertyId),
     ]);
 
     // Per night: F2/F3 base, then F4 occupancy. Neither is recomputed or
     // reinterpreted here — the same functions the calendar and F4's own
     // preview call.
-    const nights = stayDates.map((stayDate) => {
-      const base = resolveRate({
-        stayDate,
-        defaultRateMinor: assignment.defaultRateMinor,
-        overrideRateMinor: overrides.get(stayDate) ?? null,
-        rules,
-        weekendDays,
-      });
+    const nights = stayDates.map((stayDate, index) => {
+      const base = baseNights[index];
+      if (base === undefined || base.stayDate !== stayDate) {
+        throw new Error('Base rates and stay dates disagree.');
+      }
 
       const occupancy = resolveOccupancyPricing({
         baseRateMinor: base.effectiveRateMinor,

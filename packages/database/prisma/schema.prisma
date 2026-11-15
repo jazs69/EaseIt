@@ -354,6 +354,7 @@ model Property {
   ratePlans      RatePlan[]
   ratePlanRooms  RatePlanRoomType[]
   ratePlanDays   RatePlanDay[]
+  restrictions   RateRestrictionDay[]
   pricingRules   RatePricingRule[]
   pricingPrices  RatePricingRulePrice[]
   promotions     Promotion[]
@@ -968,6 +969,15 @@ model RatePlan {
   promotions   PromotionRatePlan[]
   reservations Reservation[]
 
+  /// Derived (linked) plan, AV-06: priced as the parent's nightly rate adjusted by
+  /// derivationKind/Value. Null on a plan priced from its own calendar.
+  parentRatePlanId String?   @db.Uuid
+  parentRatePlan   RatePlan? @relation("RatePlanDerivation", fields: [parentRatePlanId], references: [id], onDelete: Restrict)
+  derivedPlans     RatePlan[] @relation("RatePlanDerivation")
+  /// PERCENT (basis points, signed) or FIXED (minor units per night, signed).
+  derivationKind   String?
+  derivationValue  Int?
+
   @@unique([propertyId, code], name: "rate_plan_unique_code_per_property")
   @@unique([propertyId, name], name: "rate_plan_unique_name_per_property")
   /// Not redundant with the primary key: it is the pair a composite foreign
@@ -1063,6 +1073,7 @@ model RatePlanRoomType {
 
   days       RatePlanDay[]
   rulePrices RatePricingRulePrice[]
+  restrictionDays RateRestrictionDay[]
 
   @@id([ratePlanId, roomTypeId])
   /// Not redundant with the primary key. It is the triple `rate_plan_day`'s
@@ -1132,6 +1143,40 @@ model RatePlanDay {
   /// Every index leads with `propertyId` (section 3.2).
   @@index([propertyId, stayDate])
   @@map("rate_plan_day")
+}
+
+/// Stay restrictions for one plan, one room type, one night (AV-07).
+///
+/// Checked at quote and booking time when a stay is priced from this plan:
+/// minLos and closedToArrival are read from the ARRIVAL night,
+/// closedToDeparture from the DEPARTURE date (a day the guest leaves, not a
+/// night they stay). A night with no row is unrestricted. Rack-rate bookings
+/// carry no plan and are not restricted.
+model RateRestrictionDay {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  ratePlanId String @db.Uuid
+  roomTypeId String @db.Uuid
+
+  assignment RatePlanRoomType @relation(fields: [ratePlanId, roomTypeId], references: [ratePlanId, roomTypeId], onDelete: Cascade)
+
+  stayDate DateTime @db.Date
+
+  /// Minimum nights for a stay ARRIVING on this date. Null = no minimum.
+  minLos            Int?
+  closedToArrival   Boolean @default(false)
+  closedToDeparture Boolean @default(false)
+
+  updatedByUserId String @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, ratePlanId, roomTypeId, stayDate], map: "rate_restriction_day_unique_per_date")
+  @@map("rate_restriction_day")
 }
 
 /// How a promotion's discount is expressed (F5).

@@ -190,6 +190,11 @@ const suites = [
     script: 'test/integration/rate-pricing.test.mjs',
     why: 'quotes and bookings priced per night from a plan; check-in posts the arrival night',
   },
+  {
+    name: 'occupancy, promotions, restrictions, derived plans',
+    script: 'test/integration/rate-booking-features.test.mjs',
+    why: 'extras and discounts price bookings; last-redemption race; MinLOS/CTA/CTD; linked plans',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

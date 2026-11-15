@@ -1060,7 +1060,7 @@ export class FoliosService {
     );
     const grandchildren = await this.prisma.client.folioLine.findMany({
       where: { derivedFromLineId: { in: [...adjustmentIds] }, kind: 'TAX' },
-      select: { amountMinor: true },
+      select: { amountMinor: true, derivedFromLineId: true },
     });
 
     const ownTaxMinor = children
@@ -1083,12 +1083,48 @@ export class FoliosService {
     const ratePercent = impliedRatePercent(baseNetMinor, ownTaxMinor);
     const taxable = !reservation.isTaxExempt && ownTaxMinor !== 0 && ratePercent > 0;
 
+    /**
+     * Each night's OWN rate, from its own tax line.
+     *
+     * A stay priced per night (F9) can straddle GST bands -- a 5% weeknight
+     * beside an 18% Saturday. One rate implied from the stay totals is then
+     * right for neither night, and a correction split with it would post the
+     * wrong tax on both. When every night shares a rate the old single-rate
+     * arithmetic is kept exactly, so uniform stays are unaffected.
+     */
+    const nightRates = charges.map((charge) => {
+      const nightTaxMinor = children
+        .filter((child) => child.kind === 'TAX' && child.derivedFromLineId === charge.id)
+        .reduce((sum, child) => sum + child.amountMinor, 0);
+      const rate = impliedRatePercent(charge.amountMinor, nightTaxMinor);
+      return reservation.isTaxExempt || nightTaxMinor === 0 ? 0 : rate;
+    });
+    const mixedBands = new Set(nightRates).size > 1;
+
+    /** Split a sum across nights in proportion to what each was charged; remainder on night one. */
+    const apportion = (totalMinor: number): number[] => {
+      const parts = charges.map((charge) =>
+        baseNetMinor === 0
+          ? Math.trunc(totalMinor / charges.length)
+          : Math.trunc((totalMinor * charge.amountMinor) / baseNetMinor),
+      );
+      parts[0] = (parts[0] ?? 0) + (totalMinor - parts.reduce((sum, part) => sum + part, 0));
+      return parts;
+    };
+
     const targetGrossMinor =
       command.grossAmountMinor ??
-      (taxable
-        ? (command.netAmountMinor ?? 0) +
-          Math.round(((command.netAmountMinor ?? 0) * ratePercent) / 100)
-        : (command.netAmountMinor ?? 0));
+      (mixedBands
+        ? // A target NET is grossed up night by night, each at its own rate.
+          apportion(command.netAmountMinor ?? 0).reduce(
+            (sum, net, index) =>
+              sum + net + Math.round((net * (nightRates[index] ?? 0)) / 100),
+            0,
+          )
+        : taxable
+          ? (command.netAmountMinor ?? 0) +
+            Math.round(((command.netAmountMinor ?? 0) * ratePercent) / 100)
+          : (command.netAmountMinor ?? 0));
 
     const deltaGrossMinor = targetGrossMinor - currentGrossMinor;
     if (deltaGrossMinor === 0) {
@@ -1103,13 +1139,48 @@ export class FoliosService {
      * each independently leaves the stay a paisa or two off the total a clerk
      * just typed, and that total is what they will check.
      */
-    const shares = charges.map((charge) =>
-      baseNetMinor === 0
-        ? Math.trunc(deltaGrossMinor / charges.length)
-        : Math.trunc((deltaGrossMinor * charge.amountMinor) / baseNetMinor),
-    );
-    const allocated = shares.reduce((sum, share) => sum + share, 0);
-    shares[0] = (shares[0] ?? 0) + (deltaGrossMinor - allocated);
+    let shares: number[];
+    if (!mixedBands) {
+      shares = charges.map((charge) =>
+        baseNetMinor === 0
+          ? Math.trunc(deltaGrossMinor / charges.length)
+          : Math.trunc((deltaGrossMinor * charge.amountMinor) / baseNetMinor),
+      );
+      const allocated = shares.reduce((sum, share) => sum + share, 0);
+      shares[0] = (shares[0] ?? 0) + (deltaGrossMinor - allocated);
+    } else {
+      /**
+       * Mixed bands: each night moves from ITS current gross to ITS target.
+       *
+       * Splitting one stay-level delta by the original charges would move a
+       * 5% night and an 18% night by amounts that, once each is split at its
+       * own rate, no longer add up to the requested net. Per-night targets
+       * keep every night in its band and the stay on the number typed (to a
+       * paisa of rounding per night). The shares still sum to deltaGrossMinor.
+       */
+      const nightOf = new Map<string, string>(
+        children
+          .filter((child) => child.kind === 'ADJUSTMENT' && child.derivedFromLineId !== null)
+          .map((child) => [child.id, child.derivedFromLineId as string]),
+      );
+      const currentPerNight = charges.map(
+        (charge) =>
+          charge.amountMinor +
+          children
+            .filter((child) => child.derivedFromLineId === charge.id)
+            .reduce((sum, child) => sum + child.amountMinor, 0) +
+          grandchildren
+            .filter((child) => child.derivedFromLineId !== null && nightOf.get(child.derivedFromLineId) === charge.id)
+            .reduce((sum, child) => sum + child.amountMinor, 0),
+      );
+      const targetPerNight =
+        command.grossAmountMinor !== undefined
+          ? apportion(command.grossAmountMinor)
+          : apportion(command.netAmountMinor ?? 0).map(
+              (net, index) => net + Math.round((net * (nightRates[index] ?? 0)) / 100),
+            );
+      shares = targetPerNight.map((target, index) => target - (currentPerNight[index] ?? 0));
+    }
 
     await this.prisma.client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
@@ -1118,9 +1189,10 @@ export class FoliosService {
         const shareGrossMinor = shares[index] ?? 0;
         if (shareGrossMinor === 0) continue;
 
-        const shareNetMinor = taxable
-          ? Math.round(shareGrossMinor / (1 + ratePercent / 100))
-          : shareGrossMinor;
+        // The night's own rate when bands are mixed; the stay rate otherwise.
+        const nightRate = mixedBands ? (nightRates[index] ?? 0) : taxable ? ratePercent : 0;
+        const shareNetMinor =
+          nightRate > 0 ? Math.round(shareGrossMinor / (1 + nightRate / 100)) : shareGrossMinor;
         const shareTaxMinor = shareGrossMinor - shareNetMinor;
 
         const adjustment = await tx.folioLine.create({

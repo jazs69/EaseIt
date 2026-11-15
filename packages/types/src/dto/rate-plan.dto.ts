@@ -290,3 +290,45 @@ export const updateRatePlanRoomTypeRequestSchema = z
   });
 
 export type UpdateRatePlanRoomTypeRequest = z.infer<typeof updateRatePlanRoomTypeRequestSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*  Derived (linked) plans — AV-06                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Price a plan from another plan, night by night.
+ *
+ * PERCENT: signed basis points (-1000 = 10% below the parent, 500 = 5% above).
+ * FIXED: signed minor units per night (-50000 = 500.00 below the parent).
+ * One level only: a parent cannot itself be derived, and a plan that is a
+ * parent cannot become derived. A derived plan holds no prices of its own.
+ */
+export const setRatePlanDerivationRequestSchema = z
+  .object({
+    parentRatePlanId: z.uuid(),
+    kind: z.enum(['PERCENT', 'FIXED']),
+    value: z.number().int(),
+  })
+  .refine(
+    (v) =>
+      v.kind === 'PERCENT'
+        ? v.value >= -10_000 && v.value <= 10_000
+        : v.value >= -100_000_000 && v.value <= 100_000_000,
+    { message: 'PERCENT is -10000..10000 basis points; FIXED is bounded.', path: ['value'] },
+  );
+
+export type SetRatePlanDerivationRequest = z.infer<typeof setRatePlanDerivationRequestSchema>;
+
+export const ratePlanDerivationViewSchema = z.object({
+  ratePlanId: z.uuid(),
+  derivation: z
+    .object({
+      parentRatePlanId: z.uuid(),
+      parentCode: z.string(),
+      kind: z.enum(['PERCENT', 'FIXED']),
+      value: z.number().int(),
+    })
+    .nullable(),
+});
+
+export type RatePlanDerivationView = z.infer<typeof ratePlanDerivationViewSchema>;
