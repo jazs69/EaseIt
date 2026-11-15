@@ -367,6 +367,14 @@ inherit all of the above, and specifically:
 - **Postgres Row-Level Security is enabled as a backstop** on tenant-scoped tables, using
   `SET LOCAL app.current_property_id` at the start of each transaction. The ORM extension is the primary
   control; RLS is the thing that saves you when someone forgets it.
+- **As implemented** (`packages/database/src/tenancy.ts`, MT-02..MT-08): the guards record the route's
+  property and `TenantScopeInterceptor` runs the handler inside it (a binding made inside an awaited
+  guard does not reach the handler). `createTenantClient` scopes every tenant-model query and sets the
+  RLS setting in the query's own transaction; an unscoped tenant query throws. RLS binds only a
+  non-superuser, non-BYPASSRLS login, so the API and worker connect as `easeit_app`
+  (`pnpm db:app-role`), while migrations, seeds and fixtures use the owner login. Cross-property routes
+  carry `@CrossProperty(reason)`; background code uses `withoutTenantScope(reason)` or
+  `runInPropertyScope(propertyId)`. Array-form `$transaction([...])` is refused — use the callback form.
 - A staff user's accessible properties are an explicit allowlist (`UserPropertyAccess`). Switching
   property re-authorizes; it does not merely change a dropdown.
 - **Required test.** For each module, a test that authenticates as Property A and asserts that reading,

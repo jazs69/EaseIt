@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 52      | 25.4% |
-| `PI` PARTIALLY IMPLEMENTED | 94      | 45.9% |
-| `NI` NOT IMPLEMENTED       | 52      | 25.4% |
+| `CV` COMPLETE AND VERIFIED | 57      | 27.8% |
+| `PI` PARTIALLY IMPLEMENTED | 93      | 45.4% |
+| `NI` NOT IMPLEMENTED       | 48      | 23.4% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -170,13 +170,13 @@ primary are absent.
 | ID    | Subfeature                                        | St   | Evidence                                                                                                         | U/A/L/D/I | Tests and actual result                                      | Acceptance criterion                                                                                          | Dep   | Pri | Launch | Verified   | Method |
 | ----- | ------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
 | MT-01 | `propertyId` on operational tables                | `PI` | `packages/database/prisma/schema.prisma` — 27 models                                                             | –/–/~/✔/– | none                                                         | Every operational table carries non-nullable `propertyId`; composite indexes lead with it; audit documented   | —     | 2   | M      | 2026-10-29 | SI     |
-| MT-02 | Request-scoped tenant context (AsyncLocalStorage) | `NI` | no `platform/request-context` exists                                                                             | ✖/✖/✖/–/– | none                                                         | Property resolved per request from session or slug, never from a client header/body/query                     | MT-03 | 1   | M      | 2026-10-29 | SI     |
-| MT-03 | Prisma tenancy client extension                   | `NI` | `packages/database/src/client-factory.ts` builds a raw client; no `$extends`                                     | ✖/✖/✖/✖/– | none                                                         | Extension injects `where: { propertyId }` on every find/update/delete/count/aggregate and stamps it on create | MT-02 | 1   | M      | 2026-10-29 | SI     |
-| MT-04 | Postgres RLS backstop                             | `NI` | no RLS policy in any migration; services call `set_config('app.current_property_id', …)` with nothing reading it | ✖/✖/✖/✖/– | none                                                         | RLS enabled on tenant tables; a query without the setting returns zero rows                                   | MT-03 | 1   | M      | 2026-10-29 | SI     |
-| MT-05 | Cross-tenant reads return 404 not 403             | `PI` | `apps/api/src/common/guards/active-property.guard.ts` throws `TenantScopeViolationError`                         | –/✔/✔/–/– | cancellation suite step 8 (2026-10-29, isolated DB) — passed | Per-module test asserts read/update/delete of another property's row returns not-found                        | MT-03 | 2   | M      | 2026-10-29 | TR     |
+| MT-02 | Request-scoped tenant context (AsyncLocalStorage) | `CV` | 2026-11-16: `@repo/database` tenancy scope (AsyncLocalStorage); `SessionAuthGuard` / `ActivePropertyGuard` record the route's property, `TenantScopeInterceptor` runs the handler inside it. `tenant-isolation.test.mjs`                                                                             | ✖/✖/✖/–/– | none                                                         | Property resolved per request from session or slug, never from a client header/body/query                     | MT-03 | 1   | M      | 2026-10-29 | SI     |
+| MT-03 | Prisma tenancy client extension                   | `CV` | 2026-11-16: `createTenantClient` (`packages/database/src/tenancy.ts`): AND propertyId on every read/update/delete, stamps or refuses on create, throws with no scope; `PrismaService.client` uses it                                     | ✖/✖/✖/✖/– | none                                                         | Extension injects `where: { propertyId }` on every find/update/delete/count/aggregate and stamps it on create | MT-02 | 1   | M      | 2026-10-29 | SI     |
+| MT-04 | Postgres RLS backstop                             | `CV` | 2026-11-16: migration `20261116120000_tenant_row_level_security` (forced default-deny on all 36 NOT NULL propertyId tables); API/worker connect as non-superuser `easeit_app` (`scripts/db-app-role.mjs`); the setting is applied in the query's own transaction | ✖/✖/✖/✖/– | none                                                         | RLS enabled on tenant tables; a query without the setting returns zero rows                                   | MT-03 | 1   | M      | 2026-10-29 | SI     |
+| MT-05 | Cross-tenant reads return 404 not 403             | `CV` | 2026-11-16: `tenant-isolation.test.mjs` section D probes reservations, folios, cancel, no-show and room types across properties (all 404), plus each module's own tenancy checks. Was: `apps/api/src/common/guards/active-property.guard.ts` throws `TenantScopeViolationError`                         | –/✔/✔/–/– | cancellation suite step 8 (2026-10-29, isolated DB) — passed | Per-module test asserts read/update/delete of another property's row returns not-found                        | MT-03 | 2   | M      | 2026-10-29 | TR     |
 | MT-06 | Property access allowlist                         | `PI` | `UserPropertyRole` model                                                                                         | ✔/✔/✔/✔/– | none                                                         | Switching property re-authorizes; a user without a grant is refused                                           | —     | 2   | M      | 2026-10-29 | SI     |
 | MT-07 | Property switch / select-context                  | `PI` | `apps/api/src/modules/properties/properties.controller.ts:78`                                                    | ✔/✔/✔/✔/– | none                                                         | Context switch re-signs the session and is rejected without a grant                                           | MT-06 | 3   | M      | 2026-10-29 | SI     |
-| MT-08 | `withoutTenantScope()` escape hatch               | `NI` | not present                                                                                                      | ✖/✖/✖/–/– | none                                                         | Helper exists, is logged, and is permitted only for night audit, cross-property reporting and migrations      | MT-03 | 3   | A      | 2026-10-29 | SI     |
+| MT-08 | `withoutTenantScope()` escape hatch               | `CV` | 2026-11-16: `withoutTenantScope(reason, fn)`, logged; used by `@CrossProperty` routes (sign-in/session, group dashboard, calendar, performance, property switch, role templates, outbox gauge), the active-property guard's grant lookup and the outbox dispatcher                                                                                                      | ✖/✖/✖/–/– | none                                                         | Helper exists, is logged, and is permitted only for night audit, cross-property reporting and migrations      | MT-03 | 3   | A      | 2026-10-29 | SI     |
 
 ### 2.2 Property setup and configuration
 
@@ -795,6 +795,40 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-16 (twenty-fifth pass) - tenancy layer and row-level security (MT-02 .. MT-05, MT-08)
+
+**Owner decision.** Full backstop: the API connects as a non-superuser role so RLS binds.
+
+**Status transitions.** MT-02, MT-03, MT-04, MT-08 `NI`→`CV`; MT-05 `PI`→`CV`. P0-7 met. Counts:
+`CV` 52→57, `PI` 94→93, `NI` 52→48.
+
+**Implemented.** `packages/database/src/tenancy.ts`: an AsyncLocalStorage tenant scope;
+`createTenantClient` narrows every tenant-model operation to the scope (AND `propertyId`), stamps or
+refuses creates, throws with no scope, and runs each standalone operation in a two-statement
+transaction with `app.current_property_id` set (an interactive transaction sets it once; the array
+form is refused). `withoutTenantScope(reason)` is logged. Migration
+`20261116120000_tenant_row_level_security` enables and forces a default-deny policy on all 36 tables
+whose `propertyId` is NOT NULL (`role` is nullable and global). `scripts/db-app-role.mjs` creates
+`easeit_app` (no superuser, no BYPASSRLS, data access only, no `_prisma_migrations`); the local
+`apps/api/.env` and CI now use it, while migrations, seeds and test fixtures keep the owner login.
+Guards record the property; `TenantScopeInterceptor` runs the handler in it (an AsyncLocalStorage
+binding made inside an awaited guard does not reach the handler -- the old `enter()` binding never
+did). `@CrossProperty` marks the seven cross-property routes. The outbox dispatcher and worker
+bookkeeping run in a bypass and each handler in its event's property; the night-audit scheduler
+enqueues per property in scope. The property-dashboard counts moved from an array-form to an
+interactive transaction.
+
+**Tests.** New `tenant-isolation` suite (in the gate): catalog (forced RLS + policy on every tenant
+table, extension list equals RLS list); the API login is not superuser/BYPASSRLS and cannot read
+`_prisma_migrations`; database alone: no setting → zero rows, property setting → only its rows,
+cross-property INSERT refused and UPDATE touches nothing, bypass sees both; extension alone: unscoped
+throws, findMany/findUnique/updateMany narrowed, creates stamped, cross-property create refused, raw SQL
+and relation includes confined, transactions scoped, array form refused, bypass widens; API: six
+cross-property probes are 404; nine cross-property routes answer 200. **Mutation-checked:** with RLS
+disabled on `reservation`, six checks failed. The whole gate (21 suites) and `test:payment`,
+`test:checkout`, `test:checkin`, `test:outbox` ran against the API connected as `easeit_app`; zero
+scope errors in its log. Not covered: the worker process end to end (needs Redis).
 
 ### 2026-11-16 (twenty-fourth pass) - night audit (NA-01 .. NA-07)
 

@@ -18,6 +18,7 @@
 
 import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { runInPropertyScope } from '@repo/database';
 import { OPERABLE_PROPERTY_STATUSES, type BusinessDate } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
@@ -84,7 +85,10 @@ export class NightAuditScheduler implements OnModuleDestroy {
           auditTime,
         });
         if (!verdict.due) continue;
-        const started = await this.audits.enqueueForProperty(property.id, null);
+        // Each property is enqueued inside its own tenant scope (MT-03).
+        const started = await runInPropertyScope(property.id, () =>
+          this.audits.enqueueForProperty(property.id, null),
+        );
         if (started.outcome !== 'EXISTING') result.enqueued.push(property.id);
       } catch (cause) {
         // One property's failure does not stop the others (NA-03).

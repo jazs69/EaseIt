@@ -28,6 +28,7 @@ import { OutboxMetricsService } from './outbox-metrics.service.js';
 import { OutboxQueue } from './outbox.queue.js';
 import { OutboxService } from './outbox.service.js';
 import { OutboxWorker } from './outbox.worker.js';
+import { withoutTenantScope } from '@repo/database';
 
 /**
  * Starts and stops the background half.
@@ -64,7 +65,7 @@ export class OutboxRuntime implements OnModuleDestroy {
 
     const intervalMs = this.config.get<number>('OUTBOX_BACKLOG_LOG_MS', 60_000);
     this.backlogTimer = setInterval(() => {
-      void this.metrics.logBacklog().catch((cause: unknown) => {
+      void withoutTenantScope('outbox backlog log', () => this.metrics.logBacklog()).catch((cause: unknown) => {
         this.logger.warn(`Backlog logging failed: ${String(cause)}`);
       });
     }, intervalMs);

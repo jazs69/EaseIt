@@ -42,6 +42,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../../prisma/prisma.service.js';
 import { OutboxMetricsService } from './outbox-metrics.service.js';
 import { OutboxQueue } from './outbox.queue.js';
+import { withoutTenantScope } from '@repo/database';
 
 /** One claimed row, as the dispatcher needs it. */
 export interface ClaimedRow {
@@ -103,7 +104,8 @@ export class OutboxDispatcherService implements OnModuleDestroy {
         `batch=${String(this.batchSize)} lease=${String(this.leaseMs)}ms worker=${this.workerId}`,
     );
     this.timer = setInterval(() => {
-      void this.tick();
+      // Claiming due events reads the queue across properties (MT-08).
+      void withoutTenantScope('outbox dispatch', () => this.tick());
     }, this.pollMs);
   }
 

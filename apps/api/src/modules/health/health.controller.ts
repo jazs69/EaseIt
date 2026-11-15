@@ -30,6 +30,7 @@ import type { OutboxBacklog } from '@repo/types';
 
 import { OutboxMetricsService } from '../platform/outbox/outbox-metrics.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
 @ApiTags('health')
 @Controller('health')
@@ -63,6 +64,7 @@ export class HealthController {
     };
   }
 
+  @CrossProperty('portfolio-wide outbox backlog gauge')
   @Get('outbox')
   @ApiOperation({
     summary: 'Outbox backlog — a workload gauge, never a readiness signal.',

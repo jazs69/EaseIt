@@ -31,10 +31,13 @@ import {
   type Role,
 } from '@repo/types';
 
+import { withoutTenantScope } from '@repo/database';
+
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { AuthenticatedRequest } from '../auth/authenticated-user.js';
 import { PropertyContextService } from '../context/property-context.service.js';
 import { TenantScopeViolationError, UnauthenticatedError } from '../errors/domain-error.js';
+import { setRequestTenant } from '../tenancy/tenant-scope.interceptor.js';
 
 interface ResolvedGrants {
   roles: Role[];
@@ -59,7 +62,13 @@ export class ActivePropertyGuard implements CanActivate {
     }
 
     const requested = this.requestedPropertyId(request);
-    const propertyId = requested ?? (await this.soleGrantedProperty(user.userId));
+    // Resolving which property a person may act on reads their grants, which
+    // span properties by nature; it runs before any scope exists (MT-08).
+    const propertyId =
+      requested ??
+      (await withoutTenantScope('resolving the active property from grants', () =>
+        this.soleGrantedProperty(user.userId),
+      ));
 
     if (propertyId === null) {
       // No property named and the user has access to none (or to several, in
@@ -81,7 +90,9 @@ export class ActivePropertyGuard implements CanActivate {
       throw new TenantScopeViolationError('Property');
     }
 
-    const grants = await this.resolveGrants(user.userId, propertyId);
+    const grants = await withoutTenantScope('resolving the active property from grants', () =>
+      this.resolveGrants(user.userId, propertyId),
+    );
 
     // Holding no role at this property is indistinguishable, to the caller,
     // from the property not existing. That is deliberate.
@@ -99,6 +110,8 @@ export class ActivePropertyGuard implements CanActivate {
     };
 
     request.activePropertyContext = activeContext;
+    // The handler runs inside this property's tenant scope (TenantScopeInterceptor).
+    setRequestTenant(request, property.id);
 
     // Also bind it to AsyncLocalStorage so repositories can read the tenant
     // without it being threaded through every call signature.

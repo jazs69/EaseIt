@@ -63,8 +63,10 @@ import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { TokenService } from '../../common/auth/token.service.js';
 import { AuthService, type RequestOrigin } from './auth.service.js';
+import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
 @ApiTags('auth')
+@CrossProperty('sign-in and session resolution span every grant a person holds')
 @Controller('auth')
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);

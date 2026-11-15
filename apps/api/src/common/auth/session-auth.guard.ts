@@ -26,6 +26,8 @@ import { Injectable, Logger, type CanActivate, type ExecutionContext } from '@ne
 import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { propertyWhereFromIdentifier } from '../property-scope/property-identifier.js';
+import { setRequestTenant } from '../tenancy/tenant-scope.interceptor.js';
 import { AccountDisabledError, UnauthenticatedError } from '../errors/domain-error.js';
 import type { AuthenticatedRequest } from './authenticated-user.js';
 import { readCookie, sessionCookieName } from './session-cookie.js';
@@ -109,6 +111,8 @@ export class SessionAuthGuard implements CanActivate {
       activePropertyId: claims.pid,
     };
 
+    await this.bindRequestedProperty(request);
+
     return true;
   }
 
@@ -130,4 +134,34 @@ export class SessionAuthGuard implements CanActivate {
     const match = /^Bearer[ ]+(\S+)$/i.exec(authorization.trim());
     return match?.[1] ?? null;
   }
+
+  /**
+   * Bind the tenant scope for a property-addressed route (MT-02, section 3.2).
+   *
+   * Routes name the hotel they act on in the path (`:hotelId`, or
+   * `:propertyId`). Every query the request then makes is confined to that
+   * property by the tenancy extension and by row-level security. Binding it
+   * grants nothing: each service still checks the caller's grant and answers
+   * 404 without one. An identifier that names no property binds a scope that
+   * matches no row, so the request finds nothing rather than everything.
+   *
+   * `Property` is a portfolio-global model, so resolving the code here needs
+   * no scope of its own. Routes with no property in the path (sign-in, the
+   * group dashboard) bind nothing here and declare their cross-property reads
+   * explicitly with withoutTenantScope().
+   */
+  private async bindRequestedProperty(request: AuthenticatedRequest): Promise<void> {
+    const params = (request.params ?? {}) as Record<string, unknown>;
+    const requested = params['hotelId'] ?? params['propertyId'];
+    if (typeof requested !== 'string' || requested.length === 0) return;
+    const property = await this.prisma.client.property.findFirst({
+      where: propertyWhereFromIdentifier(requested),
+      select: { id: true },
+    });
+    // Applied around the handler by TenantScopeInterceptor.
+    setRequestTenant(request, property?.id ?? NO_PROPERTY);
+  }
 }
+
+/** A scope that matches no row: the nil UUID is never a property id. */
+const NO_PROPERTY = '00000000-0000-0000-0000-000000000000';

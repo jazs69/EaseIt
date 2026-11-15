@@ -211,6 +211,11 @@ const suites = [
     why: 'enqueue-only requests, 8 ordered steps, no-show roll, nightly charge once, settle, snapshot, date roll, idempotent re-run, racing executors, resume, per-timezone schedule',
   },
   {
+    name: 'tenant isolation (MT-02 .. MT-05, MT-08)',
+    script: 'test/integration/tenant-isolation.test.mjs',
+    why: 'every tenant table has forced RLS; the app login sees nothing unscoped and only its property scoped; the extension scopes, stamps and refuses; cross-property API calls are 404',
+  },
+  {
     name: 'unavailable permissions (AU-13)',
     script: 'test/integration/unavailable-permissions.test.mjs',
     why: 'custom roles cannot grant unbuilt features; no role or session reports them',

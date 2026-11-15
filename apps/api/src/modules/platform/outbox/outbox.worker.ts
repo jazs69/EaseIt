@@ -37,6 +37,7 @@ import {
   redisConnectionFrom,
   type OutboxJobData,
 } from './outbox.queue.js';
+import { runInPropertyScope, withoutTenantScope } from '@repo/database';
 
 @Injectable()
 export class OutboxWorker implements OnModuleDestroy {
@@ -70,7 +71,9 @@ export class OutboxWorker implements OnModuleDestroy {
     this.worker = new Worker<OutboxJobData>(
       OUTBOX_QUEUE_NAME,
       async (job) => {
-        await this.process(job);
+        // The queue spans properties; each handler is then confined to its
+        // event's own property below (MT-08).
+        await withoutTenantScope('outbox delivery bookkeeping', () => this.process(job));
       },
       { connection: { url }, prefix, concurrency: this.concurrency },
     );
@@ -213,12 +216,14 @@ export class OutboxWorker implements OnModuleDestroy {
     const startedAt = Date.now();
     try {
       await withTimeout(
-        handler.handle({
-          outboxEventId: row.id,
-          propertyId: row.propertyId,
-          payload: parsed.data,
-          attempt: row.attempts + 1,
-        }),
+        runInPropertyScope(row.propertyId, () =>
+          handler.handle({
+            outboxEventId: row.id,
+            propertyId: row.propertyId,
+            payload: parsed.data,
+            attempt: row.attempts + 1,
+          }),
+        ),
         this.handlerTimeoutMs,
         `${row.eventType} handler exceeded ${String(this.handlerTimeoutMs)}ms`,
       );

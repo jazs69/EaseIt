@@ -3,8 +3,10 @@ import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { RoleDefinitionDto } from '@repo/types';
 
 import { RbacService } from './rbac.service.js';
+import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
 @ApiTags('rbac')
+@CrossProperty('global role templates')
 @Controller('rbac')
 export class RbacController {
   constructor(private readonly rbac: RbacService) {}

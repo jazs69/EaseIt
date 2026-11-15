@@ -14,6 +14,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { Injectable } from '@nestjs/common';
+import { runInPropertyScope } from '@repo/database';
 import type { AuthSubject, PropertyId } from '@repo/types';
 
 export interface PropertyContext {
@@ -29,7 +30,11 @@ export class PropertyContextService {
 
   /** Runs `work` with `context` bound for its entire async subtree. */
   run<T>(context: PropertyContext, work: () => T): T {
-    return this.storage.run(context, work);
+    // The tenancy layer (MT-03/MT-04) reads its own scope; keep the two bound
+    // together so a repository and the database agree on the property.
+    return this.storage.run(context, () =>
+      context.propertyId === null ? work() : runInPropertyScope(context.propertyId, work),
+    );
   }
 
   /**

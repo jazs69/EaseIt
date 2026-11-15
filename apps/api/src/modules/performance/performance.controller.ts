@@ -33,6 +33,7 @@ import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { PerformanceService } from './performance.service.js';
+import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
 @ApiTags('performance')
 @ApiBearerAuth('access-token')
@@ -41,6 +42,7 @@ import { PerformanceService } from './performance.service.js';
 export class PerformanceController {
   constructor(private readonly performance: PerformanceService) {}
 
+  @CrossProperty('portfolio performance across granted properties')
   @Get('group-performance')
   @ApiOperation({
     summary: 'Revenue, occupancy, ADR and RevPAR across the portfolio',

@@ -42,6 +42,7 @@ import {
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { PropertiesService } from './properties.service.js';
+import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
 @ApiTags('properties')
 @ApiBearerAuth('access-token')
@@ -57,6 +58,7 @@ export class PropertiesController {
     this.cookieName = sessionCookieName(config);
   }
 
+  @CrossProperty('listing the properties a person is granted')
   @Get('my-group')
   @ApiOperation({
     summary: 'Every property the caller holds a role at',
@@ -75,6 +77,7 @@ export class PropertiesController {
     return this.properties.listMyGroup(user.userId, query);
   }
 
+  @CrossProperty('verifying a grant before switching property')
   @Post('select-context')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

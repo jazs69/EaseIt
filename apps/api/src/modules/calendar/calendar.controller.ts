@@ -35,6 +35,7 @@ import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CalendarService } from './calendar.service.js';
+import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
 @ApiTags('calendar')
 @ApiBearerAuth('access-token')
@@ -43,6 +44,7 @@ import { CalendarService } from './calendar.service.js';
 export class CalendarController {
   constructor(private readonly calendar: CalendarService) {}
 
+  @CrossProperty('portfolio calendar across granted properties')
   @Get('group-calendar')
   @ApiOperation({
     summary: 'Portfolio occupancy across a date window',

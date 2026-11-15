@@ -47,35 +47,21 @@ export async function disconnectPrisma(): Promise<void> {
 /*  Tenancy                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Models shared across the whole 10-hotel portfolio, which therefore carry no
- * `propertyId`. Everything *not* listed here is tenant-scoped and must be
- * filtered by `propertyId` on every read and write.
- *
- * The tenant-scoping client extension (CLAUDE.md section 3.2) reads this list
- * to decide which models to inject a `where` clause into, so it is
- * load-bearing: wrongly adding a model here silently disables tenant
- * isolation for it.
- */
-export const PORTFOLIO_GLOBAL_MODELS: readonly Prisma.ModelName[] = [
-  'Role',
-  'Permission',
-  'RolePermission',
-  // `Property` is the tenant root itself and `User` is portfolio-wide
-  // identity; both are guarded by explicit access checks rather than by a
-  // blanket propertyId predicate.
-  'Property',
-  'User',
-  // A second-factor challenge belongs to an identity, not to a hotel. It is
-  // only ever read by id for the user who created it, and the sign-in flow
-  // runs before any property has been resolved — so a propertyId predicate
-  // would have nothing to filter on and would simply break login.
-  'TwoFactorChallenge',
-];
-
-export function isTenantScopedModel(model: Prisma.ModelName): boolean {
-  return !PORTFOLIO_GLOBAL_MODELS.includes(model);
-}
+// The scope, the scoping extension and the RLS settings live in one place.
+export {
+  createTenantClient,
+  currentTenantScope,
+  enterPropertyScope,
+  isTenantScopedModel,
+  onTenantScopeBypass,
+  PORTFOLIO_GLOBAL_MODELS,
+  runInPropertyScope,
+  scopeArguments,
+  TENANT_SCOPED_MODELS,
+  TenantScopeError,
+  withoutTenantScope,
+  type TenantScope,
+} from './tenancy.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Error translation                                                        */

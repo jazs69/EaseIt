@@ -168,30 +168,30 @@ export class PropertyDashboardRepository {
       onHoldCount,
       noShowsCount,
       magicLinkCount,
-    ] = await client.$transaction([
-      client.reservation.count({
+    ] = await client.$transaction(async (tx) => Promise.all([
+      tx.reservation.count({
         where: { propertyId, createdAt: { gte: dayStart, lt: dayEnd } },
       }),
-      client.reservation.count({
+      tx.reservation.count({
         where: { propertyId, status: { in: [...IN_HOUSE_STATUSES] } },
       }),
-      client.reservation.count({
+      tx.reservation.count({
         where: { propertyId, arrivalDate: targetDate, status: { in: [...LIVE_STATUSES] } },
       }),
-      client.reservation.count({
+      tx.reservation.count({
         where: { propertyId, departureDate: targetDate, status: { in: [...LIVE_STATUSES] } },
       }),
-      client.reservation.count({
+      tx.reservation.count({
         where: { propertyId, status: ReservationStatus.CANCELLED },
       }),
-      client.reservation.count({
+      tx.reservation.count({
         where: { propertyId, status: ReservationStatus.ON_HOLD },
       }),
-      client.reservation.count({
+      tx.reservation.count({
         where: { propertyId, status: ReservationStatus.NO_SHOW },
       }),
-      client.reservation.count({ where: { propertyId, isMagicLinkActive: true } }),
-    ]);
+      tx.reservation.count({ where: { propertyId, isMagicLinkActive: true } }),
+    ]));
 
     return {
       newBookingsCount,

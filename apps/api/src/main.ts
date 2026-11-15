@@ -13,6 +13,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module.js';
 import { DomainExceptionFilter } from './common/filters/domain-exception.filter.js';
 import { UuidParamPipe } from './common/pipes/uuid-param.pipe.js';
+import { TenantScopeInterceptor } from './common/tenancy/tenant-scope.interceptor.js';
 
 const API_PREFIX = 'api';
 
@@ -72,6 +73,8 @@ async function bootstrap(): Promise<void> {
   );
 
   app.useGlobalFilters(new DomainExceptionFilter());
+  // Every handler runs inside the tenant scope its guards verified (MT-02).
+  app.useGlobalInterceptors(new TenantScopeInterceptor());
 
   // Lets onModuleDestroy run so Prisma closes its pool on SIGTERM.
   app.enableShutdownHooks();
