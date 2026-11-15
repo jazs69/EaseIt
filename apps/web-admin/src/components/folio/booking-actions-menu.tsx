@@ -38,6 +38,7 @@ import {
   BookOpen,
   DoorOpen,
   PenLine,
+  UserX,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -69,7 +70,7 @@ export function BookingActionsMenu({
   onCancelled,
 }: BookingActionsMenuProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState<'cancel' | 'no-show' | null>(null);
 
   return (
     <>
@@ -117,29 +118,39 @@ export function BookingActionsMenu({
               }}
             />
             <ActionMenuItem
+              label="Mark no-show"
+              icon={UserX}
+              destructive
+              onSelect={() => {
+                close();
+                setCancelOpen('no-show');
+              }}
+            />
+            <ActionMenuItem
               label="Cancel booking"
               icon={Ban}
               destructive
               onSelect={() => {
                 close();
-                setCancelOpen(true);
+                setCancelOpen('cancel');
               }}
             />
           </>
         )}
       </ActionMenu>
 
-      {cancelOpen ? (
+      {cancelOpen !== null ? (
         <CancelBookingDialog
+          mode={cancelOpen}
           hotelId={hotelId}
           reservationId={reservationId}
           guestName={guestName ?? null}
           confirmationCode={confirmationCode ?? null}
           onClose={() => {
-            setCancelOpen(false);
+            setCancelOpen(null);
           }}
           onCancelled={() => {
-            setCancelOpen(false);
+            setCancelOpen(null);
             (onCancelled ?? onMoved)();
           }}
         />

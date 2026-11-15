@@ -77,3 +77,29 @@ export const cancelReservationResultSchema = z.object({
 });
 
 export type CancelReservationResult = z.infer<typeof cancelReservationResultSchema>;
+
+/**
+ * RS-13: marking a guest who never arrived as a no-show.
+ *
+ * Same shape and the same boundary as a cancellation: status, timestamp, every
+ * held night released, audit. No money moves; a no-show fee, where one is due,
+ * is posted through the folio charge endpoint. Only on or after the arrival
+ * business date, because before it the guest has not yet failed to arrive.
+ */
+export const markNoShowSchema = cancelReservationSchema;
+
+export type MarkNoShowCommand = z.infer<typeof markNoShowSchema>;
+
+export const markNoShowResultSchema = z.object({
+  reservationId: z.uuid(),
+  confirmationCode: z.string(),
+  status: z.literal('NO_SHOW'),
+  /** When it was marked; stored in `cancelledAt`, which the schema permits for NO_SHOW. */
+  markedAt: z.string().nullable(),
+  nightsReleased: z.number().int().nonnegative(),
+  /** True when it was already a no-show and this call changed nothing. */
+  alreadyNoShow: z.boolean(),
+  financialsUnchanged: z.literal(true),
+});
+
+export type MarkNoShowResult = z.infer<typeof markNoShowResultSchema>;

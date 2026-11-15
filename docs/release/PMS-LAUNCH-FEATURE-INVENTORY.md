@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 46      | 22.4% |
+| `CV` COMPLETE AND VERIFIED | 47      | 22.9% |
 | `PI` PARTIALLY IMPLEMENTED | 92      | 44.9% |
-| `NI` NOT IMPLEMENTED       | 60      | 29.3% |
+| `NI` NOT IMPLEMENTED       | 59      | 28.8% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -272,7 +272,7 @@ lifecycle amendments are missing.
 | RS-10 | Reservation search                      | `PI` | `reservation-search.controller.ts:43`; migration `20261016220000`                                                                                                                           | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | Cursor pagination; tenant-scoped; indexed                                     | —     | 2   | M      | 2026-10-29 | SI         |
 | RS-11 | Modify dates / occupancy                | `NI` | no endpoint                                                                                                                                                                                 | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Amending dates re-checks inventory for added nights and releases removed ones | AV-04 | 1   | M      | 2026-10-29 | SI         |
 | RS-12 | Extend / shorten stay                   | `NI` | —                                                                                                                                                                                           | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Same invariants as RS-11, tested per date                                     | RS-11 | 1   | M      | 2026-10-29 | SI         |
-| RS-13 | No-show handling                        | `NI` | `NO_SHOW` enum exists; `reservation.state.ts:86` `cancelRefusal` refuses it; no transition path                                                                                             | ✖/✖/~/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | A no-show roll sets the status and keeps inventory consistent                 | NA-04 | 1   | M      | 2026-10-29 | SI         |
+| RS-13 | No-show handling                        | `CV` | 2026-11-15: `POST .../reservations/:id/no-show` (`CancelReservationService.markNoShow`), `noShowRefusal` in `reservation.state.ts`; shares the cancellation transaction and release code; `no-show.test.mjs`, mutation-checked                                                                                             | ✖/✖/~/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | A no-show roll sets the status and keeps inventory consistent                 | NA-04 | 1   | M      | 2026-10-29 | SI         |
 | RS-14 | Group / multi-room bookings             | `PI` | schema permits many `ReservationRoom`; cancel releases per category                                                                                                                         | ~/✔/✔/✔/– | release logic for N rooms asserted in cancellation suite                                                                                                                                                                                                                                                                                                | Create a group booking through the product; release is per-category           | RM-02 | 2   | A      | 2026-10-29 | TR         |
 | RS-15 | Reservation state machine               | `CV` | `reservation.state.ts:56` `CONSUMES_INVENTORY`, `:86` `cancelRefusal`                                                                                                                       | –/✔/✔/–/– | asserted via cancellation suite steps 6, 7, 7b, 7d                                                                                                                                                                                                                                                                                                      | Legal transitions live in one place and are enforced in the domain layer      | —     | 1   | M      | 2026-10-29 | TR         |
 | RS-16 | Bounded reservation-row lock wait       | `CV` | `set_config('lock_timeout', …)` at `cancel-reservation.service.ts:203`, `room-move.service.ts:269`, `check-in.service.ts:295`; shared `ROW_LOCK_TIMEOUT_MS` in `common/errors/sql-state.ts` | –/✔/✔/–/– | step 14 measured move 3035 ms, check-in 3038 ms → typed 409 `CONFLICT` (2026-10-29)                                                                                                                                                                                                                                                                     | A contended write returns a typed 409 inside the budget, never hangs          | —     | 1   | M      | 2026-10-29 | TR         |
@@ -795,6 +795,32 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-15 (twenty-second pass) - RS-13 no-show
+
+**Status transitions.** RS-13 `NI`→`CV`. Counts: `CV` 46→47, `NI` 60→59. P1-11 (stay amendment
+and no-show) is partly done: RS-11 and RS-12 remain.
+
+**Implemented.** `POST .../reservations/:id/no-show` (`reservations:edit`). Same transaction as
+cancellation: reservation row FOR UPDATE first under the shared `lock_timeout`, then every held
+night released from the live `reservation_room` rows in ascending date/category order, refusing
+when counters and bookings disagree. The release block was extracted (`releaseHeldNights`) so
+cancellation and no-show share one implementation, and the retry loop likewise (`withRetry`). Legal
+from CONFIRMED / TENTATIVE / ON_HOLD (`noShowRefusal`), only on or after the arrival **business
+date**; already NO_SHOW is an idempotent success. Room rows become NO_SHOW (frees the room number);
+`cancelledAt` records when it was marked (the schema CHECK permits it for NO_SHOW). No money moves;
+the folio can then be refunded and closed (FO-12/13). Web admin: "Mark no-show" in Booking actions,
+reusing the cancel dialog. Night audit step 2 can call the same path when it exists.
+
+**Tests.** New `no-show` suite (in `pnpm gate:integration`): counters per date and per category
+against live room rows before/after; room number re-sellable; idempotent repeat; 8 parallel calls →
+one transition, one audit row; refusals (before arrival 400, checked-in / cancelled 409, no-show
+cannot be cancelled or checked in, 403 without `reservations:edit`, other property 404); no-show vs
+cancellation staged in both queue orders, released exactly once; bounded lock wait 409; no folio
+line written, deposit refunded and folio closed. **Mutation-checked** (run from a separate build copy
+so the developer API was untouched): with the release skipped, 9 checks failed. `pnpm
+gate:integration` 19/19 (cancellation suites included, proving the refactor), `test:payment`,
+`test:checkout`, `test:checkin` pass; typecheck and lint clean.
 
 ### 2026-11-15 (twenty-first pass) - FO-12 refunds and FO-13 settlement
 

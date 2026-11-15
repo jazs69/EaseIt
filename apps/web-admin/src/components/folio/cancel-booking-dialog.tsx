@@ -23,10 +23,10 @@
  */
 
 import { cn } from '@repo/ui';
-import { Ban, Loader2, X } from 'lucide-react';
+import { Ban, Loader2, UserX, X } from 'lucide-react';
 import { useState } from 'react';
 
-import { cancelReservation } from '@/lib/properties-client';
+import { cancelReservation, markNoShow } from '@/lib/properties-client';
 
 export interface CancelBookingDialogProps {
   hotelId: string;
@@ -34,21 +34,30 @@ export interface CancelBookingDialogProps {
   /** For the header line, so the clerk can see what they are cancelling. */
   guestName?: string | null;
   confirmationCode?: string | null;
+  /**
+   * RS-13: `no-show` reuses this dialog for a guest who never arrived. Same
+   * release, same money and OTA notices; only the wording and endpoint differ.
+   */
+  mode?: 'cancel' | 'no-show';
   onClose: () => void;
   /** Called after a successful cancellation so the page can refresh. */
   onCancelled: (summary: { nightsReleased: number; alreadyCancelled: boolean }) => void;
 }
 
-const CONFIRM_WORD = 'CANCEL';
 
 export function CancelBookingDialog({
   hotelId,
   reservationId,
   guestName,
   confirmationCode,
+  mode = 'cancel',
   onClose,
   onCancelled,
 }: CancelBookingDialogProps) {
+  const noShow = mode === 'no-show';
+  const CONFIRM_WORD = noShow ? 'NO-SHOW' : 'CANCEL';
+  const title = noShow ? 'Mark no-show' : 'Cancel booking';
+  const Icon = noShow ? UserX : Ban;
   const [reason, setReason] = useState('');
   const [typed, setTyped] = useState('');
   const [saving, setSaving] = useState(false);
@@ -60,18 +69,25 @@ export function CancelBookingDialog({
     setSaving(true);
     setError(null);
     try {
-      const result = await cancelReservation(hotelId, reservationId, {
-        reason: reason.trim() === '' ? null : reason.trim(),
-      });
-      onCancelled({
-        nightsReleased: result.nightsReleased,
-        alreadyCancelled: result.alreadyCancelled,
-      });
+      const body = { reason: reason.trim() === '' ? null : reason.trim() };
+      if (noShow) {
+        const result = await markNoShow(hotelId, reservationId, body);
+        onCancelled({
+          nightsReleased: result.nightsReleased,
+          alreadyCancelled: result.alreadyNoShow,
+        });
+      } else {
+        const result = await cancelReservation(hotelId, reservationId, body);
+        onCancelled({
+          nightsReleased: result.nightsReleased,
+          alreadyCancelled: result.alreadyCancelled,
+        });
+      }
     } catch (cause) {
       setError(
         cause instanceof Error
           ? cause.message
-          : 'The cancellation failed. Nothing was changed.',
+          : `${noShow ? 'Marking the no-show' : 'The cancellation'} failed. Nothing was changed.`,
       );
       setSaving(false);
     }
@@ -91,14 +107,14 @@ export function CancelBookingDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Cancel booking"
+        aria-label={title}
         className="fixed top-1/2 left-1/2 z-[71] flex max-h-[88dvh] w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col rounded-2xl border border-white/[0.08] bg-[#0f141f] shadow-2xl"
       >
         <header className="flex items-start justify-between gap-3 border-b border-white/[0.06] px-5 py-4">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
-              <Ban className="size-4 text-rose-400" aria-hidden="true" />
-              Cancel booking
+              <Icon className="size-4 text-rose-400" aria-hidden="true" />
+              {title}
             </h2>
             <p className="mt-0.5 truncate text-[11px] text-zinc-500">
               {[guestName, confirmationCode].filter(Boolean).join(' · ') ||
@@ -121,7 +137,11 @@ export function CancelBookingDialog({
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
             <p className="text-[11px] font-semibold text-zinc-200">This will:</p>
             <ul className="mt-1.5 flex flex-col gap-1 text-[11px] text-zinc-400">
-              <li>· mark the booking cancelled and record who cancelled it</li>
+              <li>
+                {noShow
+                  ? '· mark the booking a no-show (the guest never arrived) and record who marked it'
+                  : '· mark the booking cancelled and record who cancelled it'}
+              </li>
               <li>· return every night it held to availability <strong>in EaseIt</strong></li>
               <li>· free the room number for those dates</li>
             </ul>
@@ -134,9 +154,9 @@ export function CancelBookingDialog({
               No money is moved by this action.
             </p>
             <p className="mt-1 text-[11px] text-amber-100/90">
-              No cancellation fee is calculated, no refund is issued, and the folio is left
-              exactly as it is. If this property&apos;s policy retains an amount, post it on
-              the folio as a charge after cancelling.
+              No {noShow ? 'no-show' : 'cancellation'} fee is calculated, no refund is issued, and
+              the folio is left exactly as it is. If this property&apos;s policy retains an amount,
+              post it on the folio as a charge afterwards.
             </p>
             {/* Stated because the product is also a channel manager: a reader
                 could otherwise take "availability" to mean the OTAs too. */}
@@ -191,7 +211,7 @@ export function CancelBookingDialog({
               disabled={saving}
               className="rounded-lg border border-white/[0.08] px-3 py-2 text-xs text-zinc-300 disabled:opacity-50"
             >
-              Keep booking
+              {noShow ? 'Not now' : 'Keep booking'}
             </button>
             <button
               type="button"
@@ -202,7 +222,7 @@ export function CancelBookingDialog({
               className="flex items-center gap-1.5 rounded-lg bg-rose-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null}
-              Cancel booking
+              {title}
             </button>
           </div>
         </div>

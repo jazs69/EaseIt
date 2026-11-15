@@ -20,8 +20,11 @@ import {
 } from '@nestjs/swagger';
 import {
   cancelReservationSchema,
+  markNoShowSchema,
   type CancelReservationCommand,
   type CancelReservationResult,
+  type MarkNoShowCommand,
+  type MarkNoShowResult,
 } from '@repo/types';
 import type { FastifyRequest } from 'fastify';
 
@@ -72,6 +75,35 @@ export class CancelReservationController {
     @Body(new ZodValidationPipe(cancelReservationSchema)) body: CancelReservationCommand,
   ): Promise<CancelReservationResult> {
     return this.cancellations.cancel(this.userId(request), hotelId, reservationId, body);
+  }
+
+  @Post(':hotelId/reservations/:reservationId/no-show')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Mark a reservation as a no-show and release its inventory',
+    description:
+      'RS-13. The same transaction as a cancellation: the reservation row is ' +
+      'locked, the status becomes NO_SHOW, every held night returns to ' +
+      '`inventory_day`, the room rows become NO_SHOW so the room number is ' +
+      'free, and an audit row records the actor and reason. Only on or after ' +
+      "the arrival business date. **No money moves**; a no-show fee is posted " +
+      'through the folio charge endpoint. Repeating the call is safe.',
+  })
+  @ApiOkResponse({ description: 'The no-show, and how many nights it released.' })
+  @ApiConflictResponse({
+    description: 'A checked-in, checked-out or cancelled booking cannot be a no-show.',
+  })
+  @ApiBadRequestResponse({
+    description: 'Before the arrival date, or counters disagree with the booking.',
+  })
+  @ApiNotFoundResponse({ description: 'No such reservation at a property you can access.' })
+  noShow(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('reservationId') reservationId: string,
+    @Body(new ZodValidationPipe(markNoShowSchema)) body: MarkNoShowCommand,
+  ): Promise<MarkNoShowResult> {
+    return this.cancellations.markNoShow(this.userId(request), hotelId, reservationId, body);
   }
 
   private userId(request: FastifyRequest): string {

@@ -201,6 +201,11 @@ const suites = [
     why: 'reversing refunds capped per payment, idempotent keys, zero-balance close, close vs posting races',
   },
   {
+    name: 'no-show (RS-13)',
+    script: 'test/integration/no-show.test.mjs',
+    why: 'release once per date and category, idempotent and parallel, refusals, no-show vs cancel race',
+  },
+  {
     name: 'unavailable permissions (AU-13)',
     script: 'test/integration/unavailable-permissions.test.mjs',
     why: 'custom roles cannot grant unbuilt features; no role or session reports them',

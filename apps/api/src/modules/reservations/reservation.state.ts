@@ -72,8 +72,8 @@ export type CancelRefusal = 'ALREADY_CANCELLED' | 'CHECKED_IN' | 'CHECKED_OUT' |
  * `CHECKED_IN` is refused rather than handled: a guest in the room is an
  * early departure, which is a different operation with different money
  * attached, and quietly treating it as a cancellation would release a room
- * somebody is sleeping in. `NO_SHOW` is refused because it is a terminal
- * status this slice does not implement, not because it is nonsensical.
+ * somebody is sleeping in. `NO_SHOW` is refused because it is terminal: the
+ * no-show already released the nights (RS-13, `noShowRefusal` below).
  *
  * `ALREADY_CANCELLED` is a refusal here and an idempotent success at the
  * service boundary: the distinction is the caller's to make, and the service
@@ -131,5 +131,35 @@ export function checkOutRefusal(status: ReservationStatus): CheckOutRefusal | nu
     case ReservationStatus.CANCELLED:
     case ReservationStatus.NO_SHOW:
       return 'NOT_IN_HOUSE';
+  }
+}
+
+/** Why a status cannot be marked a no-show, or `null` when it can (RS-13). */
+export type NoShowRefusal = 'ALREADY_NO_SHOW' | 'CANCELLED' | 'CHECKED_IN' | 'CHECKED_OUT';
+
+/**
+ * Whether this status may become a no-show.
+ *
+ * Only a stay nobody has arrived at: CONFIRMED, TENTATIVE or ON_HOLD, the same
+ * sources cancellation accepts. A guest in the room or already gone arrived,
+ * and a cancelled stay was never expected. `ALREADY_NO_SHOW` is a refusal here
+ * and an idempotent success at the service boundary, as with cancellation.
+ * The arrival-date rule needs the property's business date, so it is checked
+ * in the service under the lock rather than here.
+ */
+export function noShowRefusal(status: ReservationStatus): NoShowRefusal | null {
+  switch (status) {
+    case ReservationStatus.CONFIRMED:
+    case ReservationStatus.TENTATIVE:
+    case ReservationStatus.ON_HOLD:
+      return null;
+    case ReservationStatus.NO_SHOW:
+      return 'ALREADY_NO_SHOW';
+    case ReservationStatus.CANCELLED:
+      return 'CANCELLED';
+    case ReservationStatus.CHECKED_IN:
+      return 'CHECKED_IN';
+    case ReservationStatus.CHECKED_OUT:
+      return 'CHECKED_OUT';
   }
 }

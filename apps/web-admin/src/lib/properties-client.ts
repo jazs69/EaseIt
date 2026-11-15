@@ -10,6 +10,9 @@
 
 import {
   cancelReservationResultSchema,
+  markNoShowResultSchema,
+  type MarkNoShowCommand,
+  type MarkNoShowResult,
   type CancelReservationCommand,
   type ExtendInventoryHorizonResponse,
   type InventoryHorizon,
@@ -777,6 +780,19 @@ export function cancelReservation(
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/cancel`,
     cancelReservationResultSchema,
+    { method: 'POST', body },
+  );
+}
+
+/** RS-13: mark a guest who never arrived as a no-show; releases the nights. */
+export function markNoShow(
+  hotelId: string,
+  reservationId: string,
+  body: MarkNoShowCommand,
+): Promise<MarkNoShowResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/no-show`,
+    markNoShowResultSchema,
     { method: 'POST', body },
   );
 }

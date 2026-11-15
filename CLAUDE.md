@@ -212,7 +212,8 @@ binding on anything that writes `reservation`, `reservation_room` or `inventory_
 `SELECT … FROM reservation WHERE "id" = … AND "propertyId" = … FOR UPDATE` as its first blocking
 statement, and only then locks `inventory_day`. This holds in
 `cancel-reservation.service.ts:224`, `room-move.service.ts:308` and `check-in.service.ts:336`.
-`create-reservation.service.ts:271` is the one path that locks inventory first, and it is safe
+No-show (RS-13, `CancelReservationService.markNoShow`) runs the cancellation transaction itself, sharing
+`releaseHeldNights`. `create-reservation.service.ts:271` is the one path that locks inventory first, and it is safe
 precisely because it has no existing reservation row to contend for — it creates one. Do not
 introduce a second path that takes inventory before the reservation row.
 
