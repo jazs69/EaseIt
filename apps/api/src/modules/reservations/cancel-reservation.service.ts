@@ -149,6 +149,25 @@ export class CancelReservationService {
   }
 
   /**
+   * Night audit step 2 (section 3.3): the same no-show, by the system.
+   *
+   * No grant check, because no person is acting: the audit is a scheduled
+   * job for one property, and the property is passed in rather than resolved
+   * from a session. The audit row's actor is null, which the schema documents
+   * as "a system actor like the night audit". Everything else -- the lock, the
+   * arrival-date rule, the release, idempotency -- is the path a clerk uses.
+   */
+  async markNoShowAsSystem(
+    propertyId: string,
+    reservationId: string,
+    reason: string,
+  ): Promise<MarkNoShowResult> {
+    return this.withRetry('no-show', reservationId, () =>
+      this.commitNoShow(null, propertyId, reservationId, { reason }),
+    );
+  }
+
+  /**
    * Run one attempt until it commits or gives up: typed errors pass straight
    * through, a lock timeout or deadline is a 409, and only 40001/40P01 retry.
    */
@@ -385,7 +404,7 @@ export class CancelReservationService {
 
   /** One attempt: the whole no-show, atomically (RS-13). */
   private commitNoShow(
-    userId: string,
+    userId: string | null,
     propertyId: string,
     reservationId: string,
     command: MarkNoShowCommand,

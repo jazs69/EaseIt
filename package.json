@@ -35,6 +35,7 @@
     "test:payment": "node scripts/test-payment.mjs",
     "test:settlement": "node test/integration/folio-settlement.test.mjs",
     "test:no-show": "node test/integration/no-show.test.mjs",
+    "test:night-audit": "node test/integration/night-audit.test.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",
     "test:unit": "node test/unit/gate-guards.test.mjs",

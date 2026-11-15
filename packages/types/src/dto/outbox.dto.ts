@@ -23,6 +23,8 @@
 
 import { z } from 'zod';
 
+import { businessDateSchema } from '../domain.js';
+
 /**
  * The event types the system knows how to handle.
  *
@@ -31,7 +33,11 @@ import { z } from 'zod';
  * provider contract is known (CLAUDE.md section 2); inventing them now would
  * bake in a shape the OTAs have not agreed to.
  */
-export const outboxEventTypeSchema = z.enum(['OUTBOX_SELF_TEST']);
+export const outboxEventTypeSchema = z.enum([
+  'OUTBOX_SELF_TEST',
+  'NIGHT_AUDIT_RUN',
+  'NIGHT_AUDIT_COMPLETED',
+]);
 
 export type OutboxEventType = z.infer<typeof outboxEventTypeSchema>;
 
@@ -75,6 +81,19 @@ export const outboxSelfTestPayloadSchema = z.object({
 
 export type OutboxSelfTestPayload = z.infer<typeof outboxSelfTestPayloadSchema>;
 
+/** NA-01: deliver one night-audit run to the worker. The run row is the state. */
+export const nightAuditRunPayloadSchema = z.object({ runId: z.uuid() });
+
+export type NightAuditRunPayload = z.infer<typeof nightAuditRunPayloadSchema>;
+
+/** NA-04 step 8: a run finished; reports and notifications hang off this. */
+export const nightAuditCompletedPayloadSchema = z.object({
+  runId: z.uuid(),
+  businessDate: businessDateSchema,
+});
+
+export type NightAuditCompletedPayload = z.infer<typeof nightAuditCompletedPayloadSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*  Registry                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -89,6 +108,8 @@ export type OutboxSelfTestPayload = z.infer<typeof outboxSelfTestPayloadSchema>;
  */
 export const OUTBOX_PAYLOAD_VERSION: Record<OutboxEventType, number> = {
   OUTBOX_SELF_TEST: 1,
+  NIGHT_AUDIT_RUN: 1,
+  NIGHT_AUDIT_COMPLETED: 1,
 };
 
 /**
@@ -100,6 +121,8 @@ export const OUTBOX_PAYLOAD_VERSION: Record<OutboxEventType, number> = {
  */
 export const OUTBOX_PAYLOAD_SCHEMAS: Record<string, z.ZodType> = {
   'OUTBOX_SELF_TEST:1': outboxSelfTestPayloadSchema,
+  'NIGHT_AUDIT_RUN:1': nightAuditRunPayloadSchema,
+  'NIGHT_AUDIT_COMPLETED:1': nightAuditCompletedPayloadSchema,
 };
 
 export function outboxPayloadSchemaFor(

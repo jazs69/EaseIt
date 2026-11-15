@@ -66,6 +66,23 @@ export const envSchema = z
      * and so one `.env` serves both processes.
      * -------------------------------------------------------------------- */
 
+    /* -- Night audit scheduler (NA-03), read by the worker ---------------
+     *
+     * Off unless set, except in production. A development database usually
+     * sits weeks behind the calendar, and an enabled scheduler would start
+     * auditing it -- rolling no-shows and posting nights on real dev data.
+     * The scheduler never catches up a stale property anyway (see
+     * `night-audit.schedule.ts`), but it should not even start by surprise.
+     * -------------------------------------------------------------------- */
+    NIGHT_AUDIT_SCHEDULER: booleanFromEnv.optional(),
+    /** Local wall-clock time, per property timezone, at which a day is audited. */
+    NIGHT_AUDIT_LOCAL_TIME: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'HH:MM, 24-hour')
+      .default('03:00'),
+    /** How often the scheduler checks every property. */
+    NIGHT_AUDIT_TICK_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
+
     /** How often the dispatcher looks for due events. */
     OUTBOX_POLL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
     /** Rows claimed per poll. Bounds how much work one crash can strand. */

@@ -10,6 +10,10 @@
 
 import {
   cancelReservationResultSchema,
+  nightAuditOverviewSchema,
+  startNightAuditResultSchema,
+  type NightAuditOverview,
+  type StartNightAuditResult,
   markNoShowResultSchema,
   type MarkNoShowCommand,
   type MarkNoShowResult,
@@ -1687,5 +1691,31 @@ export function previewPromotion(
   return apiFetch(`${promotionsPath(hotelId)}/preview`, promotionPreviewSchema, {
     method: 'POST',
     body,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Night audit (NA-07)                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** The business date and recent runs, each with its eight steps. */
+export function fetchNightAuditOverview(
+  hotelId: string,
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<NightAuditOverview> {
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/night-audit`, nightAuditOverviewSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+}
+
+/**
+ * Enqueue tonight's audit. The API never runs it in the request: the worker
+ * does, and the screen polls the overview to watch the steps.
+ */
+export function startNightAudit(hotelId: string): Promise<StartNightAuditResult> {
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/night-audit/runs`, startNightAuditResultSchema, {
+    method: 'POST',
+    body: {},
   });
 }

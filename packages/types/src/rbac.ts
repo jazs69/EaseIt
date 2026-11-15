@@ -543,8 +543,6 @@ export function primaryRole(roles: readonly Role[]): Role | null {
  * then cover the permission check.
  */
 export const UNAVAILABLE_PERMISSIONS: Readonly<Partial<Record<Permission, string>>> = {
-  [Permission.NIGHT_AUDIT_READ]: 'Night audit is not built yet.',
-  [Permission.NIGHT_AUDIT_EXECUTE]: 'Night audit is not built yet.',
   [Permission.HOUSEKEEPING_READ]: 'The housekeeping module is not built yet.',
   [Permission.CHANNELS_READ]: 'The channel manager is not built yet.',
   [Permission.CHANNELS_SYNC]: 'The channel manager is not built yet.',

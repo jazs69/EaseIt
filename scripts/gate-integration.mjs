@@ -206,6 +206,11 @@ const suites = [
     why: 'release once per date and category, idempotent and parallel, refusals, no-show vs cancel race',
   },
   {
+    name: 'night audit (NA-01 .. NA-06)',
+    script: 'test/integration/night-audit.test.mjs',
+    why: 'enqueue-only requests, 8 ordered steps, no-show roll, nightly charge once, settle, snapshot, date roll, idempotent re-run, racing executors, resume, per-timezone schedule',
+  },
+  {
     name: 'unavailable permissions (AU-13)',
     script: 'test/integration/unavailable-permissions.test.mjs',
     why: 'custom roles cannot grant unbuilt features; no role or session reports them',

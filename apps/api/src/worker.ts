@@ -32,6 +32,7 @@ import { AppModule } from './app.module.js';
 import { OutboxQueue } from './modules/platform/outbox/outbox.queue.js';
 import { OutboxRuntime } from './modules/platform/outbox/outbox.module.js';
 import { PrismaService } from './prisma/prisma.service.js';
+import { NightAuditScheduler } from './modules/nightaudit/night-audit.scheduler.js';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Worker');
@@ -71,6 +72,9 @@ async function bootstrap(): Promise<void> {
   }
 
   app.get(OutboxRuntime).startProcessing();
+
+  // NA-03: per-property schedule; off unless enabled (see env.ts).
+  app.get(NightAuditScheduler).start();
 
   logger.log('EaseIt worker running. Dependencies: PostgreSQL ok, Redis ok.');
 

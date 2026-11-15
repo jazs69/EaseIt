@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 47      | 22.9% |
-| `PI` PARTIALLY IMPLEMENTED | 92      | 44.9% |
-| `NI` NOT IMPLEMENTED       | 59      | 28.8% |
+| `CV` COMPLETE AND VERIFIED | 52      | 25.4% |
+| `PI` PARTIALLY IMPLEMENTED | 94      | 45.9% |
+| `NI` NOT IMPLEMENTED       | 52      | 25.4% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -359,13 +359,13 @@ Parent status: **`NI`** — CLAUDE.md §3.3 is entirely unimplemented.
 
 | ID    | Subfeature                   | St   | Evidence                                                                                                       | U/A/L/D/I          | Tests | Acceptance criterion                                                                         | Dep   | Pri | Launch | Verified   | Method |
 | ----- | ---------------------------- | ---- | -------------------------------------------------------------------------------------------------------------- | ------------------ | ----- | -------------------------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| NA-01 | `nightaudit` module          | `NI` | absent                                                                                                         | ✖/✖/✖/✖/–          | none  | Module exists; audit never runs on a user request                                            | —     | 1   | M      | 2026-10-29 | SI     |
-| NA-02 | `night_audit_step` table     | `NI` | absent                                                                                                         | ✖/✖/✖/✖/–          | none  | One row per step, each with its own transaction and deterministic outcome                    | NA-01 | 1   | M      | 2026-10-29 | SI     |
-| NA-03 | Per-property BullMQ schedule | `NI` | only the outbox queue exists                                                                                   | ✖/✖/✖/✖/✖          | none  | Ten independent schedules from each property's IANA zone; one failure does not block another | WK-01 | 1   | M      | 2026-10-29 | SI     |
-| NA-04 | The eight canonical steps    | `NI` | none                                                                                                           | ✖/✖/✖/✖/–          | none  | Steps 1–8 of CLAUDE.md §3.3 run in order, each committing independently                      | NA-02 | 1   | M      | 2026-10-29 | SI     |
-| NA-05 | Business-date advance        | `NI` | `property.businessDate` is read widely and **written by nothing outside the seed**                             | ✖/✖/✖/✔/–          | none  | Advanced only by step 7; idempotent on re-run                                                | NA-04 | 1   | M      | 2026-10-29 | SI     |
-| NA-06 | Immutable daily snapshots    | `NI` | no snapshot table                                                                                              | ✖/✖/✖/✖/–          | none  | Append-only occupancy/ADR/RevPAR/revenue snapshot per business date                          | NA-04 | 1   | M      | 2026-10-29 | SI     |
-| NA-07 | Night-audit screen           | `NI` | `apps/web-admin/src/app/(property)/night-audit/page.tsx` renders `PlaceholderScreen` and names its own blocker | ✖ labelled/✖/✖/–/– | none  | Screen enqueues a run and polls each step                                                    | NA-01 | 1   | M      | 2026-10-29 | SI     |
+| NA-01 | `nightaudit` module          | `CV` | 2026-11-16: `modules/nightaudit`; requests only enqueue (run row + NIGHT_AUDIT_RUN outbox event in one transaction); the worker executes. `night-audit.test.mjs`                                                                                                         | ✖/✖/✖/✖/–          | none  | Module exists; audit never runs on a user request                                            | —     | 1   | M      | 2026-10-29 | SI     |
+| NA-02 | `night_audit_step` table     | `CV` | 2026-11-16: `night_audit_run` (unique per property + business date) and `night_audit_step` (unique per run + step, CHECK 1..8), migration `20261116090000_night_audit`                                                                                                         | ✖/✖/✖/✖/–          | none  | One row per step, each with its own transaction and deterministic outcome                    | NA-01 | 1   | M      | 2026-10-29 | SI     |
+| NA-03 | Per-property BullMQ schedule | `PI` | 2026-11-16: worker `NightAuditScheduler` ticks every property in its own IANA zone (`auditDue`), enqueues through the outbox (BullMQ); per-property try/catch. Off unless `NIGHT_AUDIT_SCHEDULER` (or production); a stale property is never auto-caught-up. Tested with a fixed clock, not yet end to end through a live worker + Redis                                                                                   | ✖/✖/✖/✖/✖          | none  | Ten independent schedules from each property's IANA zone; one failure does not block another | WK-01 | 1   | M      | 2026-10-29 | SI     |
+| NA-04 | The eight canonical steps    | `CV` | 2026-11-16: `NightAuditRunner`, steps 1-8 in order, each committed and recorded; resumable, idempotent, racing executors serialise on the run row                                                                                                           | ✖/✖/✖/✖/–          | none  | Steps 1–8 of CLAUDE.md §3.3 run in order, each committing independently                      | NA-02 | 1   | M      | 2026-10-29 | SI     |
+| NA-05 | Business-date advance        | `CV` | 2026-11-16: step 7 is the only writer, conditional on the date still being the run's; audited as a system actor                             | ✖/✖/✖/✔/–          | none  | Advanced only by step 7; idempotent on re-run                                                | NA-04 | 1   | M      | 2026-10-29 | SI     |
+| NA-06 | Immutable daily snapshots    | `CV` | 2026-11-16: `daily_snapshot` (unique per property + date; UPDATE refused by a trigger); rooms from `inventory_day`, money from the ledger                                                                                              | ✖/✖/✖/✖/–          | none  | Append-only occupancy/ADR/RevPAR/revenue snapshot per business date                          | NA-04 | 1   | M      | 2026-10-29 | SI     |
+| NA-07 | Night-audit screen           | `PI` | 2026-11-16: `night-audit-screen.tsx` enqueues, polls the steps, shows step-5 exceptions and a no-worker hint; not yet exercised in a browser (dev DB not migrated). Was: `apps/web-admin/src/app/(property)/night-audit/page.tsx` renders `PlaceholderScreen` and names its own blocker | ✖ labelled/✖/✖/–/– | none  | Screen enqueues a run and polls each step                                                    | NA-01 | 1   | M      | 2026-10-29 | SI     |
 | NA-08 | `audit:dry-run` command      | `NI` | documented in CLAUDE.md §4; **absent from `package.json`**                                                     | ✖/✖/✖/–/–          | none  | Dry run reports every step's intended effect with no writes                                  | NA-04 | 3   | A      | 2026-10-29 | SI     |
 
 ### 2.13 Reports and analytics
@@ -795,6 +795,37 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-16 (twenty-fourth pass) - night audit (NA-01 .. NA-07)
+
+**Status transitions.** NA-01, NA-02, NA-04, NA-05, NA-06 `NI`→`CV`; NA-03, NA-07 `NI`→`PI`; NA-08
+(`audit:dry-run`) stays `NI`. P0-6 met except the live-worker schedule proof. Counts: `CV` 47→52,
+`PI` 92→94, `NI` 59→52.
+
+**Implemented.** Migration `20261116090000_night_audit` (additive: `night_audit_run`,
+`night_audit_step`, `daily_snapshot` with an append-only trigger, two outbox event types). A request
+or the scheduler creates the run and a NIGHT_AUDIT_RUN outbox event in one transaction (advisory lock
+per property; a COMPLETED run is a no-op, a FAILED one resumes); the worker's handler runs it. Steps:
+(1) business date matches and every in-house stay has a room, else `NIGHT_AUDIT_BLOCKED`; (2) unarrived
+stays due on or before the date → no-show through the RS-13 path (`markNoShowAsSystem`, actor null);
+(3) tonight's room charge + tax for in-house stays from `reservation_night` (legacy: the check-in
+split), never twice, overstays flagged not charged; (4) recurring charges: none exist, recorded;
+(5) zero-balance folios of ended stays closed (FO-13 rule and locks), the rest listed as exceptions;
+(6) snapshot; (7) business date + 1, conditional; (8) NIGHT_AUDIT_COMPLETED via the outbox (handler logs
+only; no report/notification exists). Every per-stay transaction locks reservation then folio under
+`lock_timeout`. `night_audit:read` / `night_audit:execute` are grantable again. Scheduler env:
+`NIGHT_AUDIT_SCHEDULER`, `NIGHT_AUDIT_LOCAL_TIME` (03:00), `NIGHT_AUDIT_TICK_MS`. Web admin: the night
+audit screen replaces the placeholder.
+
+**Tests.** New `night-audit` suite (in `pnpm gate:integration`): request enqueues only (403 front desk,
+404 cross-property, idempotent); eight ordered COMPLETED steps; no-show counters per date and
+category against live rows; check-in night not re-posted; settled folio closed, credit folio flagged;
+snapshot equals counters and ledger; date +1; one completion event; system-actor audit; re-run no-op
+and snapshot UPDATE refused; next day charged once at the stored price by two racing executors; a
+blocked run FAILED with its reason, resumed after the fix; schedule per timezone, stale never
+caught up, one property's failure does not stop another. **Mutation-checked:** without the
+"already posted" guard the run fails (the unique index refuses the double charge). Gate 20/20;
+`test:payment`, `test:checkout`, `test:checkin`, `test:outbox` and `pnpm test` pass.
 
 ### 2026-11-16 (twenty-third pass) - browser check of FO-12, FO-13 and RS-13
 

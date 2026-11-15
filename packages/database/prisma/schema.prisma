@@ -369,6 +369,8 @@ model Property {
   folios         Folio[]
   auditLogs      AuditLog[]
   outboxEvents   OutboxEvent[]
+  nightAuditRuns NightAuditRun[]
+  dailySnapshots DailySnapshot[]
   settings       PropertySettings?
   taxSlabs       PropertyTaxSlab[]
   media          PropertyMedia[]
@@ -2631,6 +2633,11 @@ enum OutboxEventType {
   /// Exercises the outbox end to end. Handled by a fake handler; touches
   /// nothing outside the outbox tables.
   OUTBOX_SELF_TEST
+  /// NA-01: execute one night-audit run. Delivers the run to the worker; the
+  /// run and its steps are the state, in PostgreSQL.
+  NIGHT_AUDIT_RUN
+  /// NA-04 step 8: a run finished. Reports and notifications hang off this.
+  NIGHT_AUDIT_COMPLETED
 }
 
 /// How a row's `dedupeKey` constrains other rows.
@@ -2774,4 +2781,110 @@ model OutboxEvent {
   @@index([propertyId, status, createdAt])
 
   @@map("outbox_event")
+}
+
+/// ===========================================================================
+/// Night audit (CLAUDE.md section 3.3; NA-01 .. NA-06).
+///
+/// A run is identified by (propertyId, businessDate) and is idempotent: the
+/// unique index makes a second request for the same day return the first run,
+/// and a COMPLETED run is never executed again. Each of the eight steps is a
+/// row committed in its own transaction, so an interrupted run resumes from
+/// its first step that is not COMPLETED.
+/// ===========================================================================
+enum NightAuditRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum NightAuditStepStatus {
+  COMPLETED
+  FAILED
+}
+
+model NightAuditRun {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// The business date this run closes. Step 7 advances the property past it.
+  businessDate DateTime @db.Date
+
+  status NightAuditRunStatus @default(PENDING)
+
+  /// Who asked for it; null when the scheduler did.
+  requestedById String?   @db.Uuid
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  startedAt     DateTime? @db.Timestamptz(6)
+  completedAt   DateTime? @db.Timestamptz(6)
+  /// The last failure, for the screen. Typed message only, never SQL.
+  lastError     String?
+
+  steps NightAuditStep[]
+
+  @@unique([propertyId, businessDate], name: "night_audit_run_one_per_business_date")
+  @@index([propertyId, createdAt])
+  @@map("night_audit_run")
+}
+
+model NightAuditStep {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String @db.Uuid
+
+  runId String        @db.Uuid
+  run   NightAuditRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// 1..8, the canonical order of section 3.3.
+  step   Int
+  name   String
+  status NightAuditStepStatus
+  /// What the step did: counts, exceptions, figures. Deterministic for a
+  /// given ledger, so a re-run of a completed step is skipped, not repeated.
+  outcome   Json
+  startedAt DateTime @db.Timestamptz(6)
+  finishedAt DateTime @db.Timestamptz(6)
+
+  @@unique([propertyId, runId, step], name: "night_audit_step_one_per_run")
+  @@map("night_audit_step")
+}
+
+/// NA-06: the day's figures, frozen when the audit closed it. Append-only:
+/// one row per (property, business date), never updated. A correction to a
+/// closed day is an adjustment on the current business date (section 3.3).
+model DailySnapshot {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  businessDate DateTime @db.Date
+  runId        String   @db.Uuid
+
+  roomsPhysical  Int
+  roomsBlocked   Int
+  /// physical - blocked: what could have been sold.
+  roomsAvailable Int
+  /// inventory_day.sold for the date.
+  roomsSold      Int
+  /// Occupancy in basis points (sold / available x 10000), an integer ratio.
+  occupancyBp    Int
+
+  currency            String @db.Char(3)
+  /// Net room revenue posted for the date, corrections included.
+  roomRevenueMinor    Int
+  adrMinor            Int
+  revparMinor         Int
+  serviceRevenueMinor Int
+  taxMinor            Int
+  paymentsMinor       Int
+  refundsMinor        Int
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, businessDate], name: "daily_snapshot_one_per_business_date")
+  @@map("daily_snapshot")
 }

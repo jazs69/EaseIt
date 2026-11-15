@@ -461,3 +461,19 @@ export class RateLimitedError extends DomainError {
     super('Too many attempts. Please wait before trying again.', { retryAfterSeconds });
   }
 }
+
+/**
+ * A night-audit step found a state it must not carry forward (section 3.3):
+ * an in-house stay with no room, counters that disagree with the stays, a
+ * business date that moved under the run. The run halts on that step and
+ * resumes from it once an operator has fixed the cause. 409, because the
+ * request was well formed and the property's state is what refuses it.
+ */
+export class NightAuditBlockedError extends DomainError {
+  readonly code = ErrorCode.NIGHT_AUDIT_BLOCKED;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(reason: string, details?: Record<string, unknown>) {
+    super(reason, details);
+  }
+}

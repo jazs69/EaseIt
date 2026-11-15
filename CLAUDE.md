@@ -326,7 +326,9 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
   key, so retrying could double-post.
 - **Create-reservation racing cancellation or a room move** on the same room type and dates.
 
-**Requirements for any future module writing these tables.** `nightaudit`, `housekeeping` and
+**Requirements for any future module writing these tables.** `nightaudit` now exists and follows them
+(`modules/nightaudit/night-audit.runner.ts`: no-shows via the RS-13 path, nightly charges under the
+reservation then folio locks). `housekeeping` and
 `channels` do not exist yet; when they write `reservation`, `reservation_room` or `inventory_day` they
 inherit all of the above, and specifically:
 

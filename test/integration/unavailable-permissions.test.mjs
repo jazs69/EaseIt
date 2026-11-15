@@ -24,8 +24,6 @@ const h = createHarness({
 });
 
 const UNAVAILABLE = [
-  'night_audit:read',
-  'night_audit:execute',
   'housekeeping:read',
   'channels:read',
   'channels:sync',
@@ -73,7 +71,7 @@ async function body() {
   );
 
   const patch = await h.call('PATCH', `${base}/roles/${ok.payload?.id}`, admin, {
-    permissions: ['reservations:read', 'night_audit:execute'],
+    permissions: ['reservations:read', 'channels:sync'],
   });
   h.check('nor can an edit add one: 400', patch.status === 400, `HTTP ${String(patch.status)}`);
 

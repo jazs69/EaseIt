@@ -98,6 +98,8 @@ export class OutboxRuntime implements OnModuleDestroy {
     OutboxService,
     OutboxMetricsService,
     OutboxRuntime,
+    // Feature modules register their own handlers (night audit, NA-01).
+    OutboxHandlerRegistry,
     OutboxQueue,
     OutboxSelfTestHandler,
   ],
