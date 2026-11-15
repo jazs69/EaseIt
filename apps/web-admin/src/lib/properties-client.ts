@@ -13,6 +13,8 @@ import {
   type CancelReservationCommand,
   type ExtendInventoryHorizonResponse,
   type InventoryHorizon,
+  type RoomListResponse,
+  type RoomTypeListResponse,
   type CancelReservationResult,
   checkInPreflightSchema,
   folioPageSchema,
@@ -27,6 +29,55 @@ import {
   companySummarySchema,
   extendInventoryHorizonResponseSchema,
   inventoryHorizonSchema,
+  roomListResponseSchema,
+  roomTypeListResponseSchema,
+  ratePlanSchema,
+  ratePlanListResponseSchema,
+  rateCalendarResponseSchema,
+  rateCalendarWriteResultSchema,
+  ratePricingRuleSchema,
+  ratePricingRuleListResponseSchema,
+  occupancyPricingConfigSchema,
+  occupancyPricingPreviewSchema,
+  promotionViewSchema,
+  promotionListResponseSchema,
+  promoCodeViewSchema,
+  promoCodeListResponseSchema,
+  promotionPreviewSchema,
+  type CreatePromoCodeRequest,
+  type CreatePromotionRequest,
+  type ListPromotionsQuery,
+  type PreviewPromotionRequest,
+  type PromoCodeListResponse,
+  type PromoCodeStatusAction,
+  type PromoCodeView,
+  type PromotionListResponse,
+  type PromotionPreview,
+  type PromotionStatusAction,
+  type PromotionView,
+  type UpdatePromotionRequest,
+  type OccupancyPricingConfig,
+  type OccupancyPricingPreview,
+  type PreviewOccupancyPricingRequest,
+  type UpdateOccupancyPricingRequest,
+  type CreateRatePricingRuleRequest,
+  type ListRatePricingRulesQuery,
+  type RatePricingRuleListResponse,
+  type RatePricingRuleStatusAction,
+  type RatePricingRuleView,
+  type UpdateRatePricingRuleRequest,
+  type ClearRateCalendarRequest,
+  type RateCalendarQuery,
+  type RateCalendarResponse,
+  type RateCalendarWriteResult,
+  type UpdateRateCalendarRequest,
+  type UpdateRatePlanRoomTypeRequest,
+  type CreateRatePlanRequest,
+  type ListRatePlansQuery,
+  type RatePlanListResponse,
+  type RatePlanStatusAction,
+  type RatePlanView,
+  type UpdateRatePlanRequest,
   createdReservationSchema,
   gstinLookupSchema,
   postalLookupSchema,
@@ -523,10 +574,7 @@ export function postFolioPaymentByBooking(
  * read**; it is not proof that an in-flight request can never commit, so the
  * caller keeps its key and its frozen snapshot either way.
  */
-export function fetchPaymentByKey(
-  hotelId: string,
-  key: string,
-): Promise<PaymentByKeyResult> {
+export function fetchPaymentByKey(hotelId: string, key: string): Promise<PaymentByKeyResult> {
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/folios/payments/by-key/${encodeURIComponent(key)}`,
     paymentByKeyResultSchema,
@@ -1009,4 +1057,587 @@ export function masterReportCsvUrl(hotelId: string, params: MasterReportParams):
   const search = masterReportSearch({ ...params, page: 1, limit: 200 });
   search.set('format', 'csv');
   return `${API_BASE_URL}/api/v1/properties/${encodeURIComponent(hotelId)}/reports/master-report?${search.toString()}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Rooms and room types                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The categories this property sells.
+ *
+ * `roomCount` is a live count from the room table and can legitimately differ
+ * from the calendar's configured `physical`, which is computed once when a
+ * night is generated and never recomputed. A room added today therefore does
+ * not change capacity on nights that already exist.
+ */
+export function fetchRoomTypes(
+  hotelId: string,
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RoomTypeListResponse> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/room-types`,
+    roomTypeListResponseSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/**
+ * One page of physical rooms, by number.
+ *
+ * Configuration and housekeeping status only. This deliberately carries NO
+ * availability: whether a room is withheld from sale lives in `room_block`,
+ * which has no read endpoint yet, and a field that was always false would read
+ * as "not blocked" rather than as "unknown".
+ */
+export function fetchRooms(
+  hotelId: string,
+  params: { roomTypeId?: string; cursor?: string; limit?: number } = {},
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RoomListResponse> {
+  const search = new URLSearchParams();
+  if (params.roomTypeId !== undefined) search.set('roomTypeId', params.roomTypeId);
+  if (params.cursor !== undefined) search.set('cursor', params.cursor);
+  if (params.limit !== undefined) search.set('limit', String(params.limit));
+  const query = search.size > 0 ? `?${search.toString()}` : '';
+
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rooms${query}`,
+    roomListResponseSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/* -- Rate plans (F1) ------------------------------------------------------ */
+
+/**
+ * The property's rate plans.
+ *
+ * Defaults to active plans server-side, so a caller that passes no filter gets
+ * what an operator expects to see rather than a list padded with archived
+ * configuration. The response also carries the property's currency once: the
+ * client never chooses a currency for a rate, and a money input needs to know
+ * what it is denominated in without a second request to property setup.
+ *
+ * Nothing prices from these yet. The booking path still reads the room type's
+ * rack rate, so a plan is configuration an operator can author and nothing
+ * quotes from — which the screen states rather than implying a live price.
+ */
+export function fetchRatePlans(
+  hotelId: string,
+  params: Partial<ListRatePlansQuery> = {},
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RatePlanListResponse> {
+  const search = new URLSearchParams();
+  if (params.status !== undefined) search.set('status', params.status);
+  if (params.kind !== undefined) search.set('kind', params.kind);
+  if (params.search !== undefined && params.search.length > 0) {
+    search.set('search', params.search);
+  }
+  if (params.roomTypeId !== undefined) search.set('roomTypeId', params.roomTypeId);
+  const query = search.size > 0 ? `?${search.toString()}` : '';
+
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans${query}`,
+    ratePlanListResponseSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/** One rate plan in full, including every assigned room type. */
+export function fetchRatePlan(
+  hotelId: string,
+  ratePlanId: string,
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RatePlanView> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(ratePlanId)}`,
+    ratePlanSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/**
+ * Create a rate plan.
+ *
+ * No `cookieHeader`: in the browser `apiFetch` sends the httpOnly session with
+ * `credentials: 'include'`, so a write from a client component needs nothing
+ * forwarded.
+ */
+export function createRatePlan(
+  hotelId: string,
+  body: CreateRatePlanRequest,
+): Promise<RatePlanView> {
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/rate-plans`, ratePlanSchema, {
+    method: 'POST',
+    body,
+  });
+}
+
+/**
+ * Edit a rate plan.
+ *
+ * `code` is absent from the request type on purpose, and so is the status:
+ * renaming the code would orphan report and future channel references, and
+ * status has its own call so an edit cannot stop a plan selling as a side
+ * effect. Supplying `roomTypeIds` replaces the whole assignment.
+ */
+export function updateRatePlan(
+  hotelId: string,
+  ratePlanId: string,
+  body: UpdateRatePlanRequest,
+): Promise<RatePlanView> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(ratePlanId)}`,
+    ratePlanSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+/**
+ * Activate, deactivate or archive.
+ *
+ * A no-op transition is refused by the API rather than silently succeeding, so
+ * the UI can report why nothing changed. `ARCHIVE` is terminal — there is no
+ * unarchive and no delete.
+ */
+export function setRatePlanStatus(
+  hotelId: string,
+  ratePlanId: string,
+  action: RatePlanStatusAction['action'],
+): Promise<RatePlanView> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(ratePlanId)}/status`,
+    ratePlanSchema,
+    { method: 'POST', body: { action } },
+  );
+}
+
+/* -- Rate calendar (F2) --------------------------------------------------- */
+
+/**
+ * Update one room type's default rate within a plan.
+ *
+ * Does not touch date-wise overrides — the default is the fallback for nights
+ * that have none, so every deliberately-priced night survives.
+ */
+export function updateRatePlanRoomTypeRate(
+  hotelId: string,
+  ratePlanId: string,
+  roomTypeId: string,
+  body: UpdateRatePlanRoomTypeRequest,
+): Promise<RatePlanView> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(
+      ratePlanId,
+    )}/room-types/${encodeURIComponent(roomTypeId)}`,
+    ratePlanSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+/**
+ * The date-wise calendar for one room type under one plan.
+ *
+ * Returns every date in the window, including nights at the default — the
+ * server fills the gaps so the grid never has to decide what a missing cell
+ * means.
+ */
+export function fetchRateCalendar(
+  hotelId: string,
+  ratePlanId: string,
+  params: RateCalendarQuery,
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RateCalendarResponse> {
+  const search = new URLSearchParams({
+    roomTypeId: params.roomTypeId,
+    fromDate: params.fromDate,
+    toDate: params.toDate,
+  });
+
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(
+      ratePlanId,
+    )}/calendar?${search.toString()}`,
+    rateCalendarResponseSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/**
+ * Set the nightly rate for a list of dates.
+ *
+ * Upserts exactly the dates supplied and leaves every other date alone, in one
+ * atomic statement. The response carries the refreshed window, so the grid is
+ * redrawn from what the database actually holds rather than from what was sent.
+ */
+export function updateRateCalendar(
+  hotelId: string,
+  ratePlanId: string,
+  body: UpdateRateCalendarRequest,
+): Promise<RateCalendarWriteResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(
+      ratePlanId,
+    )}/calendar`,
+    rateCalendarWriteResultSchema,
+    { method: 'PUT', body },
+  );
+}
+
+/**
+ * Clear the overrides for a list of dates, so they fall back to the default.
+ *
+ * The default itself is untouched. Clearing a date that has no override is not
+ * an error.
+ */
+export function clearRateCalendar(
+  hotelId: string,
+  ratePlanId: string,
+  body: ClearRateCalendarRequest,
+): Promise<RateCalendarWriteResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(
+      ratePlanId,
+    )}/calendar/clear`,
+    rateCalendarWriteResultSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -- Pricing rules: seasons, weekdays, weekends (F3) ---------------------- */
+
+/**
+ * The two route families share one client shape, because they share one
+ * resource type. `family` picks the path segment; the server enforces that
+ * each surface only ever sees its own kinds.
+ */
+export type PricingRuleFamily = 'seasons' | 'pricing-rules';
+
+function rulesPath(hotelId: string, ratePlanId: string, family: PricingRuleFamily): string {
+  return `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(
+    ratePlanId,
+  )}/${family}`;
+}
+
+/** Seasons, or recurring weekday/weekend rules, for one rate plan. */
+export function fetchPricingRules(
+  hotelId: string,
+  ratePlanId: string,
+  family: PricingRuleFamily,
+  params: Partial<ListRatePricingRulesQuery> = {},
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RatePricingRuleListResponse> {
+  const search = new URLSearchParams();
+  if (params.kind !== undefined) search.set('kind', params.kind);
+  if (params.enabled !== undefined) search.set('enabled', params.enabled);
+  if (params.roomTypeId !== undefined) search.set('roomTypeId', params.roomTypeId);
+  const query = search.size > 0 ? `?${search.toString()}` : '';
+
+  return apiFetch(
+    `${rulesPath(hotelId, ratePlanId, family)}${query}`,
+    ratePricingRuleListResponseSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/**
+ * Create a season or a recurring rule.
+ *
+ * An ambiguous overlap — same kind, same priority, overlapping match, shared
+ * room type — comes back as a 400 whose `details.issues.priority` explains
+ * which existing rule collides and how to resolve it.
+ */
+export function createPricingRule(
+  hotelId: string,
+  ratePlanId: string,
+  family: PricingRuleFamily,
+  body: CreateRatePricingRuleRequest,
+): Promise<RatePricingRuleView> {
+  return apiFetch(rulesPath(hotelId, ratePlanId, family), ratePricingRuleSchema, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** Edit a rule. `kind` is not editable; status has its own call. */
+export function updatePricingRule(
+  hotelId: string,
+  ratePlanId: string,
+  family: PricingRuleFamily,
+  ruleId: string,
+  body: UpdateRatePricingRuleRequest,
+): Promise<RatePricingRuleView> {
+  return apiFetch(
+    `${rulesPath(hotelId, ratePlanId, family)}/${encodeURIComponent(ruleId)}`,
+    ratePricingRuleSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+/**
+ * Enable or disable a rule.
+ *
+ * Enabling re-runs the conflict check server-side, so this can legitimately
+ * fail with a 400 naming the rule it would collide with.
+ */
+export function setPricingRuleStatus(
+  hotelId: string,
+  ratePlanId: string,
+  family: PricingRuleFamily,
+  ruleId: string,
+  action: RatePricingRuleStatusAction['action'],
+): Promise<RatePricingRuleView> {
+  return apiFetch(
+    `${rulesPath(hotelId, ratePlanId, family)}/${encodeURIComponent(ruleId)}/status`,
+    ratePricingRuleSchema,
+    { method: 'PATCH', body: { action } },
+  );
+}
+
+/**
+ * Delete a rule. Returns no body.
+ *
+ * Explicit F2 date overrides are not touched by this and continue to apply.
+ */
+export function deletePricingRule(
+  hotelId: string,
+  ratePlanId: string,
+  family: PricingRuleFamily,
+  ruleId: string,
+): Promise<void> {
+  return apiFetch(`${rulesPath(hotelId, ratePlanId, family)}/${encodeURIComponent(ruleId)}`, null, {
+    method: 'DELETE',
+  });
+}
+
+/* -- Occupancy and extra-person pricing (F4) ------------------------------ */
+
+function occupancyPath(hotelId: string, ratePlanId: string, roomTypeId: string): string {
+  return (
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(ratePlanId)}` +
+    `/room-types/${encodeURIComponent(roomTypeId)}/occupancy-pricing`
+  );
+}
+
+/**
+ * The occupancy configuration for one rate-plan/room-type assignment.
+ *
+ * Carries the room type's own `maxGuests`/`maxAdults` and a server-derived
+ * `includedAdults`, so a form can bound its inputs and label its allocation
+ * without computing either.
+ */
+export function fetchOccupancyPricing(
+  hotelId: string,
+  ratePlanId: string,
+  roomTypeId: string,
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<OccupancyPricingConfig> {
+  return apiFetch(occupancyPath(hotelId, ratePlanId, roomTypeId), occupancyPricingConfigSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+}
+
+/**
+ * Save the occupancy configuration.
+ *
+ * A patch: omitted fields are untouched. The server validates the MERGED
+ * state, so lowering the base occupancy below the included children is refused
+ * with a field name even when the request mentions only one of them.
+ */
+export function updateOccupancyPricing(
+  hotelId: string,
+  ratePlanId: string,
+  roomTypeId: string,
+  body: UpdateOccupancyPricingRequest,
+): Promise<OccupancyPricingConfig> {
+  return apiFetch(occupancyPath(hotelId, ratePlanId, roomTypeId), occupancyPricingConfigSchema, {
+    method: 'PATCH',
+    body,
+  });
+}
+
+/**
+ * Price one night for one guest composition — a configuration preview.
+ *
+ * Creates nothing and reserves nothing. The base rate comes from the same
+ * F2/F3 resolver the calendar uses, and its source is returned alongside, so
+ * the preview can explain where the number came from. An unusable composition
+ * comes back as `refusals` with HTTP 200 and the figures still shaped, which
+ * is why callers must check `refusals` before treating
+ * `effectiveNightlyRateMinor` as a price.
+ */
+export function previewOccupancyPricing(
+  hotelId: string,
+  ratePlanId: string,
+  body: PreviewOccupancyPricingRequest,
+): Promise<OccupancyPricingPreview> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(
+      ratePlanId,
+    )}/occupancy-pricing/preview`,
+    occupancyPricingPreviewSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -- Promotions and discounts (F5) ---------------------------------------- */
+
+function promotionsPath(hotelId: string): string {
+  return `/properties/${encodeURIComponent(hotelId)}/promotions`;
+}
+
+/** The property's promotions, in precedence order — higher priority first. */
+export function fetchPromotions(
+  hotelId: string,
+  params: Partial<ListPromotionsQuery> = {},
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<PromotionListResponse> {
+  const search = new URLSearchParams();
+  if (params.status !== undefined) search.set('status', params.status);
+  if (params.search !== undefined && params.search.length > 0) {
+    search.set('search', params.search);
+  }
+  const query = search.size > 0 ? `?${search.toString()}` : '';
+
+  return apiFetch(`${promotionsPath(hotelId)}${query}`, promotionListResponseSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+}
+
+/**
+ * Create a promotion.
+ *
+ * An ambiguous overlap — another active promotion at the same priority sharing
+ * dates, plans and room types — comes back as a 400 whose
+ * `details.issues.priority` names it and explains the remedy.
+ */
+export function createPromotion(
+  hotelId: string,
+  body: CreatePromotionRequest,
+): Promise<PromotionView> {
+  return apiFetch(promotionsPath(hotelId), promotionViewSchema, { method: 'POST', body });
+}
+
+export function updatePromotion(
+  hotelId: string,
+  promotionId: string,
+  body: UpdatePromotionRequest,
+): Promise<PromotionView> {
+  return apiFetch(
+    `${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}`,
+    promotionViewSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+/** Activate or deactivate. Activating re-runs the server's conflict check. */
+export function setPromotionStatus(
+  hotelId: string,
+  promotionId: string,
+  action: PromotionStatusAction['action'],
+): Promise<PromotionView> {
+  return apiFetch(
+    `${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}/status`,
+    promotionViewSchema,
+    { method: 'PATCH', body: { action } },
+  );
+}
+
+/** Delete a promotion. Refused by the server once it has been redeemed. */
+export function deletePromotion(hotelId: string, promotionId: string): Promise<void> {
+  return apiFetch(`${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}`, null, {
+    method: 'DELETE',
+  });
+}
+
+/** A promotion's codes. The normalised matching form is never returned. */
+export function fetchPromoCodes(
+  hotelId: string,
+  promotionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<PromoCodeListResponse> {
+  return apiFetch(
+    `${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}/codes`,
+    promoCodeListResponseSchema,
+    { ...(options.signal === undefined ? {} : { signal: options.signal }) },
+  );
+}
+
+export function createPromoCode(
+  hotelId: string,
+  promotionId: string,
+  body: CreatePromoCodeRequest,
+): Promise<PromoCodeView> {
+  return apiFetch(
+    `${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}/codes`,
+    promoCodeViewSchema,
+    { method: 'POST', body },
+  );
+}
+
+export function setPromoCodeStatus(
+  hotelId: string,
+  promotionId: string,
+  codeId: string,
+  body: PromoCodeStatusAction,
+): Promise<PromoCodeView> {
+  return apiFetch(
+    `${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}/codes/${encodeURIComponent(
+      codeId,
+    )}/status`,
+    promoCodeViewSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+export function deletePromoCode(
+  hotelId: string,
+  promotionId: string,
+  codeId: string,
+): Promise<void> {
+  return apiFetch(
+    `${promotionsPath(hotelId)}/${encodeURIComponent(promotionId)}/codes/${encodeURIComponent(
+      codeId,
+    )}`,
+    null,
+    { method: 'DELETE' },
+  );
+}
+
+/**
+ * Price a stay and see which promotion applies — READ-ONLY.
+ *
+ * Consumes no redemption and writes nothing. The base rate comes from the
+ * F2/F3 resolver and the extra-person charges from F4, both carried through
+ * unchanged; F5 only discounts the result. Every amount returned is PRE-TAX.
+ */
+export function previewPromotion(
+  hotelId: string,
+  body: PreviewPromotionRequest,
+): Promise<PromotionPreview> {
+  return apiFetch(`${promotionsPath(hotelId)}/preview`, promotionPreviewSchema, {
+    method: 'POST',
+    body,
+  });
 }

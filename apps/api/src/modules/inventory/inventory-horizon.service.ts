@@ -27,8 +27,10 @@ import {
 
 import {
   TenantScopeViolationError,
+  TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
+import { isLockTimeout } from '../../common/errors/sql-state.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { ClockService } from '../platform/clock.service.js';
@@ -118,9 +120,37 @@ export class InventoryHorizonService {
       today,
     ).fullyConfiguredThrough;
 
-    const { created, roomTypeCount } = await this.repository.inTransaction(
-      property.id,
-      async (tx) => {
+    /**
+     * One translation, for one condition: the lock wait gave up.
+     *
+     * ===========================================================================
+     * `55P03` (`lock_not_available`) is raised when a chunk INSERT exceeds the
+     * transaction-local `lock_timeout` the repository sets — i.e. another
+     * transaction holds a key this one needs. That is a *conflict*, not a bug,
+     * and the four reservation paths that set the same kind of timeout all map
+     * it to `TransactionConflictError` -> 409 (`check-in:549`,
+     * `check-out:412`, `room-move:496`, `cancel-reservation:133`). Using the
+     * same answer keeps one condition from having two meanings.
+     *
+     * NOT RETRIED, deliberately, and consistent with those paths: the wait
+     * already cost `INVENTORY_LOCK_TIMEOUT_MS`, so a retry would spend it
+     * again to report what the first attempt established. `55P03` is also
+     * absent from `RETRYABLE_SQLSTATES` for that reason. The caller can simply
+     * press the button again — the operation is idempotent.
+     *
+     * EVERYTHING ELSE IS RETHROWN UNTOUCHED. No `sqlState` classification, no
+     * broad `catch`-and-convert: a genuine fault must keep reaching
+     * `DomainExceptionFilter`, which turns it into a 500 with no internals
+     * leaked. Translating unrelated Prisma errors here would turn real bugs
+     * into plausible-looking conflicts.
+     *
+     * A `DomainError` thrown from inside the transaction (there are none today,
+     * but `work` may grow some) passes through this branch unchanged, because
+     * `isLockTimeout` only matches on SQLSTATE.
+     * ===========================================================================
+     */
+    const { created, roomTypeCount } = await this.repository
+      .inTransaction(property.id, async (tx) => {
         const types = await this.repository.countRoomTypes(tx, property.id);
 
         // Nothing to generate for: a property with no room types has no
@@ -167,8 +197,13 @@ export class InventoryHorizonService {
         });
 
         return { created: total, roomTypeCount: types };
-      },
-    );
+      })
+      .catch((error: unknown) => {
+        if (isLockTimeout(error)) {
+          throw new TransactionConflictError('inventory extension');
+        }
+        throw error;
+      });
 
     // Attempted is what the statements enumerated: room types x dates. Skipped
     // is therefore a measured difference, not an estimate.

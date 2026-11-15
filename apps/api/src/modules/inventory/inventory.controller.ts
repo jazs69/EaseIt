@@ -13,7 +13,17 @@
  *   POST -> PROPERTY_SETTINGS   (the calendar's extent is configuration)
  */
 
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiConflictResponse,
@@ -66,6 +76,17 @@ export class InventoryController {
   }
 
   @Post(':hotelId/inventory/horizon')
+  /**
+   * 200, not Nest's default 201 for a POST.
+   *
+   * Nothing addressable is created: the call fills in missing rows for a
+   * property that already exists, and a repeat creates nothing at all. There
+   * is no new resource to point a `Location` at. The same reasoning is why
+   * `properties/select-context`, `reservations/…/cancel` and
+   * `reservations/…/check-out` all declare `HttpStatus.OK` — a POST that acts
+   * on existing state rather than creating one.
+   */
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Extend the availability calendar',
     description:

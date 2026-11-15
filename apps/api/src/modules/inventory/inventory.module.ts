@@ -5,6 +5,12 @@ import { TokenService } from '../../common/auth/token.service.js';
 import { InventoryController } from './inventory.controller.js';
 import { InventoryHorizonRepository } from './inventory-horizon.repository.js';
 import { InventoryHorizonService } from './inventory-horizon.service.js';
+import { RoomController } from './room.controller.js';
+import { RoomRepository } from './room.repository.js';
+import { RoomService } from './room.service.js';
+import { RoomTypeController } from './room-type.controller.js';
+import { RoomTypeRepository } from './room-type.repository.js';
+import { RoomTypeService } from './room-type.service.js';
 
 /**
  * The per-date availability calendar.
@@ -26,10 +32,36 @@ import { InventoryHorizonService } from './inventory-horizon.service.js';
  * `ClockService` arrives from the global `PlatformModule`, as it does in
  * `calendar` and `performance`: today must be the property's own calendar
  * date, never the server's (section 3.3).
+ *
+ * ---------------------------------------------------------------------------
+ * Room types and rooms now live here too, which is where CLAUDE.md section 2
+ * puts them. They are separate controllers rather than more routes on
+ * `InventoryController`, because they address different resources and that
+ * controller owns the calendar's extent.
+ *
+ * NEITHER writes `inventory_day`. Creating a room does not change `physical`
+ * on nights that already exist, and the only status that changes physical
+ * eligibility -- OUT_OF_ORDER -- cannot be set through the status endpoint. So
+ * the five existing `inventory_day` writers keep their lock protocol
+ * untouched, and nothing here enters it.
+ *
+ * Room BLOCKS are not wired: their schema, DTOs and pure policy exist, but the
+ * endpoints belong to a later increment that is blocked on a measured
+ * transaction timeout.
+ * ---------------------------------------------------------------------------
  */
 @Module({
-  controllers: [InventoryController],
-  providers: [InventoryHorizonService, InventoryHorizonRepository, TokenService, SessionAuthGuard],
+  controllers: [InventoryController, RoomTypeController, RoomController],
+  providers: [
+    InventoryHorizonService,
+    InventoryHorizonRepository,
+    RoomTypeService,
+    RoomTypeRepository,
+    RoomService,
+    RoomRepository,
+    TokenService,
+    SessionAuthGuard,
+  ],
   exports: [InventoryHorizonService],
 })
 export class InventoryModule {}

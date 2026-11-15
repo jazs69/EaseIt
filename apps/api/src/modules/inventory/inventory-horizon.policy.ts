@@ -81,6 +81,39 @@ export const MAX_HORIZON_DAYS = 730;
 export const TRANSACTION_TIMEOUT_MS = 20_000;
 export const TRANSACTION_MAX_WAIT_MS = 5_000;
 
+/**
+ * How long one chunk waits for a contended `inventory_day` key before failing.
+ *
+ * ===========================================================================
+ * WHY THIS EXISTS AT ALL.
+ * Without it the wait is unbounded, and `TRANSACTION_TIMEOUT_MS` does not save
+ * us: Prisma's `$transaction({ timeout })` is a deadline Prisma enforces when
+ * it next gets control, and a statement blocked inside PostgreSQL never gives
+ * control back (CLAUDE.md section 3.1.1 records the same lesson for the
+ * reservation paths). An extension contending on a key would therefore hang
+ * until the other transaction ended, rather than answering.
+ *
+ * WHY IT IS SEPARATE FROM `ROW_LOCK_TIMEOUT_MS` (3 s).
+ * That constant is sized for a single contended `reservation` row, taken by
+ * paths that commit in milliseconds, where 3 s means "somebody else is
+ * mid-operation, try again". This transaction is a different shape: up to five
+ * statements writing as many as 8,772 rows for a full 730-day horizon, each
+ * row costing a correlated `count(*)` over `room`. Two operators extending
+ * overlapping ranges is a legitimate, non-pathological case, and at 3 s they
+ * would start refusing each other instead of taking turns. Sharing one number
+ * across two workloads of such different duration would make both wrong.
+ *
+ * WHY 10 SECONDS, AND THE RELATIONSHIP THAT MUST HOLD.
+ * It must stay **strictly below** `TRANSACTION_TIMEOUT_MS`, or the lock wait
+ * could outlive the transaction deadline and we would be back to Prisma
+ * failing to interrupt a blocked statement — the exact failure this fixes.
+ * 10 s is half of 20 s: long enough to let a realistic concurrent extension
+ * finish and release, short enough that the caller gets a definite 409 with
+ * ample room left for rollback, error mapping and response delivery.
+ * ===========================================================================
+ */
+export const INVENTORY_LOCK_TIMEOUT_MS = 10_000;
+
 /** Days per SQL statement, so one chunk is never an unbounded insert. */
 export const MAX_CHUNK_DAYS = 180;
 

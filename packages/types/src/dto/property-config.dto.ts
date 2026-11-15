@@ -44,15 +44,12 @@ export const taxSlabSchema = z
     cgstRatePercent: ratePercentSchema,
     sgstRatePercent: ratePercentSchema,
   })
-  .refine(
-    (slab) => slab.maxTariffMinor === null || slab.maxTariffMinor > slab.minTariffMinor,
-    {
-      // An upper bound at or below the lower one describes an empty band that
-      // matches nothing, so a tariff landing in it would resolve to no slab.
-      message: 'A slab ceiling must be above its floor.',
-      path: ['maxTariffMinor'],
-    },
-  )
+  .refine((slab) => slab.maxTariffMinor === null || slab.maxTariffMinor > slab.minTariffMinor, {
+    // An upper bound at or below the lower one describes an empty band that
+    // matches nothing, so a tariff landing in it would resolve to no slab.
+    message: 'A slab ceiling must be above its floor.',
+    path: ['maxTariffMinor'],
+  })
   .refine(
     (slab) =>
       Math.round((slab.cgstRatePercent + slab.sgstRatePercent) * 100) ===
@@ -88,6 +85,25 @@ export const propertySettingsSchema = z.object({
   invoicePrefix: z.string().min(1).max(24),
   autoHoldReleaseHours: z.number().int().min(1).max(168),
   nightAuditHour: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  /**
+   * Which days this property treats as its weekend. 0 = Sunday … 6 = Saturday.
+   *
+   * Introduced by F3, because weekend pricing cannot be built on a guess:
+   * Saturday–Sunday is right for a Goa resort, wrong for a Gulf property
+   * (Friday–Saturday), and wrong again for a city hotel whose peak is Sunday
+   * to Thursday. A WEEKEND pricing rule asks "is this night a weekend night"
+   * and only the property can answer.
+   *
+   * An EMPTY array is legal and means "no weekend", which makes every WEEKEND
+   * rule match nothing. That is a real configuration for a property pricing
+   * only by named weekdays, and permitting it beats forcing a fake weekend.
+   */
+  weekendDays: z
+    .array(z.number().int().min(0).max(6))
+    .max(7)
+    .refine((days) => new Set(days).size === days.length, {
+      message: 'The same day is listed more than once.',
+    }),
 });
 
 export type PropertySettings = z.infer<typeof propertySettingsSchema>;

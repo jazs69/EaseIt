@@ -89,6 +89,7 @@ async function bootstrap(): Promise<void> {
       .addTag('rbac', 'Role and permission catalog')
       .addTag('properties', 'Property configuration and the portfolio')
       .addTag('reservations', 'Booking lifecycle and room assignment')
+      .addTag('rates', 'Rate plans and pricing')
       .addTag('folios', 'Folios, charges, taxes and payments')
       .addTag('housekeeping', 'Room status and tasks')
       .addTag('night-audit', 'Audit runs and the business date')

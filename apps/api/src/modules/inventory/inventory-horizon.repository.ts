@@ -44,6 +44,7 @@ import { Prisma } from '@repo/database';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import {
+  INVENTORY_LOCK_TIMEOUT_MS,
   TRANSACTION_MAX_WAIT_MS,
   TRANSACTION_TIMEOUT_MS,
   toCalendarDate,
@@ -77,6 +78,28 @@ export class InventoryHorizonRepository {
     return this.prisma.client.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT set_config('app.current_property_id', ${propertyId}, true)`;
+
+        /**
+         * Bound the wait for a contended `inventory_day` key, before any
+         * statement that can block.
+         *
+         * Second statement in the transaction and ahead of every chunk
+         * INSERT, which is the same slot the four reservation paths use
+         * (`cancel-reservation:204`, `check-in:300`, `check-out:118`,
+         * `room-move:270`). `true` is `is_local` — `SET LOCAL` semantics,
+         * reverted at COMMIT/ROLLBACK, so no other connection's behaviour
+         * changes. Never set the global `lock_timeout`: a transaction bounds
+         * only itself.
+         *
+         * Exceeding it raises `55P03`, which the service translates into a
+         * typed conflict. Without this line the INSERT waits indefinitely on
+         * PostgreSQL's speculative-insertion lock and Prisma's transaction
+         * deadline cannot interrupt it.
+         */
+        await tx.$executeRaw`SELECT set_config('lock_timeout', ${String(
+          INVENTORY_LOCK_TIMEOUT_MS,
+        )}, true)`;
+
         return work(tx);
       },
       { maxWait: TRANSACTION_MAX_WAIT_MS, timeout: TRANSACTION_TIMEOUT_MS },

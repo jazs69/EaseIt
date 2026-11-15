@@ -109,7 +109,7 @@ const DISCONNECT_TIMEOUT_MS = 10_000;
  * single test ran. `node --check` cannot catch that -- the code is
  * syntactically valid -- so the ordering is load-bearing, not cosmetic.
  */
-const { TRANSACTION_TIMEOUT_MS } =
+const { TRANSACTION_TIMEOUT_MS, INVENTORY_LOCK_TIMEOUT_MS } =
   await import('../../apps/api/src/modules/inventory/inventory-horizon.policy.ts');
 
 /**
@@ -117,19 +117,21 @@ const { TRANSACTION_TIMEOUT_MS } =
  *
  * ===========================================================================
  * `ROLLBACK_REQUEST_TIMEOUT_MS` must stay comfortably LONGER than the
- * service's own transaction deadline. The server is supposed to abort at
- * `TRANSACTION_TIMEOUT_MS` and then still has to roll back, map the error and
- * write a response; a client budget at or near 20 s would race that and turn a
- * correct server abort into a client-side timeout, which proves nothing.
- * 35 s leaves 15 s of margin.
+ * server's own bound on the wait. The blocked statement is supposed to give up
+ * at `INVENTORY_LOCK_TIMEOUT_MS` and the transaction then still has to roll
+ * back, map the error and write a response; a client budget at or near 10 s
+ * would race that and turn a correct server-side refusal into a client-side
+ * timeout, which proves nothing. 35 s leaves 25 s of margin, and is still
+ * safely under `TRANSACTION_TIMEOUT_MS` + delivery in the event that the lock
+ * timeout somehow fails to fire.
  *
- * `ROLLBACK_ELAPSED_FLOOR_MS` is 80% of the service deadline. It is the
- * assertion that closes a false positive: an immediate 5xx -- pool
+ * `ROLLBACK_ELAPSED_FLOOR_MS` is 80% of the lock timeout. It is the
+ * assertion that closes a false positive: an immediate failure -- pool
  * acquisition failure, a crashed worker, a startup error -- returns in
  * milliseconds and produces exactly the same observable signature as a real
- * rollback (5xx, nothing in the band, retry succeeds), because in that case
- * chunk 1 never ran and "no rows survived" is vacuously true. Only a request
- * that actually sat on the conflicting key can take ~20 s.
+ * rollback (a 4xx/5xx, nothing in the band, retry succeeds), because in that
+ * case chunk 1 never ran and "no rows survived" is vacuously true. Only a
+ * request that actually sat on the conflicting key can take ~10 s.
  *
  * 80% rather than 100% because the measured wall-clock includes connection
  * setup and response delivery but the deadline is measured by Prisma from a
@@ -137,7 +139,25 @@ const { TRANSACTION_TIMEOUT_MS } =
  * ===========================================================================
  */
 const ROLLBACK_REQUEST_TIMEOUT_MS = 35_000;
-const ROLLBACK_ELAPSED_FLOOR_MS = Math.floor(TRANSACTION_TIMEOUT_MS * 0.8);
+
+/**
+ * Re-based on the LOCK timeout, not the transaction timeout.
+ *
+ * The request no longer waits out `TRANSACTION_TIMEOUT_MS`: the repository now
+ * sets a transaction-local `lock_timeout`, so the blocked chunk raises `55P03`
+ * at `INVENTORY_LOCK_TIMEOUT_MS` and the service answers a typed 409. The
+ * elapsed floor keeps its original job -- telling "waited for the lock, then
+ * gave up" apart from "failed instantly on pool acquisition, a crash or a
+ * startup error", which would make the empty-band assertion vacuously true --
+ * only its magnitude changes. 80% for the same boundary-flakiness reason as
+ * before: wall-clock includes connection setup and response delivery, while
+ * PostgreSQL measures the lock wait from a slightly later instant.
+ *
+ * `ROLLBACK_REQUEST_TIMEOUT_MS` stays at 35 s, now 3.5x the lock timeout. It
+ * is the backstop for a server that does not answer at all, and leaving it
+ * generous costs nothing when the expected path completes in ~10 s.
+ */
+const ROLLBACK_ELAPSED_FLOOR_MS = Math.floor(INVENTORY_LOCK_TIMEOUT_MS * 0.8);
 
 /** Set when the blocker fails for a real reason, so test 11 can say so. */
 let blockerFault = null;
@@ -734,8 +754,9 @@ const horizonAudits = () =>
  *      the unique index values being inserted". `ON CONFLICT DO NOTHING` has
  *      to arbitrate through that same uniqueness check, so it cannot skip a
  *      conflict it does not yet know exists;
- *   3. the service transaction exceeds its stated deadline
- *      (`TRANSACTION_TIMEOUT_MS`) and is aborted;
+ *   3. the blocked statement exceeds the transaction-local `lock_timeout` the
+ *      repository sets (`INVENTORY_LOCK_TIMEOUT_MS`) and raises SQLSTATE
+ *      `55P03`, which the service translates into a typed 409 conflict;
  *   4. **PostgreSQL rolls back the whole transaction**, chunk 1's rows and the
  *      audit row included.
  *
@@ -1656,7 +1677,7 @@ async function run() {
     let elapsedMs = -1;
     const res = await withBlockedKey(fixture.categoryB, sentinel, async () => {
       note(
-        `awaiting the service deadline (${String(TRANSACTION_TIMEOUT_MS)} ms) — this is slow by design`,
+        `awaiting the lock timeout (${String(INVENTORY_LOCK_TIMEOUT_MS)} ms) — this is slow by design`,
       );
       /**
        * Timed, and bounded.
@@ -1751,10 +1772,27 @@ async function run() {
     );
 
     check('the extension did not report success', res.status >= 400, `HTTP ${String(res.status)}`);
+    /**
+     * 409, and specifically a CONTROLLED conflict rather than a 5xx.
+     *
+     * Before the repository set a `lock_timeout`, the blocked chunk hung until
+     * the client gave up and the suite could only assert "some server fault".
+     * Now the wait is bounded: PostgreSQL raises `55P03`, the service
+     * translates it to `TransactionConflictError`, and the caller gets a typed
+     * answer. A 500 here would mean the translation is missing and the raw
+     * Prisma error reached `DomainExceptionFilter`'s catch-all; a 4xx other
+     * than 409 would mean validation or auth refused the request before it
+     * ever reached the lock.
+     */
     check(
-      'the failure is a server-side fault, not a 4xx refusal',
-      res.status >= 500,
-      `HTTP ${String(res.status)} — a 400/401/403 would mean validation or auth, not a timeout`,
+      'the refusal is a typed 409 conflict, not a 5xx and not a validation 4xx',
+      res.status === 409,
+      `HTTP ${String(res.status)} — 500 means the lock-timeout translation is missing`,
+    );
+    check(
+      'with the typed CONFLICT code',
+      res.payload?.code === 'CONFLICT',
+      String(res.payload?.code),
     );
     check(
       'no partial success was reported to the caller',

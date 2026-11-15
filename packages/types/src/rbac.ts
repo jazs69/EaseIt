@@ -103,6 +103,24 @@ export const Permission = {
   HOUSEKEEPING_READ: 'housekeeping:read',
   HOUSEKEEPING_UPDATE_STATUS: 'housekeeping:update_status',
 
+  /* -- Inventory configuration -------------------------------------------- */
+  /**
+   * Create and edit room types and physical rooms.
+   *
+   * Configuration, not operations: it decides what a hotel *has*. Kept apart
+   * from `ROOM_BLOCKS_MANAGE` because withholding a room for maintenance is a
+   * daily operational act, and from `INVENTORY_OVERRIDE` because neither of
+   * those may be a route to oversell headroom.
+   */
+  ROOMS_MANAGE: 'rooms:manage',
+  /**
+   * Withhold capacity from sale for a date range, and release it again.
+   *
+   * Separate from `ROOMS_MANAGE` so a duty manager can block a room without
+   * also being able to redefine the property's categories and rates.
+   */
+  ROOM_BLOCKS_MANAGE: 'room_blocks:manage',
+
   /* -- Billing & folio ---------------------------------------------------- */
   FOLIO_READ: 'folio:read',
   FOLIO_CHARGE: 'folio:charge',
@@ -239,6 +257,21 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
     description: 'Mark rooms clean, dirty, inspected or out of order.',
     category: C.HOUSEKEEPING,
     sensitive: false,
+  },
+
+  {
+    key: P.ROOMS_MANAGE,
+    label: 'Manage rooms and categories',
+    description: 'Create and edit room types and physical rooms.',
+    category: C.ADMINISTRATION,
+    sensitive: true,
+  },
+  {
+    key: P.ROOM_BLOCKS_MANAGE,
+    label: 'Manage room blocks',
+    description: 'Withhold rooms from sale for a date range, and release them.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: true,
   },
 
   {
@@ -417,6 +450,11 @@ const REVENUE_MANAGER_PERMISSIONS: readonly Permission[] = [
   P.CHANNELS_READ,
   P.CHANNELS_SYNC,
   P.INVENTORY_OVERRIDE,
+  // Withholding capacity for maintenance or owner use is a revenue decision,
+  // and this role already carries the oversell override it sits beside.
+  // Deliberately NOT ROOMS_MANAGE: defining the property's categories and
+  // rack rates is administration, not distribution.
+  P.ROOM_BLOCKS_MANAGE,
   P.FINANCIAL_REPORTS_READ,
 ];
 

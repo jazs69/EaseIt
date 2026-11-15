@@ -53,6 +53,12 @@ const SETTINGS_DEFAULTS = {
   invoicePrefix: 'INV_',
   autoHoldReleaseHours: 4,
   nightAuditHour: '02:00',
+  // F3. Sunday and Saturday, which is exactly what the two hardcoded Sat/Sun
+  // checks in `timeline.service.ts` already assumed, so no existing property
+  // changes behaviour by gaining this column.
+  // `as number[]` so the shared default stays assignable to Prisma's mutable
+  // scalar-list input; `as const` above would make it `readonly [0, 6]`.
+  weekendDays: [0, 6] as number[],
 } as const;
 
 @Injectable()
@@ -85,6 +91,7 @@ export class PropertySetupService {
           invoicePrefix: true,
           autoHoldReleaseHours: true,
           nightAuditHour: true,
+          weekendDays: true,
         },
       }),
       this.prisma.client.propertyTaxSlab.findMany({
@@ -173,56 +180,52 @@ export class PropertySetupService {
       settings: {
         standardCheckInTime: settings?.standardCheckInTime ?? property.checkInTime,
         standardCheckOutTime: settings?.standardCheckOutTime ?? property.checkOutTime,
-        turnaroundGraceMins:
-          settings?.turnaroundGraceMins ?? SETTINGS_DEFAULTS.turnaroundGraceMins,
+        turnaroundGraceMins: settings?.turnaroundGraceMins ?? SETTINGS_DEFAULTS.turnaroundGraceMins,
         bookingPrefix: settings?.bookingPrefix ?? SETTINGS_DEFAULTS.bookingPrefix,
         folioPrefix: settings?.folioPrefix ?? SETTINGS_DEFAULTS.folioPrefix,
         invoicePrefix: settings?.invoicePrefix ?? SETTINGS_DEFAULTS.invoicePrefix,
         autoHoldReleaseHours:
           settings?.autoHoldReleaseHours ?? SETTINGS_DEFAULTS.autoHoldReleaseHours,
         nightAuditHour: settings?.nightAuditHour ?? SETTINGS_DEFAULTS.nightAuditHour,
+        // `?? [...]` rather than `?? SETTINGS_DEFAULTS.weekendDays` spread
+        // directly: the constant is `readonly number[]` under `as const` and
+        // the DTO wants a mutable array. Copying also stops a caller mutating
+        // the shared default.
+        weekendDays: settings?.weekendDays ?? [...SETTINGS_DEFAULTS.weekendDays],
       },
 
-      taxSlabs: slabs.map(
-        (slab): TaxSlab => ({
-          id: slab.id,
-          slabName: slab.slabName,
-          minTariffMinor: slab.minTariffMinor,
-          maxTariffMinor: slab.maxTariffMinor,
-          // Decimal to number at the boundary. Rates, not money (section 3.4).
-          taxRatePercent: Number(slab.taxRatePercent),
-          cgstRatePercent: Number(slab.cgstRatePercent),
-          sgstRatePercent: Number(slab.sgstRatePercent),
-        }),
-      ),
+      taxSlabs: slabs.map((slab): TaxSlab => ({
+        id: slab.id,
+        slabName: slab.slabName,
+        minTariffMinor: slab.minTariffMinor,
+        maxTariffMinor: slab.maxTariffMinor,
+        // Decimal to number at the boundary. Rates, not money (section 3.4).
+        taxRatePercent: Number(slab.taxRatePercent),
+        cgstRatePercent: Number(slab.cgstRatePercent),
+        sgstRatePercent: Number(slab.sgstRatePercent),
+      })),
 
-      amenities: amenityLinks.map(
-        (link): AmenityLink => ({
-          amenityId: link.amenityId,
-          slug: link.amenity.slug,
-          name: link.amenity.name,
-          groupName: link.amenity.groupName,
-          iconName: link.amenity.iconName,
-          scope: link.scope,
-          priceMinor: link.priceMinor,
-          pricingUnit: link.pricingUnit,
-        }),
-      ),
+      amenities: amenityLinks.map((link): AmenityLink => ({
+        amenityId: link.amenityId,
+        slug: link.amenity.slug,
+        name: link.amenity.name,
+        groupName: link.amenity.groupName,
+        iconName: link.amenity.iconName,
+        scope: link.scope,
+        priceMinor: link.priceMinor,
+        pricingUnit: link.pricingUnit,
+      })),
 
-      policies: policies.map(
-        (policy): PropertyPolicy => ({
-          id: policy.id,
-          type: policy.type,
-          title: policy.title,
-          content: policy.content,
-          isMandatory: policy.isMandatory,
-          freeCancellationHours: policy.freeCancellationHours,
-          retentionChargePercent:
-            policy.retentionChargePercent === null
-              ? null
-              : Number(policy.retentionChargePercent),
-        }),
-      ),
+      policies: policies.map((policy): PropertyPolicy => ({
+        id: policy.id,
+        type: policy.type,
+        title: policy.title,
+        content: policy.content,
+        isMandatory: policy.isMandatory,
+        freeCancellationHours: policy.freeCancellationHours,
+        retentionChargePercent:
+          policy.retentionChargePercent === null ? null : Number(policy.retentionChargePercent),
+      })),
 
       fees: fees.map((fee) => ({
         id: fee.id,
@@ -290,6 +293,10 @@ export class PropertySetupService {
         ? { autoHoldReleaseHours: patch.autoHoldReleaseHours }
         : {}),
       ...(patch.nightAuditHour !== undefined ? { nightAuditHour: patch.nightAuditHour } : {}),
+      // A Prisma scalar list is replaced wholesale, which is what a weekend
+      // definition wants: "the weekend is now Friday and Saturday" is a
+      // replacement, not an addition.
+      ...(patch.weekendDays !== undefined ? { weekendDays: patch.weekendDays } : {}),
     };
 
     await this.prisma.client.$transaction(async (tx) => {
@@ -306,6 +313,7 @@ export class PropertySetupService {
           invoicePrefix: true,
           autoHoldReleaseHours: true,
           nightAuditHour: true,
+          weekendDays: true,
         },
       });
 
@@ -329,6 +337,7 @@ export class PropertySetupService {
           invoicePrefix: true,
           autoHoldReleaseHours: true,
           nightAuditHour: true,
+          weekendDays: true,
         },
       });
 
@@ -345,10 +354,7 @@ export class PropertySetupService {
           // as what was changed rather than the whole row every time.
           // `Prisma.JsonNull` writes a JSON null — a bare null would be read
           // as "leave the column alone" rather than "there was nothing here".
-          before:
-            before === null
-              ? Prisma.JsonNull
-              : pick(before, Object.keys(changes)),
+          before: before === null ? Prisma.JsonNull : pick(before, Object.keys(changes)),
           after: pick(after, Object.keys(changes)),
           reason,
         },
@@ -569,9 +575,7 @@ export class PropertySetupService {
           before: before.map((policy) => ({
             ...policy,
             retentionChargePercent:
-              policy.retentionChargePercent === null
-                ? null
-                : Number(policy.retentionChargePercent),
+              policy.retentionChargePercent === null ? null : Number(policy.retentionChargePercent),
           })),
           after: policies.map((policy) => ({ ...policy })),
           reason,
@@ -777,14 +781,27 @@ export class PropertySetupService {
  *
  * Typed to `InputJsonObject` rather than `Record<string, unknown>`: the audit
  * columns are `Json`, and `unknown` would let a Date or a Decimal through to
- * be serialised however the driver felt like. Every settings field is a string
- * or a number, which is exactly what JSON can carry losslessly.
+ * be serialised however the driver felt like. Every settings field is a
+ * string, a number, or — since F3 added `weekendDays` — an array of numbers,
+ * all of which JSON carries losslessly.
+ *
+ * The value type is widened deliberately and precisely rather than relaxed to
+ * `unknown`: the point of the narrow type is to keep a Date or a Decimal out,
+ * and that still holds.
  */
 function pick(
-  source: Record<string, string | number>,
+  source: Record<string, string | number | readonly number[]>,
   keys: readonly string[],
 ): Prisma.InputJsonObject {
   return Object.fromEntries(
-    keys.filter((key) => key in source).map((key) => [key, source[key] ?? null]),
+    keys
+      .filter((key) => key in source)
+      .map((key) => {
+        const value = source[key];
+        // A readonly array has to be copied: `InputJsonValue` wants a mutable
+        // one, and sharing the source array would let a later mutation reach
+        // into a written audit payload.
+        return [key, Array.isArray(value) ? [...value] : (value ?? null)];
+      }),
   );
 }

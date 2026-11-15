@@ -33,6 +33,7 @@
 import { cn } from '@repo/ui';
 import type { PropertyGrant, Session } from '@repo/types';
 import {
+  BedDouble,
   BrushCleaning,
   CalendarRange,
   Check,
@@ -106,6 +107,21 @@ const QUICK_LINKS = [
     ready: true,
   },
   {
+    href: '/rooms',
+    label: 'Rooms',
+    /**
+     * Room configuration, not the housekeeping board.
+     *
+     * A bed reads as "the physical room" where the brush below reads as "the
+     * work on it" — this screen is categories, numbers and floors, and the
+     * housekeeping board remains unbuilt. Deliberately placed before
+     * Housekeeping, because a room has to exist before it can be cleaned.
+     */
+    icon: BedDouble,
+    scoped: true,
+    ready: true,
+  },
+  {
     href: '/housekeeping',
     label: 'Housekeeping',
     icon: BrushCleaning,
@@ -143,9 +159,7 @@ function resolveActiveGrant(session: Session, hotelId: string | null): PropertyG
   }
 
   if (session.activePropertyId !== null) {
-    const active = session.grants.find(
-      (grant) => grant.propertyId === session.activePropertyId,
-    );
+    const active = session.grants.find((grant) => grant.propertyId === session.activePropertyId);
     if (active !== undefined) return active;
   }
 
@@ -208,9 +222,7 @@ export function OpsTopBar({ session }: OpsTopBarProps) {
           href={brandHref}
           aria-label={active === null ? 'All properties' : `${active.propertyName} dashboard`}
           title={
-            active === null
-              ? 'All properties'
-              : `${active.propertyName} · ${active.propertyCode}`
+            active === null ? 'All properties' : `${active.propertyName} · ${active.propertyCode}`
           }
           className={cn(
             'flex size-9 shrink-0 items-center justify-center rounded-xl',
@@ -229,8 +241,7 @@ export function OpsTopBar({ session }: OpsTopBarProps) {
             // still lights its parent. Matched on a trailing slash rather than
             // a bare `startsWith`, so `/calendar-archive` would not light
             // `/calendar`.
-            const isActive =
-              pathname === link.href || pathname.startsWith(`${link.href}/`);
+            const isActive = pathname === link.href || pathname.startsWith(`${link.href}/`);
             // Most links say the same thing twice; a few need a longer
             // accessible name than the tooltip text.
             const ariaLabel = 'ariaLabel' in link ? link.ariaLabel : link.label;
@@ -370,10 +381,7 @@ export function OpsTopBar({ session }: OpsTopBarProps) {
                             {grant.propertyCode}
                           </span>
                           {current ? (
-                            <Check
-                              className="size-3 shrink-0 text-blue-400"
-                              aria-hidden="true"
-                            />
+                            <Check className="size-3 shrink-0 text-blue-400" aria-hidden="true" />
                           ) : null}
                         </Link>
                       );
@@ -442,7 +450,6 @@ export function OpsTopBar({ session }: OpsTopBarProps) {
             userName={`${session.firstName} ${session.lastName}`.trim()}
             userEmail={session.email}
           />
-
         </div>
       </div>
     </header>

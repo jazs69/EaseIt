@@ -15,6 +15,7 @@ import { PropertiesModule } from './modules/properties/properties.module.js';
 import { PropertyDashboardModule } from './modules/property-dashboard/property-dashboard.module.js';
 import { TimelineModule } from './modules/timeline/timeline.module.js';
 import { InventoryModule } from './modules/inventory/inventory.module.js';
+import { RatesModule } from './modules/rates/rates.module.js';
 import { RbacModule } from './modules/rbac/rbac.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
@@ -51,6 +52,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     PropertyDashboardModule,
     TimelineModule,
     InventoryModule,
+    RatesModule,
     RbacModule,
     AccessControlModule,
   ],

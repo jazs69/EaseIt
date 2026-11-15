@@ -350,6 +350,17 @@ model Property {
   roomTypes      RoomType[]
   rooms          Room[]
   inventoryDays  InventoryDay[]
+  roomBlocks     RoomBlock[]
+  ratePlans      RatePlan[]
+  ratePlanRooms  RatePlanRoomType[]
+  ratePlanDays   RatePlanDay[]
+  pricingRules   RatePricingRule[]
+  pricingPrices  RatePricingRulePrice[]
+  promotions     Promotion[]
+  promotionPlans PromotionRatePlan[]
+  promotionRooms PromotionRoomType[]
+  promoCodes     PromoCode[]
+  redemptions    PromotionRedemption[]
   reservations   Reservation[]
   gatewayConfigs PaymentGatewayConfig[]
   companies      Company[]
@@ -672,8 +683,11 @@ model RoomType {
 
   rooms            Room[]
   inventoryDays    InventoryDay[]
+  roomBlocks       RoomBlock[]
   reservationRooms ReservationRoom[]
   media            PropertyMedia[]
+  ratePlans        RatePlanRoomType[]
+  promotions       PromotionRoomType[]
 
   @@unique([propertyId, code], name: "room_type_unique_code_per_property")
   @@unique([propertyId, name], name: "room_type_unique_name_per_property")
@@ -705,6 +719,7 @@ model Room {
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   reservationRooms ReservationRoom[]
+  roomBlocks       RoomBlock[]
 
   @@unique([propertyId, number], name: "room_unique_number_per_property")
   @@index([propertyId, roomTypeId])
@@ -747,6 +762,804 @@ model InventoryDay {
   @@unique([propertyId, roomTypeId, stayDate], name: "inventory_day_unique_per_date")
   @@index([propertyId, stayDate])
   @@map("inventory_day")
+}
+
+/// Why a room, or some of a category, is withheld from sale for a date range.
+enum RoomBlockReason {
+  MAINTENANCE
+  OWNER_USE
+  TEMPORARY_CLOSURE
+  DEEP_CLEAN
+  RENOVATION
+  OTHER
+}
+
+/// A block's lifecycle. Released rows are kept for the audit trail and drop
+/// out of the overlap constraint, so the room becomes blockable again.
+enum RoomBlockStatus {
+  ACTIVE
+  RELEASED
+}
+
+/// Capacity deliberately withheld from sale, for a date range.
+///
+/// ===========================================================================
+/// Two shapes in one table, distinguished by `roomId`:
+///
+///   * `roomId` NULL  — a CATEGORY block of `rooms` units. "Hold back three
+///     deluxe rooms next weekend." No physical room is named.
+///   * `roomId` set   — a SPECIFIC room, and `rooms` is forced to 1 by
+///     `room_block_specific_is_one_room`.
+///
+/// BOTH contribute to `inventory_day.blocked`, unconditionally: a category
+/// block adds `rooms` per night, a specific-room block adds exactly 1. That is
+/// what stops the two kinds double-counting — there is one accounting path, not
+/// two. A specific-room block that did NOT consume category capacity would
+/// leave a night sellable with no room to honour it.
+///
+/// `throughDate` is EXCLUSIVE, matching `reservation_room.departureDate` and
+/// the `'[)'` ranges the exclusion constraints use. The API accepts an
+/// inclusive date and converts once, in `room-block.policy.ts`.
+///
+/// WHAT THIS TABLE DOES NOT GUARANTEE. A specific-room block and a concurrent
+/// room assignment can both commit: there is no cross-table constraint between
+/// this table and `reservation_room`, and none is added in this increment.
+/// Category capacity remains database-enforced by `inventory_day_not_oversold`
+/// either way, so the failure mode is one guest in a room marked for work --
+/// never an oversell, and never two guests in one room. See limitation F1.
+/// ===========================================================================
+model RoomBlock {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  /// Null for a category block. Set for one physical room.
+  roomId String? @db.Uuid
+  room   Room?   @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  /// Units withheld per night. Always 1 when `roomId` is set.
+  rooms Int @default(1)
+
+  /// Inclusive.
+  fromDate    DateTime @db.Date
+  /// EXCLUSIVE — the first night the block no longer covers.
+  throughDate DateTime @db.Date
+
+  reason RoomBlockReason
+  note   String?
+
+  status RoomBlockStatus @default(ACTIVE)
+
+  createdByUserId  String    @db.Uuid
+  releasedByUserId String?   @db.Uuid
+  releasedAt       DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([propertyId, fromDate])
+  @@index([propertyId, roomId, fromDate])
+  @@index([propertyId, roomTypeId, fromDate])
+  @@index([propertyId, status, fromDate])
+  @@map("room_block")
+}
+
+/// What kind of rate a plan is, for the operator's own organisation.
+///
+/// DESCRIPTIVE ONLY — nothing in the system branches on it. It exists so a
+/// property with twenty plans can group them in a list, and that is all.
+///
+/// In particular it is **not** the distribution or company mechanism. A
+/// corporate rate is a plan a company is *mapped to*, and an OTA rate is a
+/// plan a channel is *mapped to*; both of those are relations that belong to
+/// `companies` and the future `channels` module, not to an enum here. Were
+/// this enum ever to acquire behaviour, that is the signal the mapping table
+/// is the thing actually needed.
+enum RatePlanKind {
+  /// The property's own publicly sellable rate.
+  STANDARD
+  /// Negotiated. The company it belongs to is a future mapping, not this label.
+  CORPORATE
+  /// Room plus inclusions — breakfast, transfers. Inclusions are not modelled yet.
+  PACKAGE
+  /// Time-boxed offer. The window is expressed per date in F2, never here.
+  PROMOTIONAL
+  /// House use, staff, owner. Priced at or near nothing by intent.
+  COMPLIMENTARY
+}
+
+/// A named, sellable price list.
+///
+/// ===========================================================================
+/// WHY A PLAN AND NOT A COLUMN. `RoomType.baseRateMinor` is one number per
+/// category, forever: a property cannot express a weekend price, a season or
+/// a negotiated rate with it. A rate plan is the thing an operator names,
+/// activates, and later prices per date.
+///
+/// `baseRateMinor` IS NOT TOUCHED OR MIGRATED BY THIS. It remains what the
+/// booking path reads (`create-reservation.service.ts`), because integrating
+/// plans into quoting and booking is F9 and is deliberately out of this
+/// increment. Until F9 lands, a rate plan is configuration an operator can
+/// author and nothing prices from it — which the screen says plainly rather
+/// than implying a price is live.
+///
+/// SHAPE: THE PLAN, NOT THE CALENDAR. `defaultRateMinor` is the one nightly
+/// figure a plan carries. Per-date pricing is a separate `rate_plan_day`
+/// table in F2; this column is what a date with no such row will fall back
+/// to, so F2 is purely additive on top of this.
+///
+/// MULTIPLE ROOM TYPES PER PLAN, through `RatePlanRoomType`. "Corporate BAR"
+/// is one plan a hotel applies to Deluxe and Suite alike; a single
+/// `roomTypeId` here would force two plans with one name, which the per-
+/// property name uniqueness would then refuse. The join table is also the
+/// shape a future `ChannelRatePlanMapping` needs, since an OTA maps a channel
+/// rate code to a plan and its room types independently.
+///
+/// NOT DELETABLE, BY DESIGN. There is no delete endpoint. A plan that has ever
+/// been quoted is history, and when F9 adds `reservation.ratePlanId` it will
+/// be `onDelete: Restrict`, so deletion stays impossible rather than becoming
+/// possible and then being taken away. `isActive` stops it being offered;
+/// `archivedAt` is the terminal state and implies inactive (enforced by a
+/// CHECK, one-directionally — an inactive plan is not necessarily archived).
+/// ===========================================================================
+model RatePlan {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Short operator-facing code, e.g. "BAR". Unique within the property, and
+  /// never editable — it is the identity a future channel mapping points at.
+  code String
+  name String
+
+  description String?
+
+  kind RatePlanKind @default(STANDARD)
+
+  /// ISO-4217, and always equal to `Property.currency` — the service refuses a
+  /// mismatch. Stored rather than derived for the same reason
+  /// `RoomType.currency` is: section 3.4 requires every monetary amount to
+  /// travel with its own currency, so a rate read from this row is never
+  /// ambiguous about what its minor units mean.
+  currency String @db.Char(3)
+
+  /// PRICING IS NOT HERE — F2 moved it to `RatePlanRoomType`.
+  ///
+  /// F1 carried `defaultRateMinor` and `baseOccupancy` on this model, which was
+  /// wrong: one plan applies to several categories, and a Standard room is not
+  /// priced like a Suite. Both columns now live on the assignment, one value
+  /// per room type, and migration 20261110140000 copied the old plan-level
+  /// figure onto every assignment before dropping them.
+  ///
+  /// A plan-level rate is deliberately NOT retained as a fallback. Two sources
+  /// for one price is exactly the ambiguity this correction removes, and a
+  /// stale plan-level number is the kind of second answer that eventually gets
+  /// quoted to a guest.
+  ///
+  /// Offerable. Deactivating is reversible and loses nothing.
+  isActive Boolean @default(true)
+
+  /// Set once, terminally. Implies `isActive = false`.
+  archivedAt DateTime? @db.Timestamptz(6)
+
+  sortOrder Int @default(0)
+
+  createdByUserId String @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  roomTypes    RatePlanRoomType[]
+  pricingRules RatePricingRule[]
+  promotions   PromotionRatePlan[]
+
+  @@unique([propertyId, code], name: "rate_plan_unique_code_per_property")
+  @@unique([propertyId, name], name: "rate_plan_unique_name_per_property")
+  /// Not redundant with the primary key: it is the pair a composite foreign
+  /// key must reference, so `rate_plan_day` (F2) can be provably same-property
+  /// the way `room_block` already is.
+  @@unique([id, propertyId], name: "rate_plan_property_id_unique_pair")
+  @@index([propertyId, isActive, sortOrder])
+  @@map("rate_plan")
+}
+
+/// Which categories a rate plan applies to.
+///
+/// A join table rather than an array column: the composite foreign keys in the
+/// migration make a cross-property link unrepresentable, which an array of
+/// uuids could not do (section 3.2). `propertyId` is carried here for exactly
+/// that reason, and because every index in this schema leads with it.
+///
+/// Both sides cascade on delete of the plan but RESTRICT on the room type: a
+/// category still referenced by a plan must not vanish from under it, the same
+/// rule `room_block` applies.
+model RatePlanRoomType {
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  ratePlanId String   @db.Uuid
+  ratePlan   RatePlan @relation(fields: [ratePlanId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  /// THE DEFAULT NIGHTLY RATE FOR THIS CATEGORY UNDER THIS PLAN, in the
+  /// currency's **minor unit** — paise for INR (section 3.4). Never a float.
+  ///
+  /// This is the fallback: a stay date with no `RatePlanDay` row is priced
+  /// from here. One row per (plan, room type) is what makes "BAR = 1500 for
+  /// Standard, 2500 for Deluxe, 4000 for Suite" expressible, and what makes
+  /// editing one category's price provably unable to touch another's — they
+  /// are different rows.
+  defaultRateMinor Int
+
+  /// THE NUMBER OF GUESTS `defaultRateMinor` INCLUDES.
+  ///
+  /// F1 recorded this so F4 would not have to guess, and F4 now reads it as
+  /// the total included headcount — adults and children together, with
+  /// `includedChildren` naming how many of them may be children. Its value is
+  /// NOT changed by F4's migration.
+  ///
+  /// Bounded 1..20 by `rate_plan_room_type_base_occupancy_positive` (F2's
+  /// migration). It must also not exceed the room type's `maxGuests`, which no
+  /// CHECK can express because that lives on another table — the service
+  /// enforces it.
+  baseOccupancy Int @default(2)
+
+  /* -- F4: occupancy and extra-person pricing --------------------------- */
+
+  /// Whether extra-guest charges apply at all for this assignment.
+  ///
+  /// DEFAULT FALSE, and that default is the whole migration-safety story: every
+  /// rate plan created under F1, F2 or F3 keeps pricing exactly as it did,
+  /// because a disabled configuration contributes nothing. An operator opts in
+  /// per assignment.
+  occupancyPricingEnabled Boolean @default(false)
+
+  /// How many of `baseOccupancy` may be children at no extra charge.
+  ///
+  /// A SUBSET of base occupancy, not an addition to it — so a room whose base
+  /// rate covers two guests, one of whom may be a child, is
+  /// `baseOccupancy = 2, includedChildren = 1`, and the included adults are
+  /// the remaining 1. Bounded `0 <= includedChildren <= baseOccupancy` by a
+  /// CHECK, because "included children exceed the included headcount" is not a
+  /// configuration anyone can act on.
+  includedChildren Int @default(0)
+
+  /// Fixed amount, or a percentage of the resolved nightly base rate.
+  extraAdultChargeKind ExtraGuestChargeKind @default(FIXED)
+
+  /// Integer minor units when `FIXED`; integer BASIS POINTS when `PERCENT`
+  /// (100 = 1%, 10000 = 100%).
+  ///
+  /// One column for both, because the kind already says how to read it and a
+  /// second nullable column would make "which one is authoritative" a question
+  /// somebody has to answer at every read. Never a float: a percentage stored
+  /// as 0.125 is a rounding argument waiting to happen (CLAUDE.md 3.4).
+  extraAdultChargeValue Int @default(0)
+
+  /// Children are priced separately from adults, because properties do not
+  /// charge them alike — and several do not charge them at all.
+  extraChildChargeKind ExtraGuestChargeKind @default(FIXED)
+  extraChildChargeValue Int @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  days       RatePlanDay[]
+  rulePrices RatePricingRulePrice[]
+
+  @@id([ratePlanId, roomTypeId])
+  /// Not redundant with the primary key. It is the triple `rate_plan_day`'s
+  /// composite foreign key references, and that one key proves two things at
+  /// once: the assignment exists, and the day row belongs to the same property
+  /// as the assignment. See the migration.
+  @@unique([ratePlanId, roomTypeId, propertyId], name: "rate_plan_room_type_assignment_triple")
+  @@index([propertyId, roomTypeId])
+  @@index([propertyId, ratePlanId])
+  @@map("rate_plan_room_type")
+}
+
+/// One date's price override for one room type under one rate plan.
+///
+/// ===========================================================================
+/// THE WHOLE POINT: a row here exists only where the operator has deliberately
+/// priced a night differently. Absence is meaningful — it means "use the
+/// assignment's `defaultRateMinor`" — which is why clearing an override is a
+/// DELETE and not a write of the default value. Storing the default on every
+/// night would make a later change to the default silently fail to apply, and
+/// would turn a 90-day calendar for 3 categories into 270 rows that all say
+/// the same thing.
+///
+/// `stayDate` IS A CALENDAR DATE (`@db.Date`), not an instant. A nightly rate
+/// belongs to the night the hotel calls that date; serialising it as a
+/// timestamp shifts it by a day either side of midnight depending on the
+/// reader's zone (section 3.3). It is never constructed from a browser clock.
+///
+/// NOT LINKED TO `RoomType` DIRECTLY. The relation is to `RatePlanRoomType`,
+/// because a price for a category the plan does not apply to is not a thing
+/// that should be representable. Removing an assignment cascades these away
+/// with it, which is correct: the plan no longer prices that category at all.
+///
+/// `amountMinor` IS A NIGHTLY RATE, never a stay total. F9 will sum nights;
+/// nothing here multiplies.
+/// ===========================================================================
+model RatePlanDay {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  ratePlanId String @db.Uuid
+  roomTypeId String @db.Uuid
+
+  /// The assignment this override belongs to. A multi-field relation, so the
+  /// pair cannot point at a plan and a category that are not linked.
+  assignment RatePlanRoomType @relation(fields: [ratePlanId, roomTypeId], references: [ratePlanId, roomTypeId], onDelete: Cascade)
+
+  /// The night being priced. A calendar date, never an instant.
+  stayDate DateTime @db.Date
+
+  /// Integer minor units, paired with the plan's currency. Zero is valid.
+  amountMinor Int
+
+  /// Who last wrote this night's price. No foreign key, consistent with
+  /// `room_block.createdByUserId`: attribution must survive a staff member
+  /// being removed.
+  updatedByUserId String @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, ratePlanId, roomTypeId, stayDate], name: "rate_plan_day_unique_per_date")
+  /// The calendar read: one plan, one category, a date window.
+  @@index([propertyId, ratePlanId, roomTypeId, stayDate])
+  /// Every index leads with `propertyId` (section 3.2).
+  @@index([propertyId, stayDate])
+  @@map("rate_plan_day")
+}
+
+/// How a promotion's discount is expressed (F5).
+///
+/// `FIXED_PER_NIGHT` is named for its scope, not merely its kind, and that is
+/// deliberate: "₹500 off" is ambiguous between per night and per stay, and the
+/// ambiguity is the sort that surfaces as a refund argument. Every other amount
+/// in this pricing stack is nightly, so a fixed discount is nightly too — and
+/// the enum says so, which leaves room for a `FIXED_PER_STAY` later without
+/// reinterpreting any stored row.
+enum PromotionDiscountKind {
+  /// Integer basis points of the eligible nightly amount. 100 = 1%.
+  PERCENT
+  /// Integer minor units, deducted from each eligible night.
+  FIXED_PER_NIGHT
+}
+
+/// How an extra-guest charge is expressed (F4).
+///
+/// `PERCENT` is relative to the RESOLVED nightly base rate for the night in
+/// question — so it moves with an F2 override and with an F3 seasonal or
+/// weekday rule, which is the point of expressing it as a percentage. `FIXED`
+/// is an absolute amount per extra guest per night and never inherits the base
+/// rate.
+enum ExtraGuestChargeKind {
+  FIXED
+  PERCENT
+}
+
+/// What kind of date pattern a pricing rule matches (F3).
+enum RatePricingRuleKind {
+  /// An explicit, dated range — "Christmas 2026", 20 Dec to 10 Jan. Beats both
+  /// recurring kinds, because a named date range is a more specific statement
+  /// about those nights than "Saturdays are dearer".
+  SEASONAL
+  /// A named set of weekdays — "Friday and Saturday". Beats WEEKEND, because
+  /// naming a day explicitly is more specific than deferring to the
+  /// property's weekend definition.
+  WEEKDAY
+  /// Whatever the property calls its weekend (`PropertySettings.weekendDays`).
+  /// The least specific rule, and the first to be overridden.
+  WEEKEND
+}
+
+/// A recurring or seasonal pricing rule for one rate plan (F3).
+///
+/// ===========================================================================
+/// ONE TABLE, THREE KINDS, and that is a deliberate choice over four tables.
+/// A season and a weekday rule differ only in *how they decide whether a night
+/// matches*; everything else — the plan, the per-room-type prices, priority,
+/// enablement, naming, auditing, the CRUD surface — is identical. Four tables
+/// would mean two of each of those, and two of anything is two things that
+/// drift. The `kind` discriminator plus the CHECK constraints in migration
+/// 20261110170000 make the illegal field combinations unrepresentable, which
+/// is the same device `room_block_specific_is_one_room` uses.
+///
+/// WHAT DECIDES A MATCH, per kind:
+///   * SEASONAL — `startDate` and `endDate`, both set, both INCLUSIVE.
+///   * WEEKDAY  — `daysOfWeek`, non-empty, 0 = Sunday … 6 = Saturday.
+///   * WEEKEND  — neither; the property's `weekendDays` decides.
+///
+/// DATES ARE INCLUSIVE AT BOTH ENDS, which differs from `room_block` and
+/// `reservation_room` and is called out here because the difference is
+/// deliberate. Those model *stays*, where the departure day is still sellable,
+/// so they are half-open `[)`. A season is a set of nights an operator names:
+/// "20 December through 10 January" means both of those nights. A half-open
+/// season would silently drop its last night, which is the kind of off-by-one
+/// that only shows up in a December revenue report.
+///
+/// A SEASON CROSSING NEW YEAR needs no special handling: `startDate`
+/// 2026-12-20 with `endDate` 2027-01-10 is an ordinary range whose end is
+/// after its start. What is NOT implemented is a *recurring annual* season
+/// with no year component — see the migration's note.
+///
+/// PRIORITY BREAKS TIES WITHIN A KIND, higher wins. Equal priority on two
+/// enabled rules of the same kind that overlap in dates AND share a room type
+/// is an ambiguity, and it is REFUSED at write time rather than resolved by
+/// row order. See `rate-pricing.policy.ts` for what happens if one exists
+/// anyway.
+///
+/// PRICES LIVE IN THE CHILD TABLE, one per room type, exactly as
+/// `RatePlanRoomType` holds the default. A rule that priced every category the
+/// same would not express "Christmas: Standard 2,500, Suite 7,000", which is
+/// the ordinary case.
+/// ===========================================================================
+model RatePricingRule {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  ratePlanId String   @db.Uuid
+  ratePlan   RatePlan @relation(fields: [ratePlanId], references: [id], onDelete: Cascade)
+
+  kind RatePricingRuleKind
+
+  /// Operator-facing. Unique within the plan, so an audit row naming
+  /// "Christmas 2026" is unambiguous.
+  name String
+
+  /// SEASONAL only. Inclusive. Null for the recurring kinds.
+  startDate DateTime? @db.Date
+  /// SEASONAL only. INCLUSIVE — the last night the season covers.
+  endDate   DateTime? @db.Date
+
+  /// WEEKDAY only. 0 = Sunday … 6 = Saturday. Empty for the other kinds.
+  daysOfWeek Int[]
+
+  /// Higher wins among matching rules of the same kind. Ties are refused.
+  priority Int @default(0)
+
+  /// Disabled rules are kept, not deleted: a season an operator turns off for
+  /// one year is usually wanted again the next.
+  isEnabled Boolean @default(true)
+
+  /// No foreign key, consistent with `room_block.createdByUserId` and
+  /// `rate_plan_day.updatedByUserId`: attribution must survive a staff member
+  /// being removed.
+  createdByUserId String @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  prices RatePricingRulePrice[]
+
+  @@unique([propertyId, ratePlanId, name], name: "rate_pricing_rule_unique_name_per_plan")
+  /// The triple `rate_pricing_rule_price` references, so a price row is
+  /// provably attached to a rule of the same plan and property — the device
+  /// `rate_plan_room_type_assignment_triple` provides for `rate_plan_day`.
+  @@unique([id, ratePlanId, propertyId], name: "rate_pricing_rule_plan_triple")
+  /// The resolver's read: one plan's enabled rules, ordered by precedence.
+  @@index([propertyId, ratePlanId, isEnabled, kind, priority])
+  /// Seasonal date-window scans.
+  @@index([propertyId, ratePlanId, startDate, endDate])
+  @@map("rate_pricing_rule")
+}
+
+/// One room type's price under one pricing rule (F3).
+///
+/// `ratePlanId` is carried here deliberately, denormalised from the rule, so
+/// that TWO composite foreign keys can hold at once (see the migration):
+/// one tying the row to a rule of that plan, and one tying it to a
+/// `RatePlanRoomType` assignment of that same plan. Together they make it
+/// impossible to price a category the plan does not even apply to — the
+/// guarantee `rate_plan_day` already has, reached the same way.
+model RatePricingRulePrice {
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  ruleId String          @db.Uuid
+  rule   RatePricingRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  /// Denormalised from the rule; kept honest by a composite foreign key.
+  ratePlanId String @db.Uuid
+  roomTypeId String @db.Uuid
+
+  /// The plan/room-type assignment this price belongs to.
+  ///
+  /// A multi-field relation, exactly as `RatePlanDay.assignment` is, so the
+  /// pair cannot point at a plan and a category that are not linked — and so
+  /// a read can reach the room type's code and name without a second query.
+  /// It mirrors the SQL composite key `rate_pricing_rule_price_assignment`.
+  assignment RatePlanRoomType @relation(fields: [ratePlanId, roomTypeId], references: [ratePlanId, roomTypeId], onDelete: Cascade)
+
+  /// Integer minor units, paired with the plan's currency. Zero is valid — a
+  /// complimentary season is a real configuration. Negative is refused.
+  amountMinor Int
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@id([ruleId, roomTypeId])
+  @@index([propertyId, roomTypeId])
+  @@index([propertyId, ruleId])
+  @@map("rate_pricing_rule_price")
+}
+
+/// A discount an operator configures and an eligible stay can receive (F5).
+///
+/// ===========================================================================
+/// WHERE F5 SITS IN THE STACK. The nightly amount is already decided by the
+/// time a promotion is considered:
+///
+///   1. F1/F2/F3 resolve the BASE rate — override → seasonal → weekday →
+///      weekend → assignment default.
+///   2. F4 adds extra-adult and extra-child charges.
+///   3. F5 discounts the result.
+///
+/// So a promotion never overwrites a base rate or an occupancy configuration;
+/// it reduces the occupancy-adjusted nightly amount. The eligible amount is
+/// that adjusted amount, which is why a percentage promotion automatically
+/// discounts the extra-person charges too.
+///
+/// PROMOTIONS DO NOT STACK. At most one applies to a night, chosen by the
+/// highest `priority`. A tie between two active promotions whose applicability
+/// overlaps is refused at WRITE time, because the resolver must never pick by
+/// row order — the same discipline F3's pricing rules follow.
+///
+/// APPLICABILITY IS EXPLICIT, NEVER INFERRED FROM AN EMPTY SET. This is the
+/// trap the scope names: an empty relation must not mean "all" in one place and
+/// "none" in another. So there are two booleans. `appliesToAllRatePlans = true`
+/// means every plan and the join table is ignored; `false` means exactly the
+/// plans listed, and an empty list means NOTHING is eligible. The service
+/// refuses to create a promotion that can never apply, so the degenerate state
+/// is unreachable through the API rather than merely unlikely.
+///
+/// DATES ARE CALENDAR DATES, INCLUSIVE AT BOTH ENDS, and `NULL` means
+/// unbounded on that side. Two independent windows: `stay*` bounds which
+/// NIGHTS qualify, `book*` bounds WHEN the booking may be made. A promotion
+/// may have either, both or neither.
+///
+/// REDEMPTION IS CONFIGURED HERE AND CONSUMED BY F9. `redeemedCount` ships at
+/// zero with no writer in F5: previewing never touches it. See
+/// `PromotionRedemption` for the atomic contract F9 must use.
+/// ===========================================================================
+model Promotion {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  /// Operator-facing. Unique within the property, so an audit row naming
+  /// "Monsoon 20% off" is unambiguous.
+  name        String
+  description String?
+
+  discountKind PromotionDiscountKind
+  /// Basis points when `PERCENT` (capped at 10000 = 100%); integer minor units
+  /// when `FIXED_PER_NIGHT`. One column, because the kind says how to read it.
+  discountValue Int
+
+  /// Higher wins when two promotions both qualify. Ties that overlap in
+  /// applicability are refused at write time.
+  priority Int @default(0)
+
+  isActive Boolean @default(true)
+
+  /// Which NIGHTS qualify. Inclusive; null means unbounded that side.
+  stayFromDate    DateTime? @db.Date
+  stayThroughDate DateTime? @db.Date
+
+  /// WHEN the booking may be made. Inclusive; null means unbounded that side.
+  bookFromDate    DateTime? @db.Date
+  bookThroughDate DateTime? @db.Date
+
+  /// Stay-length eligibility conditions. NOT the F6 restriction engine — these
+  /// gate this promotion only and restrict nothing else about the stay.
+  minNights Int?
+  maxNights Int?
+
+  /// The stay's pre-discount, pre-tax total must reach this to qualify.
+  minEligibleAmountMinor Int?
+
+  /// See the model comment: explicit, never inferred from an empty join.
+  appliesToAllRatePlans Boolean @default(false)
+  appliesToAllRoomTypes Boolean @default(false)
+
+  /// Null means unlimited. Enforced by F9, not by F5.
+  maxRedemptions Int?
+  /// Ships at zero. F5 has no writer for it; F9 consumes it atomically.
+  redeemedCount  Int  @default(0)
+
+  createdByUserId String  @db.Uuid
+  updatedByUserId String? @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  ratePlans   PromotionRatePlan[]
+  roomTypes   PromotionRoomType[]
+  codes       PromoCode[]
+  redemptions PromotionRedemption[]
+
+  @@unique([propertyId, name], name: "promotion_unique_name_per_property")
+  /// The pair every child table's composite foreign key references, so a child
+  /// row is provably same-property — the device `rate_plan_property_id_unique_pair`
+  /// provides for the rate tables.
+  @@unique([id, propertyId], name: "promotion_property_id_unique_pair")
+  /// The eligibility read: one property's active promotions over a date window.
+  @@index([propertyId, isActive, priority])
+  @@index([propertyId, stayFromDate, stayThroughDate])
+  @@map("promotion")
+}
+
+/// Which rate plans a promotion applies to, when it is not "all".
+model PromotionRatePlan {
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  promotionId String    @db.Uuid
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  /// RESTRICT, not cascade: a rate plan still named by a promotion must not
+  /// vanish from under it. Rate plans are archived rather than deleted anyway,
+  /// so this should never fire — it is here so it cannot.
+  ratePlanId String   @db.Uuid
+  ratePlan   RatePlan @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([promotionId, ratePlanId])
+  @@index([propertyId, ratePlanId])
+  @@index([propertyId, promotionId])
+  @@map("promotion_rate_plan")
+}
+
+/// Which room types a promotion applies to, when it is not "all".
+model PromotionRoomType {
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  promotionId String    @db.Uuid
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([promotionId, roomTypeId])
+  @@index([propertyId, roomTypeId])
+  @@index([propertyId, promotionId])
+  @@map("promotion_room_type")
+}
+
+/// A redeemable code attached to a promotion (F5).
+///
+/// ===========================================================================
+/// A CODE IS A REDEMPTION MECHANISM, NOT A SECOND DISCOUNT ENGINE. It carries
+/// no discount of its own: eligibility and the amount come from the promotion
+/// it belongs to. A promotion may have several codes, or none — a promotion
+/// with no code applies automatically to any eligible stay.
+///
+/// TWO COLUMNS FOR ONE CODE, deliberately. `code` is what the operator typed,
+/// preserved for display so "SUMMER24" does not come back as "summer24".
+/// `codeNormalized` is upper-cased and trimmed and is the ONLY thing matched
+/// or made unique — which is what makes lookup case-insensitive without
+/// relying on a case-insensitive collation or a functional index whose
+/// behaviour varies with the database's locale.
+/// ===========================================================================
+model PromoCode {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  promotionId String    @db.Uuid
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  /// As entered, for display only. Never matched against.
+  code String
+  /// Upper-cased and trimmed. The matched and unique form.
+  codeNormalized String
+
+  isActive Boolean @default(true)
+  /// Inclusive — the last calendar date the code may be used. Null = no expiry.
+  expiresOn DateTime? @db.Date
+
+  /// Null means unlimited. Enforced by F9, not by F5.
+  maxRedemptions Int?
+  redeemedCount  Int  @default(0)
+
+  createdByUserId String @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  redemptions PromotionRedemption[]
+
+  @@unique([propertyId, codeNormalized], name: "promo_code_unique_per_property")
+  @@unique([id, propertyId], name: "promo_code_property_id_unique_pair")
+  @@index([propertyId, promotionId])
+  @@map("promo_code")
+}
+
+/// One consumption of a promotion by one reservation.
+///
+/// ===========================================================================
+/// SCAFFOLDING FOR F9. It ships EMPTY and F5 contains no writer for it: a
+/// preview never inserts a row and never moves a counter. It exists now
+/// because a redemption counter with no record of what consumed it is
+/// unauditable, and because the shape determines whether F9 can consume
+/// atomically at all.
+///
+/// THE ATOMIC CONSUMPTION CONTRACT F9 MUST USE. Inside the reservation's own
+/// transaction, in this order:
+///
+///   1. INSERT a row here. `@@unique([propertyId, reservationId])` makes it the
+///      idempotency key: a retried booking cannot redeem twice, and the second
+///      insert fails with P2002 rather than silently double-counting.
+///   2. Increment the counter CONDITIONALLY, in one statement:
+///
+///        UPDATE promotion SET "redeemedCount" = "redeemedCount" + 1
+///         WHERE id = $1 AND "propertyId" = $2
+///           AND ("maxRedemptions" IS NULL OR "redeemedCount" < "maxRedemptions")
+///
+///      Zero rows affected means exhausted, and the transaction rolls back.
+///      This is NOT read-then-increment: the bound is re-tested inside the same
+///      statement that writes, so two concurrent bookings cannot both pass a
+///      check and both increment. The CHECK constraint
+///      `promotion_redeemed_within_limit` is the backstop if a future writer
+///      forgets the predicate.
+///   3. The same for `promo_code` when a code was used.
+///
+/// Nothing in F5 performs any of this. It is written down so F9 does not have
+/// to rediscover it, and so nobody ships a check-then-increment and calls it
+/// safe.
+/// ===========================================================================
+model PromotionRedemption {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  promotionId String    @db.Uuid
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Restrict)
+
+  /// Null when the promotion applied automatically, with no code.
+  promoCodeId String?    @db.Uuid
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
+
+  /// No Prisma relation, and the composite foreign key is in the migration —
+  /// the established convention for a same-property key onto a non-primary
+  /// key, which Prisma cannot express. Declaring a relation here would also
+  /// mean editing the `Reservation` model, which this scope does not do.
+  reservationId String @db.Uuid
+
+  /// What was actually deducted, in minor units. Recorded rather than
+  /// recomputed, because the configuration may change after the stay.
+  discountAppliedMinor Int
+
+  redeemedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  /// The idempotency key of the contract above: one promotion per reservation.
+  @@unique([propertyId, reservationId], name: "promotion_redemption_unique_per_reservation")
+  @@index([propertyId, promotionId])
+  @@index([propertyId, promoCodeId])
+  @@map("promotion_redemption")
 }
 
 /// A booking.
@@ -1261,6 +2074,34 @@ model PropertySettings {
   /// When the night audit is scheduled, in the property's timezone
   /// (CLAUDE.md section 3.3 — ten properties, ten independent schedules).
   nightAuditHour String @default("02:00")
+
+  /// Which days this property treats as its weekend, as ISO-ish day numbers
+  /// where 0 is Sunday and 6 is Saturday.
+  ///
+  /// ===========================================================================
+  /// INTRODUCED BY F3, because weekend pricing cannot be built on a guess. Two
+  /// places in this repository already hardcode Saturday and Sunday
+  /// (`timeline.service.ts`), and that is wrong for much of the world: a Goa
+  /// resort's weekend is Saturday and Sunday, a Gulf property's is Friday and
+  /// Saturday, and a city hotel selling to business travellers may price
+  /// Sunday to Thursday as its peak. A WEEKEND pricing rule asks "is this
+  /// night a weekend night", and only the property can answer.
+  ///
+  /// Default `[0, 6]` — Sunday and Saturday — so every existing property keeps
+  /// the behaviour the hardcoded checks already gave it. The default is safe
+  /// rather than clever.
+  ///
+  /// An EMPTY array is legal and means "this property has no weekend", which
+  /// makes every WEEKEND rule match nothing. That is a real configuration for
+  /// a property that prices only by named weekdays, and it is better than
+  /// forbidding it and forcing a fake weekend.
+  ///
+  /// The weekday of a stay date needs no timezone: `2026-12-20` is a Sunday
+  /// everywhere. What matters is never converting the date through a local
+  /// `Date` on the way to asking (CLAUDE.md section 3.3) — see
+  /// `rate-pricing.policy.ts`.
+  /// ===========================================================================
+  weekendDays Int[] @default([0, 6])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)

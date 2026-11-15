@@ -1,15 +1,14 @@
 import type { Metadata } from 'next';
-import { SlidersHorizontal } from 'lucide-react';
 import { redirect } from 'next/navigation';
 
-import { PlaceholderScreen } from '@/components/dashboard/placeholder-screen';
 import { InventoryHorizonCard } from '@/components/inventory/inventory-horizon-card';
-import { fetchInventoryHorizon } from '@/lib/properties-client';
+import { RatePlansScreen } from '@/components/rates/rate-plans-screen';
+import { fetchInventoryHorizon, fetchRatePlans, fetchRoomTypes } from '@/lib/properties-client';
 import { requireSession } from '@/lib/server-session';
 
 export const metadata: Metadata = {
   title: 'Rates & inventory',
-  description: 'Rack rates, restrictions and channel distribution for one property.',
+  description: 'Rate plans and the availability calendar for one property.',
   robots: { index: false, follow: false },
 };
 
@@ -24,30 +23,36 @@ function first(value: string | string[] | undefined): string | undefined {
  * Rates & inventory, at `/rates-inventory?hotelId=31336`.
  *
  * ===========================================================================
- * A real route in the `(property)` group, so the icon does not 404 and the
- * unified top bar is present — it comes from `(property)/layout.tsx`, which is
- * the only layout that renders it. The brief named
- * `app/(dashboard)/rates-inventory/`, but that group carries the group sidebar
- * and *not* the top bar, so putting it there would have contradicted the same
- * brief's requirement that this screen show the unified navbar.
+ * A route in the `(property)` group, so it inherits the unified top bar from
+ * `(property)/layout.tsx` — the only layout that renders it.
  *
- * Deliberately a placeholder rather than a rate grid over invented numbers.
- * What this screen has to show does not exist yet in any truthful form:
+ * WHAT CHANGED HERE. This screen used to be a `PlaceholderScreen`, because
+ * there was no `RatePlan` table and so nothing truthful to show. Scope F1 adds
+ * the table, the endpoints and the management UI, so the placeholder is gone
+ * and rate plans are real, authorable configuration.
  *
- *   * `rates` owns rate plans, the rate calendar, derived and linked rates and
- *     promotions. There is no RatePlan table, so there are no rates to edit.
- *   * `inventory` owns per-date restrictions — stop-sell, closed-to-arrival,
- *     minimum and maximum stay. `inventory_day` today holds only the counters
- *     the oversell CHECK guards (`physical`, `sold`, `blocked`,
- *     `overbookingAllowance`); no restriction columns exist.
- *   * `channels` owns the ARI push outbox and the per-channel mappings. A rate
- *     editor that cannot push is a form that silently disagrees with what the
- *     OTAs are selling, which is worse than no editor.
+ * WHAT IS STILL NOT HERE, and is stated on the screen rather than omitted
+ * silently:
  *
- * Writing a rate here before those exist would mean either a form that
- * discards its input or one that writes to a table the booking path does not
- * read — and a rate the booking engine ignores is how a hotel sells a room at
- * last year's price.
+ *   * **Nothing prices from a rate plan yet.** The booking path still reads
+ *     `room_type.baseRateMinor` (`create-reservation.service.ts`). Integrating
+ *     plans into quoting and booking is F9. A screen that implied otherwise
+ *     would have an operator believing a rate was live at the desk.
+ *   * **No per-date pricing**, seasonal or weekday rates — F2/F3, and a
+ *     separate `rate_plan_day` table this model is already shaped for.
+ *   * **No restrictions** (stop-sell, minimum stay, closed to arrival or
+ *     departure) — F6/F7. `inventory_day` still carries only the counters the
+ *     oversell CHECK guards.
+ *   * **No channel distribution.** A rate editor that cannot push would
+ *     silently disagree with what the OTAs are selling.
+ *
+ * The inventory horizon card stays exactly as it was: it is the other
+ * genuinely truthful control on this screen, and it is unrelated to rates.
+ *
+ * All three fetches are server-side so the first paint already carries the
+ * data, and all three go through `requireSession`, so an expired session
+ * redirects rather than rendering an empty screen. A failure in any of them
+ * reaches `(property)/error.tsx`, which keeps the top bar and offers a retry.
  * ===========================================================================
  */
 export default async function RatesInventoryPage({
@@ -58,33 +63,46 @@ export default async function RatesInventoryPage({
   const params = await searchParams;
   const hotelId = first(params['hotelId']);
 
-  // Property-scoped, so it needs a property. Same contract as `/calendar`:
-  // back to the picker rather than guessing a hotel the caller may hold no
-  // grant at (CLAUDE.md section 3.2).
+  // Property-scoped, so it needs a property. Same contract as `/calendar` and
+  // `/rooms`: back to the picker rather than guessing a hotel the caller may
+  // hold no grant at (CLAUDE.md section 3.2).
   if (hotelId === undefined || hotelId.trim().length === 0) {
     redirect('/group-dashboard');
   }
 
-  /**
-   * The horizon is real; the rest of this screen is not yet.
-   *
-   * Fetched server-side so the first paint already carries it, and the
-   * permission comes from the session rather than being guessed: the API
-   * refuses a POST without `property:settings` regardless, but a button that
-   * always 403s is worse than one that explains itself.
-   */
   const { session, cookieHeader } = await requireSession();
+
   const horizon = await fetchInventoryHorizon(hotelId, { cookieHeader });
+  // Room types are needed to render the assignment picker, not merely to
+  // display: a plan must apply to at least one category.
+  const roomTypes = await fetchRoomTypes(hotelId, { cookieHeader });
+  // The API decides the default filter (active plans only), so every client
+  // agrees about it rather than each inventing its own idea of "the list".
+  const ratePlans = await fetchRatePlans(hotelId, {}, { cookieHeader });
+
+  // Read from the session rather than guessed: the API refuses a write without
+  // `rates:manage` regardless, but a button that always 403s is worse than one
+  // that explains itself.
   const canExtend = session.permissions.includes('property:settings');
+  const canManageRates = session.permissions.includes('rates:manage');
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6">
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-8 sm:px-6">
+      <header className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold tracking-tight">Rates &amp; inventory</h1>
+        <p className="text-sm text-muted-foreground">
+          Rate plans and how far ahead this property can sell.
+        </p>
+      </header>
+
       <InventoryHorizonCard hotelId={hotelId} horizon={horizon} canExtend={canExtend} />
-      <PlaceholderScreen
-        icon={SlidersHorizontal}
-        title="Rates & inventory"
-        summary="Rack rates, stop-sells, minimum stay restrictions and channel distribution for this property."
-        blockedBy="Rates and restrictions need the rates and channels modules. There is no RatePlan table, inventory_day still carries no restriction columns, and nothing can push ARI to the OTAs yet — so any rate shown or saved here would disagree with what the channels are actually selling."
+
+      <RatePlansScreen
+        hotelId={hotelId}
+        initialPlans={ratePlans.items}
+        roomTypes={roomTypes}
+        currency={ratePlans.currency}
+        canManage={canManageRates}
       />
     </main>
   );

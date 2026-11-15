@@ -238,6 +238,31 @@ export class RoleNameTakenError extends DomainError {
 }
 
 /**
+ * A per-property unique identifier is already in use: a room-type code or
+ * name, or a room number.
+ *
+ * 409 rather than 400: the request is well formed and would have been
+ * accepted a moment earlier. Raised by translating Prisma's `P2002` at the
+ * repository boundary, so no driver code reaches the client (section 5).
+ *
+ * The field name is reported so a form can mark the offending input, and the
+ * value is echoed because it is operator-facing configuration, never guest
+ * data.
+ */
+export class DuplicateIdentifierError extends DomainError {
+  readonly code = ErrorCode.CONFLICT;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(entity: string, field: string, value: string) {
+    super(`That ${entity} ${field} is already in use at this property.`, {
+      entity,
+      field,
+      value,
+    });
+  }
+}
+
+/**
  * System role templates are shared by all ten hotels. One property editing a
  * template would silently change access at the other nine, so they are
  * read-only and a property customises by creating its own role instead.
