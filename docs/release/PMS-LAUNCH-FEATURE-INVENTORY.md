@@ -78,8 +78,8 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 43      | 21.0% |
-| `PI` PARTIALLY IMPLEMENTED | 93      | 45.4% |
+| `CV` COMPLETE AND VERIFIED | 44      | 21.5% |
+| `PI` PARTIALLY IMPLEMENTED | 92      | 44.9% |
 | `NI` NOT IMPLEMENTED       | 62      | 30.2% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
@@ -140,7 +140,7 @@ What exists is a **reservations-and-folio core with group reporting**, not yet a
 | Risk                             | Finding                                                                                                                                                                      | ID       |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
 | Payment double-post (closed)     | Required client idempotency key under `folio_line_propertyId_idempotencyKey_key`; 60/60 incl. concurrent same-key POSTs, and the duplicate returns when the index is dropped | FO-03/04 |
-| Unbounded lock wait when booking | `create-reservation.service.ts` is the only writer with no `lock_timeout`                                                                                                    | RS-17    |
+| Unbounded lock wait when booking (closed) | Fixed 2026-11-15: `create-reservation.service.ts` sets `lock_timeout`; a parked booking answers 409 `CONFLICT` in ~3 s                                                                                                    | RS-17    |
 | Deadlock retries unproven        | `40001`/`40P01` classified but never induced at runtime                                                                                                                      | RS-18    |
 | Synthetic company data           | `gst.service.ts:60` defaults `GST_PROVIDER=mock`; `:68` warns lookups return synthetic names                                                                                 | GP-04    |
 | Dead payment schema              | `PaymentGatewayConfig` model has **zero** references in `apps/api/src`                                                                                                       | FO-15    |
@@ -276,7 +276,7 @@ lifecycle amendments are missing.
 | RS-14 | Group / multi-room bookings             | `PI` | schema permits many `ReservationRoom`; cancel releases per category                                                                                                                         | ~/✔/✔/✔/– | release logic for N rooms asserted in cancellation suite                                                                                                                                                                                                                                                                                                | Create a group booking through the product; release is per-category           | RM-02 | 2   | A      | 2026-10-29 | TR         |
 | RS-15 | Reservation state machine               | `CV` | `reservation.state.ts:56` `CONSUMES_INVENTORY`, `:86` `cancelRefusal`                                                                                                                       | –/✔/✔/–/– | asserted via cancellation suite steps 6, 7, 7b, 7d                                                                                                                                                                                                                                                                                                      | Legal transitions live in one place and are enforced in the domain layer      | —     | 1   | M      | 2026-10-29 | TR         |
 | RS-16 | Bounded reservation-row lock wait       | `CV` | `set_config('lock_timeout', …)` at `cancel-reservation.service.ts:203`, `room-move.service.ts:269`, `check-in.service.ts:295`; shared `ROW_LOCK_TIMEOUT_MS` in `common/errors/sql-state.ts` | –/✔/✔/–/– | step 14 measured move 3035 ms, check-in 3038 ms → typed 409 `CONFLICT` (2026-10-29)                                                                                                                                                                                                                                                                     | A contended write returns a typed 409 inside the budget, never hangs          | —     | 1   | M      | 2026-10-29 | TR         |
-| RS-17 | Unbounded lock wait on create           | `PI` | `create-reservation.service.ts` contains **no** `set_config('lock_timeout')` — the only writer without one                                                                                  | –/⚠/⚠/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Contended booking returns a typed 409 within `ROW_LOCK_TIMEOUT_MS`, measured  | RS-16 | 2   | M      | 2026-10-29 | SI         |
+| RS-17 | Unbounded lock wait on create           | `CV` | Fixed 2026-11-15: `create-reservation.service.ts` sets `set_config('lock_timeout', ROW_LOCK_TIMEOUT_MS, true)` first; `55P03` → `TransactionConflictError` (409), unretried. `create-race` section D: 409 `CONFLICT` after 3,013 ms, nothing sold; mutation-checked                                                                                  | –/⚠/⚠/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Contended booking returns a typed 409 within `ROW_LOCK_TIMEOUT_MS`, measured  | RS-16 | 2   | M      | 2026-10-29 | SI         |
 | RS-18 | Deadlock / serialization retry          | `BU` | `40001` and `40P01` in `RETRYABLE_SQLSTATES` (`common/errors/sql-state.ts`); `cancel-reservation.retry.ts` budget of 3                                                                      | –/?/?/–/– | classifier unit-tested (`test:cancellation:retry`, 30 checks, exit 0). **No deadlock has ever been induced.**                                                                                                                                                                                                                                           | A forced `40P01` is retried within budget then answered as a typed 409        | —     | 2   | M      | 2026-10-29 | TR partial |
 
 ### 2.7 Front desk — check-in, check-out, room moves
@@ -795,6 +795,21 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-15 (twentieth pass) - RS-17: bounded lock wait when creating a booking
+
+**Status transitions.** RS-17 `PI`→`CV`; P1-10 done. Counts: `CV` 43→44, `PI` 93→92.
+
+**Implemented.** `create-reservation.service.ts` sets the transaction-local `lock_timeout` from the
+shared `ROW_LOCK_TIMEOUT_MS` (3 s) before its first blocking statement, like cancel, move and check-in.
+`withRetry` maps `55P03` to `TransactionConflictError` (409 `CONFLICT`) after the `DomainError` rethrow
+and never retries it. No schema change.
+
+**Tests.** `create-race` section D holds the `inventory_day` rows for longer than the timeout and fires a
+real booking: 409 `CONFLICT` after 3,013 ms, no SQLSTATE in the body, no reservation created, no night
+sold, and the same booking succeeds once the lock is released; counters asserted per date against live
+`reservation_room` rows. **Mutation-checked:** with the `set_config` removed from the build the booking
+waited the holder's full 60 s and the suite failed. `pnpm gate:integration` → 17/17 suites; `pnpm test` passes.
 
 ### 2026-11-15 (nineteenth pass) - corrected room rates reach the booking and the reports
 

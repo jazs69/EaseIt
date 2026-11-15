@@ -1399,6 +1399,74 @@ async function main() {
     console.log('');
   }
 
+  /* ====================================================================== D */
+  console.log('D. RS-17: a booking parked behind a held inventory lock gives up in bounded time.');
+  {
+    const { arrival, departure, dates } = nextWindow();
+    own(fixture.categoryA, dates);
+    await ensureInventory(fixture.categoryA, dates, 2);
+
+    const soldBefore = await soldByDate(fixture.categoryA, dates);
+    const countBefore = await prisma.reservation.count({ where: { propertyId: fixture.propertyId } });
+
+    // Hold the rows for far longer than ROW_LOCK_TIMEOUT_MS (3 s). Released
+    // only after the booking has answered, so the booking cannot get the lock
+    // by the holder finishing: its only way out is its own lock_timeout.
+    let release;
+    const released = new Promise((resolve) => {
+      release = resolve;
+    });
+    let holding;
+    const held = new Promise((resolve) => {
+      holding = resolve;
+    });
+    const stayDateValues = dates.map((d) => new Date(`${d}T00:00:00.000Z`));
+    const hold = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT "stayDate" FROM inventory_day
+          WHERE "propertyId" = ${fixture.propertyId}::uuid
+            AND "roomTypeId" = ${fixture.categoryA}::uuid
+            AND "stayDate" = ANY(${stayDateValues}::date[])
+          ORDER BY "stayDate" ASC, "roomTypeId" ASC
+          FOR UPDATE`;
+        holding();
+        await released;
+      },
+      { timeout: 60_000, maxWait: 15_000 },
+    );
+    await held;
+
+    const started = Date.now();
+    const blocked = await opCreate(fixture.categoryA, arrival, departure, 'Parked')();
+    const elapsed = Date.now() - started;
+    if (blocked.status === 201) createdReservations.add(blocked.payload.id);
+    release();
+    await hold;
+
+    console.log(`    booking answered ${String(blocked.status)} ${blocked.payload?.code ?? ''} after ${String(elapsed)} ms`);
+    check('D: the parked booking is a typed 409 CONFLICT, not 500 or a hang', blocked.status === 409 && blocked.payload?.code === 'CONFLICT', `HTTP ${String(blocked.status)} ${blocked.payload?.code ?? ''}`);
+    check('D: it gave up after the 3 s lock timeout, not the holder (~3–8 s)', elapsed >= 2_500 && elapsed < 8_000, `${String(elapsed)} ms`);
+    check('D: no SQLSTATE or SQL reaches the body', !/55P03|lock_timeout|FOR UPDATE|inventory_day/i.test(JSON.stringify(blocked.payload ?? {})));
+
+    const countAfter = await prisma.reservation.count({ where: { propertyId: fixture.propertyId } });
+    check('D: nothing was created', countAfter === countBefore, `${String(countBefore)} -> ${String(countAfter)}`);
+    const soldAfter = await soldByDate(fixture.categoryA, dates);
+    check(
+      'D: no night was sold',
+      dates.every((d) => soldAfter.get(d)?.sold === soldBefore.get(d)?.sold),
+      dates.map((d) => `${d} ${String(soldBefore.get(d)?.sold)}->${String(soldAfter.get(d)?.sold)}`).join(', '),
+    );
+
+    // The timeout is transaction-local: once the holder is gone the same
+    // booking goes straight through on a fresh transaction.
+    const retry = await opCreate(fixture.categoryA, arrival, departure, 'After')();
+    if (retry.status === 201) createdReservations.add(retry.payload.id);
+    check('D: once the lock is released the same booking succeeds', retry.status === 201, `HTTP ${String(retry.status)}`);
+    await assertCounters('D after', [fixture.categoryA], dates);
+    console.log('');
+  }
+
   /* ================================================================== final */
   console.log('Final sweep across every night this suite gave inventory to.');
   for (const [roomTypeId, dates] of ownedPairs) {

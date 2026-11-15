@@ -271,7 +271,8 @@ room. As implemented:
 gets control. A contended cancellation was measured waiting **39,969 ms** against a 10,000 ms
 transaction timeout. So each of the three paths sets
 `set_config('lock_timeout', ROW_LOCK_TIMEOUT_MS, true)` **before its first blocking statement**
-(`cancel-reservation.service.ts:203`, `room-move.service.ts:269`, `check-in.service.ts:295`). The
+(`cancel-reservation.service.ts:203`, `room-move.service.ts:269`, `check-in.service.ts:295`), and
+since RS-17 `create-reservation.service.ts` does too, mapping `55P03` the same way. The
 `true` is `is_local` — `SET LOCAL` semantics, reverted at COMMIT/ROLLBACK. **Never change the global
 `lock_timeout`**; a transaction bounds only itself. The value is one shared constant,
 `ROW_LOCK_TIMEOUT_MS` in `common/errors/sql-state.ts` (3 s), because the three paths take the same row

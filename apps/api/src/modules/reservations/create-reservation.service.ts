@@ -60,9 +60,15 @@ import {
   RateNotBookableError,
   RoomUnavailableError,
   TenantScopeViolationError,
+  TransactionConflictError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
-import { isRetryableSqlState, sqlState } from '../../common/errors/sql-state.js';
+import {
+  isLockTimeout,
+  isRetryableSqlState,
+  ROW_LOCK_TIMEOUT_MS,
+  sqlState,
+} from '../../common/errors/sql-state.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
@@ -373,6 +379,22 @@ export class CreateReservationService {
 
     return this.prisma.client.$transaction(
       async (tx) => {
+        /**
+         * RS-17: bound the lock wait, before the first statement that can block.
+         *
+         * Prisma's transaction `timeout` cannot interrupt a `FOR UPDATE`
+         * already parked inside Postgres, so without this a booking queued
+         * behind a long-held `inventory_day` lock waited as long as the holder
+         * did. `true` is is_local (`SET LOCAL`): reverted at COMMIT/ROLLBACK,
+         * the global setting untouched. The same shared constant as cancel,
+         * move and check-in, so every writer of these rows answers alike.
+         * Exceeding it raises `55P03`, mapped by `withRetry` to a typed 409
+         * and never retried.
+         */
+        await tx.$executeRaw`SELECT set_config('lock_timeout', ${String(
+          ROW_LOCK_TIMEOUT_MS,
+        )}, true)`;
+
         // Stamps the property on the transaction-local session. NOT a security
         // boundary today: no migration enables row-level security, so nothing
         // reads it (section 3.2 describes RLS as a backstop; it is unimplemented).
@@ -838,6 +860,14 @@ export class CreateReservationService {
          * reporting the wrong status.
          */
         if (error instanceof DomainError) throw error;
+
+        /**
+         * The wait hit `ROW_LOCK_TIMEOUT_MS`. Not retried: the wait already
+         * happened, and Postgres rolled the whole booking back, so nothing
+         * was sold. Reported as a conflict, not "room unavailable" — the room
+         * may well be free once the other change finishes.
+         */
+        if (isLockTimeout(error)) throw new TransactionConflictError('booking');
 
         if (!isRetryableSqlState(error)) throw error;
 
