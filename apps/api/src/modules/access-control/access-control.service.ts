@@ -17,8 +17,10 @@
 import { Injectable } from '@nestjs/common';
 import {
   hasAllPermissions,
+  isPermissionAvailable,
   Permission,
   PERMISSION_BY_KEY,
+  UNAVAILABLE_PERMISSIONS,
   type ActivePropertyContext,
   type CreateRoleRequest,
   type RoleDetailDto,
@@ -32,6 +34,7 @@ import {
   ForbiddenError,
   RoleImmutableError,
   RoleNameTakenError,
+  ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import {
   AccessControlRepository,
@@ -87,6 +90,21 @@ export class AccessControlService {
    * A portfolio operator is exempt because they already hold everything.
    */
   private assertCanGrant(context: ActivePropertyContext, permissions: readonly Permission[]): void {
+    // AU-13, before the portfolio exemption: nobody may grant a permission
+    // whose feature does not exist -- it would promise an ability the product
+    // cannot deliver. A request-shape problem, so 400 naming each one.
+    const unavailable = permissions.filter((permission) => !isPermissionAvailable(permission));
+    if (unavailable.length > 0) {
+      throw new ValidationFailedError({
+        permissions: unavailable
+          .map(
+            (permission) =>
+              `${PERMISSION_BY_KEY[permission]?.label ?? permission}: ${UNAVAILABLE_PERMISSIONS[permission] ?? 'not available'}`,
+          )
+          .join(' '),
+      });
+    }
+
     if (context.isPortfolioOperator) return;
 
     if (!hasAllPermissions(context.permissions, permissions)) {

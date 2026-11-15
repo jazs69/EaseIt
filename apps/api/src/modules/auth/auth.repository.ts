@@ -19,6 +19,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, PrismaErrorCode } from '@repo/database';
 import {
+  isPermissionAvailable,
   isRole,
   OPERABLE_PROPERTY_STATUSES,
   permissionsForRoles,
@@ -385,7 +386,9 @@ export class AuthRepository {
         }
       }
 
-      return { ...grant, permissions: [...permissions] };
+      // AU-13: a stored grant row may name a permission whose feature is
+      // unbuilt; the session never reports it.
+      return { ...grant, permissions: [...permissions].filter(isPermissionAvailable) };
     });
   }
 

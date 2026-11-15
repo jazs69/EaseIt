@@ -11,7 +11,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@repo/database';
-import type { Permission, Role as RoleKeyType } from '@repo/types';
+import { isPermissionAvailable, type Permission, type Role as RoleKeyType } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 
@@ -82,7 +82,10 @@ export class AccessControlRepository {
       key: row.key as RoleKeyType | null,
       isCustom: row.isCustom,
       propertyId: row.propertyId,
-      permissions: row.permissions.map((link) => link.permission.key as Permission),
+      // AU-13: unbuilt features' permissions are never shown as granted.
+      permissions: row.permissions
+        .map((link) => link.permission.key as Permission)
+        .filter(isPermissionAvailable),
       assignedCount: row._count.assignments,
     }));
   }
@@ -106,7 +109,10 @@ export class AccessControlRepository {
       key: row.key as RoleKeyType | null,
       isCustom: row.isCustom,
       propertyId: row.propertyId,
-      permissions: row.permissions.map((link) => link.permission.key as Permission),
+      // AU-13: unbuilt features' permissions are never shown as granted.
+      permissions: row.permissions
+        .map((link) => link.permission.key as Permission)
+        .filter(isPermissionAvailable),
       assignedCount: row._count.assignments,
     };
   }
@@ -269,7 +275,9 @@ export class AccessControlRepository {
       const permissions = new Set<Permission>();
       for (const grant of row.propertyRoles) {
         for (const link of grant.role.permissions) {
-          permissions.add(link.permission.key as Permission);
+          const permission = link.permission.key as Permission;
+          // AU-13: never list an unbuilt feature's permission as held.
+          if (isPermissionAvailable(permission)) permissions.add(permission);
         }
       }
       return {

@@ -1,7 +1,12 @@
 'use client';
 
 import { cn } from '@repo/ui';
-import { permissionsByCategory, type Permission, type PermissionDefinition } from '@repo/types';
+import {
+  permissionsByCategory,
+  UNAVAILABLE_PERMISSIONS,
+  type Permission,
+  type PermissionDefinition,
+} from '@repo/types';
 import { ShieldAlert } from 'lucide-react';
 
 /**
@@ -30,7 +35,9 @@ interface RowProps {
 
 function PermissionRow({ definition, checked, blocked, disabled, onToggle }: RowProps) {
   const inputId = `perm-${definition.key.replace(/[:_]/g, '-')}`;
-  const locked = disabled || blocked;
+  // AU-13: the feature behind it does not exist yet, so it cannot be granted.
+  const unavailableReason = UNAVAILABLE_PERMISSIONS[definition.key];
+  const locked = disabled || blocked || unavailableReason !== undefined;
 
   return (
     <label
@@ -79,6 +86,9 @@ function PermissionRow({ definition, checked, blocked, disabled, onToggle }: Row
         </span>
         <span className="text-xs leading-relaxed text-zinc-500">{definition.description}</span>
         <code className="mt-0.5 text-[10px] text-zinc-700">{definition.key}</code>
+        {unavailableReason !== undefined ? (
+          <span className="text-[10px] text-zinc-400">Not available yet — {unavailableReason}</span>
+        ) : null}
         {blocked ? (
           <span className="text-[10px] text-amber-400/80">
             You cannot grant this — you do not hold it yourself.
@@ -100,7 +110,11 @@ export function PermissionMatrix({
   return (
     <div className="flex flex-col gap-6">
       {groups.map((group) => {
-        const groupKeys = group.permissions.map((definition) => definition.key);
+        // Only grantable keys count toward "all", or a group with an unbuilt
+        // feature's permission could never read as fully selected (AU-13).
+        const groupKeys = group.permissions
+          .map((definition) => definition.key)
+          .filter((key) => UNAVAILABLE_PERMISSIONS[key] === undefined);
         const allOn = groupKeys.every((key) => selected.has(key));
         const someOn = groupKeys.some((key) => selected.has(key));
 
@@ -120,6 +134,7 @@ export function PermissionMatrix({
                   onClick={() => {
                     for (const key of groupKeys) {
                       if (ungrantable?.has(key) === true) continue;
+                      if (UNAVAILABLE_PERMISSIONS[key] !== undefined) continue;
                       onToggle(key, !allOn);
                     }
                   }}

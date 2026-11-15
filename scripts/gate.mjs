@@ -119,6 +119,7 @@ const checks = [
     'inventory-horizon',
     'property-identifier',
     'require-permission',
+    'unavailable-permissions',
   ].map((suite) => ({
     name: `unit tests (${suite})`,
     command: process.execPath,

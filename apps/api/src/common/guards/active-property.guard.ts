@@ -21,6 +21,7 @@
 
 import { Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import {
+  isPermissionAvailable,
   isRole,
   OPERABLE_PROPERTY_STATUSES,
   permissionsForRoles,
@@ -178,7 +179,9 @@ export class ActivePropertyGuard implements CanActivate {
       // system template's are stored too, so this covers both without
       // special-casing.
       for (const link of row.role.permissions) {
-        permissions.add(link.permission.key as Permission);
+        const permission = link.permission.key as Permission;
+        // AU-13: a stored row may name a permission whose feature is unbuilt.
+        if (isPermissionAvailable(permission)) permissions.add(permission);
       }
     }
 

@@ -530,11 +530,38 @@ export function primaryRole(roles: readonly Role[]): Role | null {
   return null;
 }
 
+/**
+ * Permissions whose feature does not exist yet (AU-13), with the reason shown
+ * to an administrator.
+ *
+ * Granting one would promise an ability the product cannot deliver, so they
+ * are NOT grantable: `permissionsForRoles` never yields them, the custom-role
+ * API refuses them, the session never reports them, and the role editor shows
+ * them locked with this reason. The role templates above still list them, so
+ * the intended grant comes back the moment an entry is deleted here -- which
+ * is the ONLY change needed when the feature ships, and its own tests must
+ * then cover the permission check.
+ */
+export const UNAVAILABLE_PERMISSIONS: Readonly<Partial<Record<Permission, string>>> = {
+  [Permission.NIGHT_AUDIT_READ]: 'Night audit is not built yet.',
+  [Permission.NIGHT_AUDIT_EXECUTE]: 'Night audit is not built yet.',
+  [Permission.HOUSEKEEPING_READ]: 'The housekeeping module is not built yet.',
+  [Permission.FOLIO_REFUND]: 'Refunds are not built yet.',
+  [Permission.CHANNELS_READ]: 'The channel manager is not built yet.',
+  [Permission.CHANNELS_SYNC]: 'The channel manager is not built yet.',
+};
+
+/** True when the feature behind a permission exists and it may be granted. */
+export function isPermissionAvailable(permission: Permission): boolean {
+  return UNAVAILABLE_PERMISSIONS[permission] === undefined;
+}
+
 export function permissionsForRoles(roles: readonly Role[]): Permission[] {
   const granted = new Set<Permission>();
   for (const role of roles) {
     for (const permission of DEFAULT_ROLE_PERMISSIONS[role]) {
-      granted.add(permission);
+      // AU-13: a template may name a permission whose feature is unbuilt.
+      if (isPermissionAvailable(permission)) granted.add(permission);
     }
   }
   return [...granted];
