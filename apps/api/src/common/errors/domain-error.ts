@@ -263,6 +263,22 @@ export class DuplicateIdentifierError extends DomainError {
 }
 
 /**
+ * The requested rate plan exists but cannot price this stay: it is inactive or
+ * archived, or it is in a different currency from the room type. 409 because
+ * the request is well formed; the plan is simply not in a sellable state.
+ * A plan that does not exist, or is not assigned to the room type, is
+ * not-found instead (section 3.2).
+ */
+export class RateNotBookableError extends DomainError {
+  readonly code = ErrorCode.RATE_NOT_BOOKABLE;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(reason: string, details: Record<string, unknown> = {}) {
+    super(`That rate plan cannot be booked: ${reason}`, details);
+  }
+}
+
+/**
  * A room or room type cannot be retired because something live still depends
  * on it: a current or future stay, an active block, or (for a room type) a
  * room that has not been retired yet.

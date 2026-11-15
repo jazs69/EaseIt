@@ -362,6 +362,7 @@ model Property {
   promoCodes     PromoCode[]
   redemptions    PromotionRedemption[]
   reservations   Reservation[]
+  pricedNights   ReservationNight[]
   gatewayConfigs PaymentGatewayConfig[]
   companies      Company[]
   folios         Folio[]
@@ -965,6 +966,7 @@ model RatePlan {
   roomTypes    RatePlanRoomType[]
   pricingRules RatePricingRule[]
   promotions   PromotionRatePlan[]
+  reservations Reservation[]
 
   @@unique([propertyId, code], name: "rate_plan_unique_code_per_property")
   @@unique([propertyId, name], name: "rate_plan_unique_name_per_property")
@@ -1804,10 +1806,16 @@ model Reservation {
   companyId String?  @db.Uuid
   company   Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
 
+  /// The rate plan the stay was priced from. Null for stays priced from the room type rack rate.
+  ratePlanId String?   @db.Uuid
+  ratePlan   RatePlan? @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
+
   rooms           ReservationRoom[]
   guests          ReservationGuest[]
   folio           Folio?
   internalNotes   ReservationNote[]
+  /// What each night was sold for. Written once at booking; never repriced.
+  pricedNights    ReservationNight[]
 
   @@unique([propertyId, confirmationCode], name: "reservation_unique_code_per_property")
   /// Idempotency for inbound OTA ingestion (CLAUDE.md section 5). Postgres
@@ -1839,7 +1847,46 @@ model Reservation {
   @@index([propertyId, govtIdNumber])
   @@index([propertyId, guestLastName])
   @@index([propertyId, guestFirstName])
+  @@index([propertyId, ratePlanId])
   @@map("reservation")
+}
+
+/// One night of a reservation, as priced at booking (rates increment F9).
+///
+/// The source of truth for what a night costs once sold: check-in posts the
+/// arrival night from here, and night audit step 3 will post the rest. Written
+/// in the booking transaction and never repriced, so a rate change after the
+/// booking cannot alter what the guest agreed to (CLAUDE.md section 3.4).
+/// Stays booked before this table existed have no rows; their nights are still
+/// derived from the reservation totals.
+model ReservationNight {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  stayDate DateTime @db.Date
+
+  /// The room tariff for the night before tax, in minor units.
+  rateMinor      Int
+  /// Tax on that tariff, rounded once, in minor units.
+  taxMinor       Int
+  /// The GST band the night fell in. A rate, not money, so Decimal is permitted.
+  taxRatePercent Decimal @db.Decimal(5, 2)
+  currency       String  @db.Char(3)
+
+  /// Which tier priced it: DATE_OVERRIDE, SEASONAL, WEEKDAY, WEEKEND, DEFAULT,
+  /// RACK (room type base rate) or MANUAL (operator override / target total).
+  rateSource String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, reservationId, stayDate], name: "reservation_night_one_per_date")
+  @@index([propertyId, stayDate])
+  @@map("reservation_night")
 }
 
 /// One room of one reservation, for one date range.

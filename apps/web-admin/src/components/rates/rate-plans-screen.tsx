@@ -6,12 +6,10 @@
  * ===========================================================================
  * WHAT THIS SCREEN SAYS OUT LOUD, AND WHY.
  *
- * Nothing prices from a rate plan yet. The booking path reads
- * `room_type.baseRateMinor` and will keep doing so until F9 integrates plans
- * into quoting. A screen that let an operator set "Corporate = 2,800" and then
- * quietly quoted the rack rate at the desk would be worse than no screen: the
- * operator would believe a price was live. So the banner states it, and it
- * stays until the integration lands.
+ * A booking prices from a plan only when the clerk picks it in the booking
+ * form (F9); otherwise it uses the rack rate. Occupancy pricing and promotions
+ * do not price bookings yet. The banner says exactly that, because an operator
+ * who believed a price was live when it was not would quote the wrong figure.
  *
  * There is also no per-date pricing, no restriction control and no channel
  * push here, and the banner names those too rather than leaving an operator to
@@ -266,7 +264,7 @@ export function RatePlansScreen({ hotelId, initialPlans, roomTypes, currency, ca
                 absorb(
                   saved,
                   mode === 'create'
-                    ? `“${saved.name}” created. Nothing prices from it yet.`
+                    ? `“${saved.name}” created. Choose it in the booking form to price from it.`
                     : `“${saved.name}” saved.`,
                 );
               }}
@@ -582,13 +580,14 @@ function ScopeNotice() {
       <Info className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
       <div className="flex flex-col gap-1 text-xs">
         <p className="font-medium text-foreground">
-          Rate plans are configuration only — nothing prices from them yet.
+          Bookings price from a plan when one is chosen in the booking form.
         </p>
         <p className="text-muted-foreground">
-          Bookings still quote each room type&apos;s rack rate, set on the Rooms screen. Date-wise
-          prices below are real and stored, but nothing reads them yet. Seasonal and weekday rules,
-          occupancy pricing, stay restrictions and channel distribution are later scopes, so a rate
-          saved here changes no quote and reaches no OTA.
+          Each night is priced from this plan&apos;s calendar — date price, then season, weekday and
+          weekend rules, then the default — and taxed in its own GST band. Bookings made without a
+          plan still use the room type&apos;s rack rate. A price is fixed when the booking is made;
+          changing it here does not reprice existing bookings. Occupancy pricing and promotions do
+          not affect bookings yet, there are no stay restrictions, and nothing here reaches an OTA.
         </p>
       </div>
     </div>

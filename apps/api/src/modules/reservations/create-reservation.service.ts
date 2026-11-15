@@ -65,8 +65,9 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
 import { PropertyTaxService } from '../properties/property-tax.service.js';
+import { RateCalendarService } from '../rates/rate-calendar.service.js';
 import { postCheckIn } from './check-in-posting.js';
-import { quoteStay, nightsBetween, stayDates } from './reservation-pricing.js';
+import { quoteStay, nightsBetween, stayDates, type QuoteInput } from './reservation-pricing.js';
 
 /** Postgres SQLSTATEs that mean "try again", not "give up". */
 const MAX_ATTEMPTS = 3;
@@ -84,7 +85,40 @@ export class CreateReservationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tax: PropertyTaxService,
+    private readonly rates: RateCalendarService,
   ) {}
+
+  /**
+   * The plan's nightly rates for this stay, or undefined for the rack rate.
+   *
+   * Resolved before any transaction, like the rest of pricing: it reads only
+   * rate tables, which no reservation lock protects. Validated even when an
+   * override will win, so a request naming a plan it cannot use is refused
+   * rather than silently priced some other way.
+   */
+  private async planFor(
+    propertyId: string,
+    roomType: { id: string; currency: string },
+    request: { ratePlanId?: string | undefined; arrivalDate: string; departureDate: string },
+  ): Promise<QuoteInput['plan']> {
+    if (request.ratePlanId === undefined) return undefined;
+    const resolved = await this.rates.resolveStay(
+      propertyId,
+      request.ratePlanId,
+      roomType.id,
+      roomType.currency,
+      stayDates(request.arrivalDate, request.departureDate),
+    );
+    return {
+      ratePlanId: resolved.ratePlanId,
+      ratePlanCode: resolved.ratePlanCode,
+      nights: resolved.nights.map((night) => ({
+        stayDate: night.stayDate,
+        rateMinor: night.rateMinor,
+        source: night.source,
+      })),
+    };
+  }
 
   /**
    * The property's GST bands.
@@ -133,6 +167,7 @@ export class CreateReservationService {
       arrivalDate: request.arrivalDate,
       departureDate: request.departureDate,
       baseNightlyRateMinor: roomType.baseRateMinor,
+      plan: await this.planFor(property.id, roomType, request),
       overrideNightlyRateMinor: request.overrideNightlyRateMinor,
       targetTotalMinor: request.targetTotalMinor,
       isTaxExempt: request.isTaxExempt,
@@ -190,6 +225,7 @@ export class CreateReservationService {
       arrivalDate: command.arrivalDate,
       departureDate: command.departureDate,
       baseNightlyRateMinor: roomType.baseRateMinor,
+      plan: await this.planFor(property.id, roomType, command),
       overrideNightlyRateMinor: command.overrideNightlyRateMinor,
       targetTotalMinor: command.targetTotalMinor,
       isTaxExempt: command.isTaxExempt,
@@ -354,6 +390,8 @@ export class CreateReservationService {
             paymentMethod: command.payment?.method ?? null,
             paymentRemark: command.payment?.remark ?? null,
             mealPlan: command.mealPlan,
+            // The plan that priced it, if one did; null for rack or manual.
+            ratePlanId: quote.ratePlanId,
             totalAmountMinor: quote.totalMinor,
             taxAmountMinor: quote.taxMinor,
             // Recorded, so an exempt stay is never taxed later by a derivation
@@ -368,6 +406,26 @@ export class CreateReservationService {
             notes: command.notes,
           },
           select: { id: true },
+        });
+
+        /**
+         * What each night was sold for, written once, in the booking's own
+         * transaction (F9). Check-in posts the arrival night from these rows
+         * and night audit will post the rest, so the folio charges exactly
+         * what was quoted even if the plan is repriced later (section 3.4).
+         */
+        await tx.reservationNight.createMany({
+          data: quote.nightly.map((night) => ({
+            propertyId: property.id,
+            reservationId: reservation.id,
+            stayDate: toUtcMidnight(night.stayDate),
+            rateMinor: night.nightlyRateMinor,
+            taxMinor: night.taxMinor,
+            // A tax RATE, not money: Decimal is permitted (section 3.4).
+            taxRatePercent: new Prisma.Decimal(night.taxRatePercent),
+            currency: roomType.currency,
+            rateSource: night.rateSource,
+          })),
         });
 
         /**
@@ -473,8 +531,11 @@ export class CreateReservationService {
         const businessDate = property.businessDate.toISOString().slice(0, 10);
 
         if (command.isInstantCheckIn) {
-          const taxOfNight = Math.round(quote.taxMinor / quote.nights);
-          const totalOfNight = Math.round(quote.totalMinor / quote.nights);
+          // The arrival night as priced, not an average: nights can differ (F9).
+          const arrivalNight = quote.nightly[0];
+          if (arrivalNight === undefined) {
+            throw new ValidationFailedError({ departureDate: 'A stay must cover at least one night.' });
+          }
 
           await tx.reservation.update({
             where: { id: reservation.id },
@@ -490,8 +551,8 @@ export class CreateReservationService {
             // The arrival night, which is what the charge is for.
             roomChargeDate: command.arrivalDate,
             currency: roomType.currency,
-            roomChargeMinor: totalOfNight - taxOfNight,
-            taxMinor: taxOfNight,
+            roomChargeMinor: arrivalNight.nightlyRateMinor,
+            taxMinor: arrivalNight.taxMinor,
             payment:
               command.payment === null
                 ? null

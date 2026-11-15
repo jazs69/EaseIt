@@ -175,28 +175,61 @@ export const reservationQuoteRequestSchema = z.object({
    * answer depend on which one the server happened to read first.
    */
   targetTotalMinor: z.number().int().nonnegative().optional(),
+  /**
+   * Price each night from this rate plan (F9): date override, then season,
+   * weekday and weekend rules, then the plan's default for the room type. The
+   * plan must be active, not archived, and assigned to the room type. Omitted
+   * means the room type's rack rate, as before. An override or a target total
+   * still wins over the plan, for every night.
+   */
+  ratePlanId: z.uuid().optional(),
   isTaxExempt: z.boolean().default(false),
 });
 
 export type ReservationQuoteRequest = z.infer<typeof reservationQuoteRequestSchema>;
 
+/** Which tier priced a night. RACK = room type base rate; MANUAL = override or target total. */
+export const nightRateSourceSchema = z.enum([
+  'DATE_OVERRIDE',
+  'SEASONAL',
+  'WEEKDAY',
+  'WEEKEND',
+  'DEFAULT',
+  'RACK',
+  'MANUAL',
+]);
+
+export type NightRateSource = z.infer<typeof nightRateSourceSchema>;
+
 export const nightlyLineSchema = z.object({
   stayDate: businessDateSchema,
   nightlyRateMinor: z.number().int().nonnegative(),
   taxMinor: z.number().int().nonnegative(),
+  /** The GST band THIS night fell in. Nights of one stay can differ. */
+  taxRatePercent: z.number(),
+  rateSource: nightRateSourceSchema,
 });
 
 export type NightlyLine = z.infer<typeof nightlyLineSchema>;
 
 export const reservationQuoteSchema = z.object({
   nights: z.number().int().positive(),
+  /**
+   * The ARRIVAL night's rate. Equal to every night unless `isRateVarying`;
+   * when it is, read `nightly` — this field alone would misstate the stay.
+   */
   nightlyRateMinor: z.number().int().nonnegative(),
+  /** True when the nights of this stay are not all priced the same. */
+  isRateVarying: z.boolean(),
+  /** The plan the stay was priced from; null for the rack rate or a manual price. */
+  ratePlanId: z.uuid().nullable(),
+  ratePlanCode: z.string().nullable(),
   /** Room charge before tax. */
   exTaxMinor: z.number().int().nonnegative(),
   taxMinor: z.number().int().nonnegative(),
   totalMinor: z.number().int().nonnegative(),
   currency: z.string().length(3),
-  /** The GST slab applied, for the UI to explain the figure. */
+  /** The arrival night's GST slab. Per-night slabs are on `nightly`. */
   taxRatePercent: z.number(),
   /**
    * The slab's CGST/SGST split, or null for an exempt stay.
@@ -278,6 +311,8 @@ export const createReservationSchema = z.object({
   overrideNightlyRateMinor: z.number().int().nonnegative().optional(),
   /** Reverse direction, as on the quote. Mutually exclusive with the above. */
   targetTotalMinor: z.number().int().nonnegative().optional(),
+  /** As on the quote: price each night from this plan. */
+  ratePlanId: z.uuid().optional(),
 
   /** Straight to CHECKED_IN rather than CONFIRMED. */
   isInstantCheckIn: z.boolean().default(false),

@@ -41,6 +41,7 @@ import {
   type PaymentMethod,
   type CompanySummary,
   type ReservationGuestInput,
+  type RatePlanView,
   type ReservationQuote,
   type TimelineCalendar,
 } from '@repo/types';
@@ -60,6 +61,7 @@ import { formatMoney } from '@/lib/money';
 import { shiftIsoDate } from '@/lib/calendar-format';
 import {
   createReservation,
+  fetchRatePlans,
   listCompanies,
   quoteReservation,
 } from '@/lib/properties-client';
@@ -231,6 +233,9 @@ export function CreateReservationModal({
   const [guests, setGuests] = useState<ReservationGuestInput[]>(() => [emptyGuest()]);
   const [companies, setCompanies] = useState<readonly CompanySummary[]>([]);
   const [companyId, setCompanyId] = useState<string | null>(null);
+  /** Active rate plans, and the chosen one. Empty string = the rack rate. */
+  const [ratePlans, setRatePlans] = useState<readonly RatePlanView[]>([]);
+  const [ratePlanId, setRatePlanId] = useState('');
 
   const [isTaxExempt, setTaxExempt] = useState(false);
   const [overrideOn, setOverrideOn] = useState(false);
@@ -311,6 +316,31 @@ export function CreateReservationModal({
       controller.abort();
     };
   }, [hotelId]);
+
+  // The property's active rate plans, once per mount like the company list. A
+  // failure leaves the picker on the rack rate, which is still a valid price.
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const page = await fetchRatePlans(hotelId, { status: 'active' }, { signal: controller.signal });
+        if (!controller.signal.aborted) setRatePlans(page.items);
+      } catch {
+        // The rack rate remains available; nothing to surface.
+      }
+    })();
+    return () => {
+      controller.abort();
+    };
+  }, [hotelId]);
+
+  // Only plans that price this room type are offered. Derived, so switching
+  // room type silently falls back to the rack rate rather than sending a plan
+  // the server would refuse for the new category.
+  const plansForType = ratePlans.filter((plan) =>
+    plan.roomTypes.some((assignment) => assignment.roomTypeId === roomTypeId),
+  );
+  const effectivePlanId = plansForType.some((plan) => plan.id === ratePlanId) ? ratePlanId : '';
 
   /** Guests are kept at exactly the adult count, never silently dropped. */
   function patchGuest(index: number, patch: Partial<ReservationGuestInput>): void {
@@ -394,6 +424,7 @@ export function CreateReservationModal({
               isTaxExempt,
               ...(overrideMinor === undefined ? {} : { overrideNightlyRateMinor: overrideMinor }),
               ...(targetMinor === undefined ? {} : { targetTotalMinor: targetMinor }),
+              ...(effectivePlanId === '' ? {} : { ratePlanId: effectivePlanId }),
             },
             controller.signal,
           );
@@ -413,7 +444,33 @@ export function CreateReservationModal({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [hotelId, roomTypeId, arrivalDate, departureDate, isTaxExempt, overrideMinor, targetMinor, nights]);
+  }, [
+    hotelId,
+    roomTypeId,
+    arrivalDate,
+    departureDate,
+    isTaxExempt,
+    overrideMinor,
+    targetMinor,
+    nights,
+    effectivePlanId,
+  ]);
+
+  /**
+   * The GST label. One percentage only when every night shares it: a stay
+   * priced from a plan can straddle a band (5% weeknights, 18% Saturday), and
+   * printing a single rate beside the total would misstate the tax.
+   */
+  const uniformTaxPercent =
+    quote !== null && quote.nightly.every((line) => line.taxRatePercent === quote.taxRatePercent)
+      ? quote.taxRatePercent
+      : null;
+  const taxLabel =
+    quote === null
+      ? 'Tax'
+      : uniformTaxPercent === null
+        ? 'Tax (GST by night)'
+        : `Tax (${String(uniformTaxPercent)}% GST)`;
 
   const roomsForType = calendar.rooms.filter((room) => room.roomTypeId === roomTypeId);
   const nameMissing = (guests[0]?.firstName ?? '').trim().length === 0;
@@ -461,6 +518,7 @@ export function CreateReservationModal({
         isTaxExempt,
         ...(overrideMinor === undefined ? {} : { overrideNightlyRateMinor: overrideMinor }),
         ...(targetMinor === undefined ? {} : { targetTotalMinor: targetMinor }),
+        ...(effectivePlanId === '' ? {} : { ratePlanId: effectivePlanId }),
         isInstantCheckIn: instantCheckIn,
         payment: collectPayment
           ? {
@@ -715,8 +773,29 @@ export function CreateReservationModal({
                     </Field>
                   </div>
 
-                  <div className="mt-3 grid grid-cols-3 gap-3">
+                  <div className="mt-3">
                     <Field label="Rate plan">
+                      <select
+                        value={effectivePlanId}
+                        onChange={(event) => {
+                          setRatePlanId(event.target.value);
+                        }}
+                        className={inputClass}
+                      >
+                        <option value="" className="bg-zinc-900">
+                          Rack rate (room type default)
+                        </option>
+                        {plansForType.map((plan) => (
+                          <option key={plan.id} value={plan.id} className="bg-zinc-900">
+                            {plan.code} — {plan.name}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-3 gap-3">
+                    <Field label="Meal plan">
                       <select
                         value={mealPlan}
                         onChange={(event) => {
@@ -927,25 +1006,21 @@ export function CreateReservationModal({
 
                         <div className="flex min-w-0 flex-col gap-1.5">
                           <span
-                            title={
-                              quote === null
-                                ? 'Tax'
-                                : `Tax (${String(quote.taxRatePercent)}% GST)`
-                            }
+                            title={taxLabel}
                             className="truncate text-[10px] font-semibold tracking-wider text-zinc-400 uppercase"
                           >
-                            {quote === null
-                              ? 'Tax'
-                              : `Tax (${String(quote.taxRatePercent)}% GST)`}
+                            {taxLabel}
                           </span>
                           {/* Derived, so it is shown rather than entered. */}
                           <output className="tabular flex h-10 w-full items-center rounded-lg border border-white/[0.08] bg-zinc-900/40 px-3 text-sm text-zinc-300 select-none">
                             {quote === null
                               ? '\u2014'
-                              : formatMoney(
-                                  Math.round(quote.taxMinor / quote.nights),
-                                  quote.currency,
-                                )}
+                              : quote.isRateVarying
+                                ? 'Varies by night'
+                                : formatMoney(
+                                    Math.round(quote.taxMinor / quote.nights),
+                                    quote.currency,
+                                  )}
                           </output>
                         </div>
 
@@ -1048,14 +1123,14 @@ export function CreateReservationModal({
 
                   <dl className="mt-3 flex flex-col gap-1.5 border-t border-white/[0.06] pt-3">
                     {[
-                      ['Per night (pre tax)', quote?.nightlyRateMinor],
-                      ['Ex. tax', quote?.exTaxMinor],
                       [
-                        quote === null
-                          ? 'Tax'
-                          : `Tax (${String(quote.taxRatePercent)}% GST)`,
-                        quote?.taxMinor,
+                        quote?.isRateVarying === true
+                          ? 'First night (pre tax)'
+                          : 'Per night (pre tax)',
+                        quote?.nightlyRateMinor,
                       ],
+                      ['Ex. tax', quote?.exTaxMinor],
+                      [taxLabel, quote?.taxMinor],
                     ].map(([label, value]) => (
                       <div key={String(label)} className="flex items-baseline justify-between gap-2">
                         <dt className="text-[11px] text-zinc-500">{label}</dt>
@@ -1097,7 +1172,8 @@ export function CreateReservationModal({
                               <span>{line.stayDate}</span>
                               <span>
                                 {formatMoney(line.nightlyRateMinor, quote.currency)} +{' '}
-                                {formatMoney(line.taxMinor, quote.currency)}
+                                {formatMoney(line.taxMinor, quote.currency)} (
+                                {String(line.taxRatePercent)}%)
                               </span>
                             </li>
                           ))}

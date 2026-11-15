@@ -276,10 +276,28 @@ export class CheckInService {
      * left on the tariff line, so charge + tax is exactly one night's total —
      * rounding both independently is how a bill ends a paisa short (§3.4).
      */
+    /**
+     * F9: a stay booked with per-night prices has a `reservation_night` row for
+     * the arrival night, written in the booking transaction and never repriced.
+     * That row IS the arrival night's price -- nights of one stay can differ,
+     * so an average would overcharge one night and undercharge another.
+     *
+     * Stays booked before that table existed have no rows and keep the split
+     * below. Read outside the transaction: the row is immutable once written.
+     */
+    const pricedArrival = await this.prisma.client.reservationNight.findFirst({
+      where: {
+        propertyId: property.id,
+        reservationId: reservation.id,
+        stayDate: reservation.arrivalDate,
+      },
+      select: { rateMinor: true, taxMinor: true },
+    });
+
     const nights = nightsBetween(reservation.arrivalDate, reservation.departureDate);
     const nightTotalMinor = Math.round(reservation.totalAmountMinor / nights);
-    const taxMinor = Math.round(reservation.taxAmountMinor / nights);
-    const roomChargeMinor = nightTotalMinor - taxMinor;
+    const taxMinor = pricedArrival?.taxMinor ?? Math.round(reservation.taxAmountMinor / nights);
+    const roomChargeMinor = pricedArrival?.rateMinor ?? nightTotalMinor - taxMinor;
 
     return this.prisma.client.$transaction(async (tx) => {
       // Stamps the property on the transaction-local session, as every other

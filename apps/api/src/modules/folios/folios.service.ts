@@ -183,6 +183,11 @@ export class FoliosService {
         taxAmountMinor: true,
         paidAmountMinor: true,
         isTaxExempt: true,
+        // F9: per-night prices, when the stay was booked with them.
+        pricedNights: {
+          select: { stayDate: true, rateMinor: true, taxMinor: true },
+          orderBy: { stayDate: 'asc' },
+        },
         rooms: {
           select: {
             roomType: { select: { name: true } },
@@ -258,6 +263,7 @@ export class FoliosService {
         paidAmountMinor: reservation.paidAmountMinor,
         isTaxExempt: reservation.isTaxExempt,
         roomTypeName: assignment?.roomType.name ?? 'Room',
+        pricedNights: reservation.pricedNights,
       },
       lines,
       roomNumber,
@@ -1351,6 +1357,7 @@ export class FoliosService {
       paidAmountMinor: number;
       isTaxExempt: boolean;
       roomTypeName: string;
+      pricedNights: readonly { stayDate: Date; rateMinor: number; taxMinor: number }[];
     },
     lines: readonly LineRow[],
     roomNumber: string | null,
@@ -1431,14 +1438,25 @@ export class FoliosService {
     const totalRemainder = reservation.totalAmountMinor - nightlyTotal * nights;
     const taxRemainder = agreedTaxMinor - nightlyTax * nights;
 
+    const pricedByDate = new Map(
+      reservation.pricedNights.map((night) => [toBusinessDate(night.stayDate), night]),
+    );
+
     for (let offset = 0; offset < nights; offset += 1) {
       const date = toBusinessDate(
         new Date(reservation.arrivalDate.getTime() + offset * DAY_MS),
       );
       if (postedRoomDates.has(date)) continue;
 
-      const grossMinor = nightlyTotal + (offset === 0 ? totalRemainder : 0);
-      const taxMinor = nightlyTax + (offset === 0 ? taxRemainder : 0);
+      // F9: a stay priced per night shows each night at its own price. Older
+      // stays have no rows and keep the even split with the remainder above.
+      const priced = pricedByDate.get(date);
+      const grossMinor =
+        priced !== undefined
+          ? priced.rateMinor + priced.taxMinor
+          : nightlyTotal + (offset === 0 ? totalRemainder : 0);
+      const taxMinor =
+        priced !== undefined ? priced.taxMinor : nightlyTax + (offset === 0 ? taxRemainder : 0);
 
       rows.push({
         // Prefixed, so a scheduled row can never be mistaken for a line id and

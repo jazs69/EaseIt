@@ -1125,9 +1125,8 @@ export function fetchRooms(
  * client never chooses a currency for a rate, and a money input needs to know
  * what it is denominated in without a second request to property setup.
  *
- * Nothing prices from these yet. The booking path still reads the room type's
- * rack rate, so a plan is configuration an operator can author and nothing
- * quotes from — which the screen states rather than implying a live price.
+ * The booking form offers the active plans assigned to the chosen room type;
+ * a booking priced from one stores each night's price (F9).
  */
 export function fetchRatePlans(
   hotelId: string,

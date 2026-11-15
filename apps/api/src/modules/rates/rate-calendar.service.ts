@@ -44,6 +44,7 @@ import {
 
 import {
   InvalidStateTransitionError,
+  RateNotBookableError,
   TenantScopeViolationError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
@@ -57,6 +58,7 @@ import {
   type RangeRefusal,
 } from './rate-calendar.policy.js';
 import { RateCalendarRepository, type AssignmentRow } from './rate-calendar.repository.js';
+import { resolveRate, type RateSource } from './rate-pricing.policy.js';
 import { RatePricingRuleRepository } from './rate-pricing-rule.repository.js';
 
 @Injectable()
@@ -231,6 +233,78 @@ export class RateCalendarService {
       updated: 0,
       cleared,
       calendar: await this.loadWindow(property.id, assignment, first, last),
+    };
+  }
+
+  /**
+   * Each night of a stay as this plan prices it (F9), for the booking path.
+   *
+   * No authorisation here: the caller (the reservation service) has already
+   * resolved the property and checked RESERVATIONS_CREATE, and `propertyId` is
+   * that resolved id, never a client value. Every read is scoped by it.
+   *
+   * Uses the SAME resolver as the calendar read, so a night quoted at the desk
+   * is the night the rate calendar shows (`rate-pricing.policy.ts`). An
+   * ambiguous night prices at the assignment default, exactly as the calendar
+   * shows it; write-time refusal keeps that from arising through the API.
+   *
+   * Read outside the booking transaction, like the rest of pricing: it touches
+   * none of the rows the reservation lock protocol (section 3.1.1) protects.
+   */
+  async resolveStay(
+    propertyId: string,
+    ratePlanId: string,
+    roomTypeId: string,
+    roomTypeCurrency: string,
+    dates: readonly string[],
+  ): Promise<{
+    ratePlanId: string;
+    ratePlanCode: string;
+    nights: { stayDate: string; rateMinor: number; source: RateSource }[];
+  }> {
+    const first = dates[0];
+    const last = dates.at(-1);
+    if (first === undefined || last === undefined) {
+      throw new ValidationFailedError({ departureDate: 'A stay must cover at least one night.' });
+    }
+
+    // Not assigned, another property's, or no such plan: all not-found.
+    const assignment = await this.repository.findAssignment(propertyId, ratePlanId, roomTypeId);
+    if (assignment === null) throw new TenantScopeViolationError('Rate plan');
+
+    if (assignment.archivedAt !== null) {
+      throw new RateNotBookableError('it has been archived.', { ratePlanId });
+    }
+    if (!assignment.isActive) {
+      throw new RateNotBookableError('it is inactive.', { ratePlanId });
+    }
+    if (assignment.currency !== roomTypeCurrency) {
+      throw new RateNotBookableError('its currency differs from the room type.', {
+        ratePlanId,
+        planCurrency: assignment.currency,
+        roomTypeCurrency,
+      });
+    }
+
+    const [overrides, rules, weekendDays] = await Promise.all([
+      this.repository.findOverrides(propertyId, ratePlanId, roomTypeId, first, last),
+      this.rules.findForResolution(propertyId, ratePlanId, roomTypeId),
+      this.rules.weekendDays(propertyId),
+    ]);
+
+    return {
+      ratePlanId: assignment.ratePlanId,
+      ratePlanCode: assignment.ratePlanCode,
+      nights: dates.map((stayDate) => {
+        const resolved = resolveRate({
+          stayDate,
+          defaultRateMinor: assignment.defaultRateMinor,
+          overrideRateMinor: overrides.get(stayDate) ?? null,
+          rules,
+          weekendDays,
+        });
+        return { stayDate, rateMinor: resolved.effectiveRateMinor, source: resolved.source };
+      }),
     };
   }
 

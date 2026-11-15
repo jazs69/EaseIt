@@ -185,6 +185,11 @@ const suites = [
     script: 'test/integration/rates.test.mjs',
     why: 'plans, calendar precedence, occupancy and promotion arithmetic, tenancy',
   },
+  {
+    name: 'rate pricing (F9)',
+    script: 'test/integration/rate-pricing.test.mjs',
+    why: 'quotes and bookings priced per night from a plan; check-in posts the arrival night',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

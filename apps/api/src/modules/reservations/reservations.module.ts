@@ -18,6 +18,7 @@ import { ReservationSearchController } from './reservation-search.controller.js'
 import { ReservationSearchRepository } from './reservation-search.repository.js';
 import { ReservationSearchService } from './reservation-search.service.js';
 import { PropertiesModule } from '../properties/properties.module.js';
+import { RatesModule } from '../rates/rates.module.js';
 
 /**
  * The `reservations` bounded context.
@@ -39,7 +40,8 @@ import { PropertiesModule } from '../properties/properties.module.js';
   // Tax slabs are resolved through `PropertyTaxService` (section 2 puts tax
   // rules in the properties module), so that module is imported rather than
   // its service re-provided here.
-  imports: [PropertiesModule],
+  // RatesModule for RateCalendarService: quotes and bookings price from a plan (F9).
+  imports: [PropertiesModule, RatesModule],
   controllers: [
     ReservationSearchController,
     CreateReservationController,

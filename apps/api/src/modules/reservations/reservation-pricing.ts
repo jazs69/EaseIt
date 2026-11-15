@@ -53,11 +53,26 @@ export function stayDates(arrival: string, departure: string): string[] {
   );
 }
 
+/** One night as a rate plan priced it, before tax. */
+export interface PlannedNight {
+  stayDate: string;
+  rateMinor: number;
+  source: 'DATE_OVERRIDE' | 'SEASONAL' | 'WEEKDAY' | 'WEEKEND' | 'DEFAULT';
+}
+
 export interface QuoteInput {
   arrivalDate: string;
   departureDate: string;
   /** The room type's configured rate, in minor units. */
   baseNightlyRateMinor: number;
+  /**
+   * Per-night rates from a rate plan, one per stay date in order (F9).
+   *
+   * When present, each night is priced at its own rate and taxed in its own
+   * band. An override or a target total still wins over it for every night:
+   * a clerk's agreed price is a decision about the whole stay.
+   */
+  plan?: { ratePlanId: string; ratePlanCode: string; nights: readonly PlannedNight[] } | undefined;
   overrideNightlyRateMinor?: number | undefined;
   /** Solve backwards from this gross total instead. */
   targetTotalMinor?: number | undefined;
@@ -115,11 +130,10 @@ export function solveNightlyRateForTotal(
 /**
  * Prices a stay.
  *
- * The nightly rate is flat across the stay today, because rate plans and
- * per-date rates belong to the `rates` module and it is not built. The shape
- * here is already per-night so that when it lands, only the source of
- * `nightlyRateMinor` changes — not the totalling, the tax banding, or the
- * rounding.
+ * Per night (F9): each night takes a manual price if one was given, else its
+ * rate-plan price, else the room type's rack rate, and is taxed in its own GST
+ * band. Totals are sums of the rounded nightly lines, so the day-wise split
+ * always adds up to the total beside it.
  */
 export function quoteStay(input: QuoteInput): ReservationQuote {
   const nights = nightsBetween(input.arrivalDate, input.departureDate);
@@ -144,30 +158,69 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
 
   const isOverridden =
     input.overrideNightlyRateMinor !== undefined || solved !== undefined;
-  const nightlyRateMinor =
-    solved ?? input.overrideNightlyRateMinor ?? input.baseNightlyRateMinor;
+  const flatRateMinor = solved ?? input.overrideNightlyRateMinor;
+
+  const dates = stayDates(input.arrivalDate, input.departureDate);
+
+  // A plan must price exactly the nights of this stay, in order. A mismatch is
+  // a caller bug, and pricing a stay from the wrong nights is a wrong charge.
+  const plan = isOverridden ? undefined : input.plan;
+  if (plan !== undefined) {
+    const aligned =
+      plan.nights.length === dates.length &&
+      plan.nights.every((night, index) => night.stayDate === dates[index]);
+    if (!aligned) throw new Error('The rate plan nights do not match the stay dates.');
+  }
 
   /**
-   * The slab, resolved once for the stay.
+   * Each night's rate and source, before tax.
+   *
+   * Precedence: a manual price (override or solved target) for every night,
+   * else the plan's per-night rate, else the room type's rack rate.
+   */
+  const priced = dates.map((stayDate, index) => {
+    if (flatRateMinor !== undefined) {
+      return { stayDate, rateMinor: flatRateMinor, source: 'MANUAL' as const };
+    }
+    const planned = plan?.nights[index];
+    if (planned !== undefined) {
+      return { stayDate, rateMinor: planned.rateMinor, source: planned.source };
+    }
+    return { stayDate, rateMinor: input.baseNightlyRateMinor, source: 'RACK' as const };
+  });
+
+  /**
+   * The slab, resolved PER NIGHT.
+   *
+   * GST bands on the nightly tariff, so when nights are priced differently a
+   * stay can straddle a band: a ₹7,000 weeknight is 5% and a ₹8,000 Saturday
+   * is 18%. Resolving one slab for the stay would mis-tax one of them.
    *
    * An exempt stay resolves no slab at all rather than resolving one and
    * multiplying by zero: the two are indistinguishable in the total and very
    * distinguishable on an invoice, which must show no GST line rather than a
    * 0% GST line against a slab the guest was never in.
    */
-  const components = input.isTaxExempt
-    ? null
-    : componentsFor(nightlyRateMinor, input.taxSlabs);
-  const taxRatePercent = components?.taxRatePercent ?? 0;
+  const perNight = priced.map((night) => {
+    const components = input.isTaxExempt ? null : componentsFor(night.rateMinor, input.taxSlabs);
+    const taxRatePercent = components?.taxRatePercent ?? 0;
+    return { ...night, components, taxRatePercent };
+  });
 
-  const nightly: NightlyLine[] = stayDates(input.arrivalDate, input.departureDate).map(
-    (stayDate) => ({
-      stayDate: stayDate as NightlyLine['stayDate'],
-      nightlyRateMinor,
-      // Rounded here, per night, exactly once.
-      taxMinor: taxOnNight(nightlyRateMinor, taxRatePercent),
-    }),
-  );
+  const nightly: NightlyLine[] = perNight.map((night) => ({
+    stayDate: night.stayDate as NightlyLine['stayDate'],
+    nightlyRateMinor: night.rateMinor,
+    // Rounded here, per night, exactly once.
+    taxMinor: taxOnNight(night.rateMinor, night.taxRatePercent),
+    taxRatePercent: night.taxRatePercent,
+    rateSource: night.source,
+  }));
+
+  const arrival = perNight[0];
+  if (arrival === undefined) throw new Error('A stay must cover at least one night.');
+  const nightlyRateMinor = arrival.rateMinor;
+  const components = arrival.components;
+  const taxRatePercent = arrival.taxRatePercent;
 
   // Summed from the rounded lines, so the split shown to the guest adds up to
   // the total charged.
@@ -179,6 +232,9 @@ export function quoteStay(input: QuoteInput): ReservationQuote {
   return {
     nights,
     nightlyRateMinor,
+    isRateVarying: nightly.some((line) => line.nightlyRateMinor !== nightlyRateMinor),
+    ratePlanId: plan?.ratePlanId ?? null,
+    ratePlanCode: plan?.ratePlanCode ?? null,
     exTaxMinor,
     taxMinor,
     totalMinor,

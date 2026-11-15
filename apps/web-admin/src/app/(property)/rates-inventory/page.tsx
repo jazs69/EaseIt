@@ -34,10 +34,9 @@ function first(value: string | string[] | undefined): string | undefined {
  * WHAT IS STILL NOT HERE, and is stated on the screen rather than omitted
  * silently:
  *
- *   * **Nothing prices from a rate plan yet.** The booking path still reads
- *     `room_type.baseRateMinor` (`create-reservation.service.ts`). Integrating
- *     plans into quoting and booking is F9. A screen that implied otherwise
- *     would have an operator believing a rate was live at the desk.
+ *   * **Plans price a booking only when chosen in the booking form** (F9);
+ *     otherwise the rack rate applies. Occupancy pricing and promotions do
+ *     not yet affect bookings, and the screen says so.
  *   * **No per-date pricing**, seasonal or weekday rates — F2/F3, and a
  *     separate `rate_plan_day` table this model is already shaped for.
  *   * **No restrictions** (stop-sell, minimum stay, closed to arrival or
