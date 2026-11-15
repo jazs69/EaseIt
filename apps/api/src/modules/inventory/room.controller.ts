@@ -55,6 +55,7 @@ import type { AuthenticatedRequest } from '../../common/auth/authenticated-user.
 import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { UnauthenticatedError, ValidationFailedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { RetirementService } from './retirement.service.js';
 import { RoomService } from './room.service.js';
 
 /**
@@ -68,7 +69,10 @@ const UPDATE_ROOM_BODY = new ZodValidationPipe(updateRoomRequestSchema);
 @Controller('properties')
 @UseGuards(SessionAuthGuard)
 export class RoomController {
-  constructor(private readonly rooms: RoomService) {}
+  constructor(
+    private readonly rooms: RoomService,
+    private readonly retirement: RetirementService,
+  ) {}
 
   @Get(':hotelId/rooms')
   @ApiOperation({
@@ -186,6 +190,27 @@ export class RoomController {
     body: ChangeRoomStatusRequest,
   ): Promise<RoomView> {
     return this.rooms.changeStatus(this.userId(request), hotelId, roomId, body);
+  }
+
+  @Post(':hotelId/rooms/:roomId/retire')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Take a room out of service permanently',
+    description:
+      'Refused (409) while the room has a current or future stay or an active ' +
+      'block, or when removing it would oversell a night. On success the room ' +
+      'stops counting as stock from today on. Idempotent; never undone.',
+  })
+  @ApiOkResponse({ description: 'The retired room.' })
+  @ApiNotFoundResponse({ description: 'No such property or room, or no grant.' })
+  @ApiForbiddenResponse({ description: 'A grant without rooms:manage.' })
+  @ApiConflictResponse({ description: 'The room is still in use, or a concurrent change.' })
+  retire(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('roomId') roomId: string,
+  ): Promise<RoomView> {
+    return this.retirement.retireRoom(this.userId(request), hotelId, roomId);
   }
 
   private userId(request: FastifyRequest): string {

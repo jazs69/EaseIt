@@ -281,6 +281,16 @@ export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, pris
         await tx.reservationGuest.deleteMany({ where: scope });
         await tx.reservationRoom.deleteMany({ where: scope });
         await tx.reservation.deleteMany({ where: scope });
+        // Blocks reference rooms and room types with RESTRICT, so they go first.
+        await tx.roomBlock.deleteMany({ where: scope });
+        // Promotions and rate plans reference room types (and each other) with
+        // RESTRICT; plans cascade to their assignments, days, rules and prices.
+        await tx.promotionRedemption.deleteMany({ where: scope });
+        await tx.promoCode.deleteMany({ where: scope });
+        await tx.promotionRoomType.deleteMany({ where: scope });
+        await tx.promotionRatePlan.deleteMany({ where: scope });
+        await tx.promotion.deleteMany({ where: scope });
+        await tx.ratePlan.deleteMany({ where: scope });
         await tx.room.deleteMany({ where: scope });
         await tx.inventoryDay.deleteMany({ where: scope });
         await tx.roomType.deleteMany({ where: scope });

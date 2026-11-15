@@ -263,6 +263,24 @@ export class DuplicateIdentifierError extends DomainError {
 }
 
 /**
+ * A room or room type cannot be retired because something live still depends
+ * on it: a current or future stay, an active block, or (for a room type) a
+ * room that has not been retired yet.
+ *
+ * 409: the request is well formed and becomes acceptable once the dependants
+ * are moved, released or retired. `details` names what blocks it, by
+ * confirmation code or count -- never guest data (section 5).
+ */
+export class EntityInUseError extends DomainError {
+  readonly code = ErrorCode.CONFLICT;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(entity: string, reason: string, details: Record<string, unknown> = {}) {
+    super(`That ${entity} cannot be retired: ${reason}`, { entity, ...details });
+  }
+}
+
+/**
  * System role templates are shared by all ten hotels. One property editing a
  * template would silently change access at the other nine, so they are
  * read-only and a property customises by creating its own role instead.

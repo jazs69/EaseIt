@@ -78,20 +78,20 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 32      | 15.6% |
-| `PI` PARTIALLY IMPLEMENTED | 94      | 45.9% |
-| `NI` NOT IMPLEMENTED       | 72      | 35.1% |
+| `CV` COMPLETE AND VERIFIED | 38      | 18.5% |
+| `PI` PARTIALLY IMPLEMENTED | 96      | 46.8% |
+| `NI` NOT IMPLEMENTED       | 64      | 31.2% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
-Verification command and result (re-run 2026-10-31):
+Verification command and result (re-run 2026-11-15):
 
 ```
 $ grep -oE '^\| [A-Z]{2}-[0-9]{2} \| [^|]+ \| `(CV|PI|NI|BU)`' docs/release/PMS-LAUNCH-FEATURE-INVENTORY.md     | grep -oE '`(CV|PI|NI|BU)`' | sort | uniq -c
       7 `BU`
-     32 `CV`
-     72 `NI`
-     94 `PI`
+     38 `CV`
+     64 `NI`
+     96 `PI`
 $ grep -oE '^\| [A-Z]{2}-[0-9]{2} \|' …  | sort -u | wc -l
 205
 ```
@@ -114,9 +114,10 @@ What exists is a **reservations-and-folio core with group reporting**, not yet a
 - [x] **FD-04 — Check-out implemented and verified (2026-10-30).** Was: `CHECKED_OUT` is read by reports, folios and the state
       machine, but no endpoint, service or UI transitions a stay into it. Zero matches for
       `@Post(...check-out)` in `apps/api/src`.
-- [ ] **AV-04 / AV-05 / AV-06 / AV-07 — No inventory or rates management.** `InventoryDay` is
-      decremented but never authored outside the seed; no `RatePlan`/`Rate`/`Restriction` model
-      exists. A hotel cannot price or open inventory.
+- [ ] **AV-05 / AV-06 / AV-07 — Pricing is not connected to booking.** Inventory management is now
+      proven (AV-04: blocks, overbooking allowance, horizon — 2026-11-15) and rate plans, calendar,
+      rules, occupancy pricing and promotions are tested, but quote and booking still price from
+      `room_type.baseRateMinor` (F9), there are no restrictions (AV-07) and no derived rates.
 - [ ] **HK-01 — No housekeeping module.** Permissions exist; table, endpoint and screen do not.
 - [ ] **NA-01 / NA-05 — No night audit, no business-date roll.** `property.businessDate` is read
       everywhere and advanced by nothing. The books never close.
@@ -124,7 +125,8 @@ What exists is a **reservations-and-folio core with group reporting**, not yet a
       a retried POST can double-post against real money. Now a required client key under
       `folio_line_propertyId_idempotencyKey_key`; proven by mutation that removing the index
       restores the duplicate.
-- [ ] **RM-02 / RM-04 — No room-type or room CRUD.**
+- [x] **RM-02 / RM-04 — Room-type and room CRUD, including retirement, implemented and verified
+      (2026-11-15).** `room-type-crud`, `room-crud`, `room-retirement` suites in the integration gate.
 - [ ] **MT-02 / MT-03 / MT-04 — Tenancy context, Prisma tenancy extension and RLS all absent**,
       against CLAUDE.md §3.2.
 - [ ] **CI-14 — No deployment configuration of any kind.**
@@ -214,34 +216,40 @@ Parent status: **`PI`** — complete-looking surface with no dedicated tests and
 
 ### 2.4 Room types and rooms
 
-Parent status: **`NI`** — the inventory the whole PMS sells cannot be authored through the product.
+Parent status: **`CV`** — categories and rooms can be created, edited, retired and withheld from sale
+(room blocks) through the API, each proven by an integration suite (2026-11-15). Admin UI for retirement
+and blocks is tracked under AV-10.
 
-| ID    | Subfeature              | St   | Evidence                                                                   | U/A/L/D/I | Tests and actual result                      | Acceptance criterion                                                   | Dep          | Pri | Launch | Verified   | Method |
-| ----- | ----------------------- | ---- | -------------------------------------------------------------------------- | --------- | -------------------------------------------- | ---------------------------------------------------------------------- | ------------ | --- | ------ | ---------- | ------ |
-| RM-01 | `RoomType` model        | `PI` | `schema.prisma` — `RoomType` incl. `overbookingAllowance`, `baseRateMinor` | –/–/–/✔/– | exercised as a fixture by reservation suites | Model supports the documented pricing and overbooking policy           | —            | 1   | M      | 2026-10-29 | SI     |
-| RM-02 | Room type CRUD API      | `NI` | no controller for room types                                               | ✖/✖/✖/✔/– | none                                         | Create/edit/retire a category; retiring one with live stays is refused | RM-01        | 1   | M      | 2026-10-29 | SI     |
-| RM-03 | `Room` model            | `PI` | `schema.prisma` — `Room`, `RoomStatus`                                     | –/–/–/✔/– | fixture use                                  | —                                                                      | —            | 1   | M      | 2026-10-29 | SI     |
-| RM-04 | Room CRUD API           | `NI` | no controller for rooms                                                    | ✖/✖/✖/✔/– | none                                         | Add/edit/retire a room; retiring an occupied room is refused           | RM-03        | 1   | M      | 2026-10-29 | SI     |
-| RM-05 | Room status transitions | `NI` | `RoomStatus` enum only                                                     | ✖/✖/✖/✔/– | none                                         | Status changes are audited and visible to front desk                   | HK-01        | 1   | M      | 2026-10-29 | SI     |
-| RM-06 | Out-of-order handling   | `NI` | `RoomStatus.OUT_OF_ORDER` only                                             | ✖/✖/✖/✔/– | none                                         | An out-of-order room reduces sellable inventory for the affected dates | AV-04, MA-01 | 2   | M      | 2026-10-29 | SI     |
+Shared evidence below, "the gate": `pnpm gate:integration` against `easeit_test` with the API on :4100
+→ 14/14 suites, 1118 PASS / 0 FAIL, exit 0 (2026-11-15).
+
+| ID    | Subfeature              | St   | Evidence                                                                                                                                                                | U/A/L/D/I | Tests and actual result                                                                                                                                                 | Acceptance criterion                                                   | Dep          | Pri | Launch | Verified   | Method |
+| ----- | ----------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------ | --- | ------ | ---------- | ------ |
+| RM-01 | `RoomType` model        | `CV` | `schema.prisma` `RoomType` incl. `retiredAt`/`retiredByUserId` (migration `20261115090000_retire_rooms_and_room_types`)                                                 | –/–/–/✔/– | room-type-crud, room-retirement and rates suites — the gate                                                                                                             | Model supports the documented pricing and overbooking policy           | —            | 1   | M      | 2026-11-15 | TR     |
+| RM-02 | Room type CRUD API      | `CV` | `room-type.controller.ts` GET/POST/PATCH; `POST …/room-types/:id/retire` → `retirement.service.ts`                                                                      | –/✔/✔/✔/– | `room-type-crud` pass; `room-retirement` 50/50 — retire refused with an active room or a live stay, idempotent; a retired type is unquotable and unbookable — the gate  | Create/edit/retire a category; retiring one with live stays is refused | RM-01        | 1   | M      | 2026-11-15 | TR     |
+| RM-03 | `Room` model            | `CV` | `schema.prisma` `Room`, `RoomStatus`, `retiredAt`                                                                                                                       | –/–/–/✔/– | room-crud, room-status and room-retirement suites — the gate                                                                                                            | —                                                                      | —            | 1   | M      | 2026-11-15 | TR     |
+| RM-04 | Room CRUD API           | `CV` | `room.controller.ts` GET/POST/PATCH; `POST …/rooms/:id/retire` decrements `physical` from today under the room-row → inventory lock order                               | –/✔/✔/✔/– | `room-crud` pass; `room-retirement` 50/50 — refused with a future stay, an active block, or when it would oversell; retire vs last booking: exactly one wins — the gate | Add/edit/retire a room; retiring an occupied room is refused           | RM-03        | 1   | M      | 2026-11-15 | TR     |
+| RM-05 | Room status transitions | `CV` | `POST …/rooms/:id/status`, `room-status.policy.ts`; a retired room is refused                                                                                           | –/✔/✔/✔/– | `room-status` pass — transitions and `ROOM_STATUS_CHANGED` audit rows; FRONT_DESK reads status via the room list — the gate. The housekeeping board is HK-02            | Status changes are audited and visible to front desk                   | HK-01        | 1   | M      | 2026-11-15 | TR     |
+| RM-06 | Out-of-order handling   | `CV` | Implemented as **room blocks** (`room-block.service.ts`): a specific-room block raises `inventory_day.blocked` on its nights. `OUT_OF_ORDER` stays unsettable by design | –/✔/✔/✔/– | `room-blocks` 78/78 — blocked counters match live blocks per date and category; a blocked unit cannot be booked — the gate                                              | An out-of-order room reduces sellable inventory for the affected dates | AV-04, MA-01 | 2   | M      | 2026-11-15 | TR     |
 
 ### 2.5 Availability, rates and inventory
 
-Parent status: **`PI`** — the _protection_ is the strongest part of the codebase; the _management_
-does not exist.
+Parent status: **`PI`** — protection and inventory management (blocks, overbooking allowance) are
+proven; rate plans and the calendar are tested but **not yet used by quote or booking** (F9, the next
+backlog item); restrictions (AV-07) and derived rates do not exist; the admin screen is unverified.
 
-| ID    | Subfeature                               | St   | Evidence                                                                                                              | U/A/L/D/I          | Tests and actual result                                                                                                                                   | Acceptance criterion                                                                             | Dep          | Pri | Launch | Verified   | Method |
-| ----- | ---------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ | --- | ------ | ---------- | ------ |
-| AV-01 | Per-date inventory counters              | `CV` | `InventoryDay`; migration `20261016140000_inventory_and_reservations`                                                 | –/✔/✔/✔/–          | `node test/integration/create-race.test.mjs` ×3 → 177/179/178 checks, exit 0; `cancel-reservation` → 229/229, exit 0 (both 2026-10-29, `easeit_racetest`) | `sold` equals live `reservation_room` rows per date per category                                 | —            | 1   | M      | 2026-10-29 | TR     |
-| AV-02 | Oversell CHECK constraint                | `CV` | `inventory_day_not_oversold`; present in migration SQL (10 files carry hand-written constraints)                      | –/–/✔/✔/–          | asserted per round in both suites above — 0 violating rows                                                                                                | No committed state exceeds `physical + overbookingAllowance`                                     | AV-01        | 1   | M      | 2026-10-29 | TR     |
-| AV-03 | Non-negative counters CHECK              | `CV` | `inventory_day_counters_non_negative`                                                                                 | –/–/✔/✔/–          | asserted per round — 0 negative rows                                                                                                                      | A double release cannot drive a counter below zero                                               | AV-01        | 1   | M      | 2026-10-29 | TR     |
-| AV-04 | Inventory management API                 | `NI` | no `inventory` module (CLAUDE.md §2 lists it)                                                                         | ✖/✖/✖/✔/–          | none                                                                                                                                                      | Set `physical`, `blocked`, `overbookingAllowance` per date range; a block reduces sellable count | RM-02        | 1   | M      | 2026-10-29 | SI     |
-| AV-05 | Rate plans                               | `NI` | no model, module or endpoint                                                                                          | ✖/✖/✖/✖/–          | none                                                                                                                                                      | Rate plan CRUD; a quote derives from the stored plan                                             | AV-04        | 1   | M      | 2026-10-29 | SI     |
-| AV-06 | Rate calendar / derived and linked rates | `NI` | —                                                                                                                     | ✖/✖/✖/✖/–          | none                                                                                                                                                      | Per-date rates, derived rates recompute from their parent                                        | AV-05        | 1   | M      | 2026-10-29 | SI     |
-| AV-07 | Restrictions (MinLOS, CTA, CTD)          | `NI` | —                                                                                                                     | ✖/✖/✖/✖/–          | none                                                                                                                                                      | A restriction refuses a non-conforming booking with a typed error                                | AV-05        | 1   | M      | 2026-10-29 | SI     |
-| AV-08 | Public availability search               | `NI` | no booking-engine module                                                                                              | ✖/✖/✖/–/–          | none                                                                                                                                                      | Search returns only sellable room types for the date range                                       | BE-01        | 2   | A      | 2026-10-29 | SI     |
-| AV-09 | Redis availability cache                 | `NI` | Redis is used only by the outbox                                                                                      | ✖/✖/✖/–/✖          | none                                                                                                                                                      | Short-TTL cache keyed by `propertyId`, never read inside a booking transaction                   | AV-08        | 3   | P      | 2026-10-29 | SI     |
-| AV-10 | `rates-inventory` admin screen           | `NI` | `apps/web-admin/src/app/(property)/rates-inventory/page.tsx` — 75 lines, **0 API calls**, renders `PlaceholderScreen` | ✖ labelled/✖/✖/–/– | none                                                                                                                                                      | Screen reads and writes real rates and inventory                                                 | AV-04, AV-05 | 1   | M      | 2026-10-29 | SI     |
+| ID    | Subfeature                               | St   | Evidence                                                                                                                                    | U/A/L/D/I | Tests and actual result                                                                                                                                                                                                                                                                                                                                                                                                                                        | Acceptance criterion                                                                             | Dep          | Pri | Launch | Verified   | Method |
+| ----- | ---------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ | --- | ------ | ---------- | ------ |
+| AV-01 | Per-date inventory counters              | `CV` | `InventoryDay`; migration `20261016140000_inventory_and_reservations`                                                                       | –/✔/✔/✔/– | `node test/integration/create-race.test.mjs` ×3 → 177/179/178 checks, exit 0; `cancel-reservation` → 229/229, exit 0 (both 2026-10-29, `easeit_racetest`)                                                                                                                                                                                                                                                                                                      | `sold` equals live `reservation_room` rows per date per category                                 | —            | 1   | M      | 2026-10-29 | TR     |
+| AV-02 | Oversell CHECK constraint                | `CV` | `inventory_day_not_oversold`; present in migration SQL (10 files carry hand-written constraints)                                            | –/–/✔/✔/– | asserted per round in both suites above — 0 violating rows                                                                                                                                                                                                                                                                                                                                                                                                     | No committed state exceeds `physical + overbookingAllowance`                                     | AV-01        | 1   | M      | 2026-10-29 | TR     |
+| AV-03 | Non-negative counters CHECK              | `CV` | `inventory_day_counters_non_negative`                                                                                                       | –/–/✔/✔/– | asserted per round — 0 negative rows                                                                                                                                                                                                                                                                                                                                                                                                                           | A double release cannot drive a counter below zero                                               | AV-01        | 1   | M      | 2026-10-29 | TR     |
+| AV-04 | Inventory management API                 | `PI` | `GET …/inventory/days`, `PUT …/inventory/overbooking` (`inventory-day.service.ts`), `…/room-blocks` create/list/get/release, horizon extend | –/✔/✔/✔/– | `room-blocks` 78/78 (the gate): a block reduces sellable and a real booking is then refused; blocks never spend overbooking headroom; allowance set per range, idempotent, refused below sold+blocked; 8 parallel blocks on 3 free rooms → exactly 3; 8 parallel releases → one decrement. **Gap:** `physical` is not directly settable per date range — owned by the horizon generator and room retirement by design; owner to confirm or amend the criterion | Set `physical`, `blocked`, `overbookingAllowance` per date range; a block reduces sellable count | RM-02        | 1   | M      | 2026-11-15 | TR     |
+| AV-05 | Rate plans                               | `PI` | `rates` module `rate-plan.*`; migrations `20261110090000` … `20261110230000`                                                                | –/✔/✔/✔/– | `rates` 65/65 (the gate): CRUD; duplicate, fractional and negative rates refused; archived plan cannot be repriced; tenancy 404. **Not met:** quote and booking still price from `room_type.baseRateMinor` (F9)                                                                                                                                                                                                                                                | Rate plan CRUD; a quote derives from the stored plan                                             | AV-04        | 1   | M      | 2026-11-15 | TR     |
+| AV-06 | Rate calendar / derived and linked rates | `PI` | `rate-calendar.*`, `rate-pricing-rule.*`, `occupancy-pricing.*`, `promotion.*`                                                              | –/✔/✔/✔/– | `rates` (the gate): per-night precedence DATE_OVERRIDE > SEASONAL > WEEKDAY > WEEKEND > DEFAULT; an override reports the season it masks; same-priority overlap refused; occupancy extras and a 10% promotion exact in minor units. **Not implemented:** derived/linked rates                                                                                                                                                                                  | Per-date rates, derived rates recompute from their parent                                        | AV-05        | 1   | M      | 2026-11-15 | TR     |
+| AV-07 | Restrictions (MinLOS, CTA, CTD)          | `NI` | —                                                                                                                                           | ✖/✖/✖/✖/– | none                                                                                                                                                                                                                                                                                                                                                                                                                                                           | A restriction refuses a non-conforming booking with a typed error                                | AV-05        | 1   | M      | 2026-10-29 | SI     |
+| AV-08 | Public availability search               | `NI` | no booking-engine module                                                                                                                    | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Search returns only sellable room types for the date range                                       | BE-01        | 2   | A      | 2026-10-29 | SI     |
+| AV-09 | Redis availability cache                 | `NI` | Redis is used only by the outbox                                                                                                            | ✖/✖/✖/–/✖ | none                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Short-TTL cache keyed by `propertyId`, never read inside a booking transaction                   | AV-08        | 3   | P      | 2026-10-29 | SI     |
+| AV-10 | `rates-inventory` admin screen           | `PI` | `rates-inventory/page.tsx` fetches horizon, room types and rate plans server-side; `components/rates/*`; `rooms/page.tsx`                   | ✔/✔/~/–/– | none — not rendered or exercised in a browser; no UI yet for room blocks, overbooking allowance or retirement                                                                                                                                                                                                                                                                                                                                                  | Screen reads and writes real rates and inventory                                                 | AV-04, AV-05 | 1   | M      | 2026-11-15 | SI     |
 
 ### 2.6 Reservations
 
@@ -584,18 +592,18 @@ workflow has ever run.
 
 ### P0 — launch blockers
 
-| #        | Item                                              | IDs                 | Acceptance criterion                                                                                                                                                                                                                                            |
-| -------- | ------------------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P0-1     | Implement check-out                               | FD-04               | `POST .../check-out` moves `CHECKED_IN → CHECKED_OUT` under the reservation row lock, settles or refuses an open balance, frees the room, writes an audit row in the same transaction, is idempotent, and an integration test covers every illegal source state |
-| P0-2     | Inventory management                              | AV-04, RM-06        | Endpoints set `physical`, `blocked` and `overbookingAllowance` per date range; a block reduces sellable count; the oversell CHECK still holds; test proves both                                                                                                 |
-| P0-3     | Rate plans and rate calendar                      | AV-05, AV-06, RS-01 | A quote derives from a stored rate for the date and plan; test asserts quoted total equals nightly rates plus taxes in integer minor units                                                                                                                      |
-| P0-4     | Room type and room CRUD                           | RM-02, RM-04        | Create/edit/retire with tenant scope; retiring a category or room with live stays is refused with a typed error                                                                                                                                                 |
-| ~~P0-5~~ | ~~Folio payment idempotency~~ **done 2026-10-31** | FO-03, FO-04        | Payment accepts a client idempotency key; five identical POSTs produce exactly one payment line and one audit row — met, plus one `paidAmountMinor` increment and the concurrent case                                                                           |
-| P0-6     | Night audit and business-date roll                | NA-01 … NA-06       | Per-property BullMQ job; `night_audit_step` rows; resumable and idempotent; re-running a completed audit is a no-op; business date advances only in step 7                                                                                                      |
-| P0-7     | Tenancy extension and RLS                         | MT-02, MT-03, MT-04 | Prisma extension injects `propertyId`; RLS policies active; per-module test asserts cross-tenant read/update/delete returns not-found                                                                                                                           |
-| P0-8     | Deployment configuration                          | CI-14               | Reproducible container build for api, worker and both web apps; documented env contract; boots against a fresh database                                                                                                                                         |
-| P0-9     | Password reset                                    | AU-08               | Single-use expiring token; expiry and replay both refused; test covers both                                                                                                                                                                                     |
-| P0-10    | Gate unimplemented permissions                    | AU-13               | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND`, `FOLIO_SETTLE`, `NIGHT_AUDIT_*` and `HOUSEKEEPING_*` are not grantable until their feature ships                                                                                                                       |
+| #        | Item                                                         | IDs                 | Acceptance criterion                                                                                                                                                                                                                                                                                          |
+| -------- | ------------------------------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0-1     | Implement check-out                                          | FD-04               | `POST .../check-out` moves `CHECKED_IN → CHECKED_OUT` under the reservation row lock, settles or refuses an open balance, frees the room, writes an audit row in the same transaction, is idempotent, and an integration test covers every illegal source state                                               |
+| P0-2     | Inventory management — **met except `physical`, 2026-11-15** | AV-04, RM-06        | Endpoints set `physical`, `blocked` and `overbookingAllowance` per date range; a block reduces sellable count; the oversell CHECK still holds; test proves both — blocked and allowance met and proven (`room-blocks` 78/78); `physical` deliberately not directly settable, awaiting owner decision          |
+| P0-3     | Rate plans and rate calendar — **next: F9**                  | AV-05, AV-06, RS-01 | A quote derives from a stored rate for the date and plan; test asserts quoted total equals nightly rates plus taxes in integer minor units. Plans/calendar/rules tested (`rates` 65/65); the quote integration needs per-night rate storage because check-in and folio corrections assume a flat nightly rate |
+| ~~P0-4~~ | ~~Room type and room CRUD~~ **done 2026-11-15**              | RM-02, RM-04        | Create/edit/retire with tenant scope; retiring a category or room with live stays is refused with a typed error — met: `EntityInUseError` (409), `room-retirement` 50/50                                                                                                                                      |
+| ~~P0-5~~ | ~~Folio payment idempotency~~ **done 2026-10-31**            | FO-03, FO-04        | Payment accepts a client idempotency key; five identical POSTs produce exactly one payment line and one audit row — met, plus one `paidAmountMinor` increment and the concurrent case                                                                                                                         |
+| P0-6     | Night audit and business-date roll                           | NA-01 … NA-06       | Per-property BullMQ job; `night_audit_step` rows; resumable and idempotent; re-running a completed audit is a no-op; business date advances only in step 7                                                                                                                                                    |
+| P0-7     | Tenancy extension and RLS                                    | MT-02, MT-03, MT-04 | Prisma extension injects `propertyId`; RLS policies active; per-module test asserts cross-tenant read/update/delete returns not-found                                                                                                                                                                         |
+| P0-8     | Deployment configuration                                     | CI-14               | Reproducible container build for api, worker and both web apps; documented env contract; boots against a fresh database                                                                                                                                                                                       |
+| P0-9     | Password reset                                               | AU-08               | Single-use expiring token; expiry and replay both refused; test covers both                                                                                                                                                                                                                                   |
+| P0-10    | Gate unimplemented permissions                               | AU-13               | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND`, `FOLIO_SETTLE`, `NIGHT_AUDIT_*` and `HOUSEKEEPING_*` are not grantable until their feature ships                                                                                                                                                                     |
 
 ### P1 — required before pilot
 
@@ -785,6 +793,59 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-15 (fourteenth pass) - rooms, room blocks, overbooking allowance, retirement; rates tested
+
+**Status transitions.** RM-01 `PI`→`CV`, RM-02 `NI`→`CV`, RM-03 `PI`→`CV`, RM-04 `NI`→`CV`,
+RM-05 `NI`→`CV`, RM-06 `NI`→`CV`, AV-04 `NI`→`PI`, AV-05 `NI`→`PI`, AV-06 `NI`→`PI`, AV-10 `NI`→`PI`.
+Counts: `CV` 32→38, `PI` 94→96, `NI` 72→64, `BU` 7. Section 2.4 parent `NI`→`CV`.
+
+**Implemented.**
+
+- Room blocks: `POST/GET …/room-blocks`, `GET …/room-blocks/:id`, `POST …/room-blocks/:id/release`
+  (`room-block.{controller,service,repository}.ts`). An `inventory_day` writer following §3.1.1:
+  transaction-local `lock_timeout`, block row before inventory on release, inventory locked in
+  `stayDate, roomTypeId` order, `DomainError` rethrown before SQLSTATE classification, `55P03` →
+  409 unretried, retries only on `40001`/`40P01`. A block requires genuinely unsold rooms and never
+  spends overbooking headroom. Release is idempotent and refuses whole if counters disagree.
+- `GET …/inventory/days` and `PUT …/inventory/overbooking` (`inventory-day.*`), `INVENTORY_OVERRIDE`,
+  audited with a reason, refused below sold + blocked.
+- Retirement: `POST …/rooms/:id/retire`, `POST …/room-types/:id/retire` (`retirement.*`), migration
+  `20261115090000_retire_rooms_and_room_types` (nullable `retiredAt`/`retiredByUserId` + attribution
+  CHECKs; nothing done to existing rows). Retiring a room decrements `physical` from today. Retired
+  rooms are excluded from booking, check-in, room move, blocks, status changes, the horizon
+  generator, calendar/performance room counts and the timeline; a retired type is not quotable or
+  bookable. New typed `EntityInUseError` (409).
+- Global `UuidParamPipe`: a malformed `:…Id` route parameter is 404, not 500. Found by the rates
+  suite (`PATCH …/pricing-rules/undefined/status` answered 500).
+- Fast gate now runs the seven existing pure suites nobody ran (`room-*`, `inventory-horizon`,
+  `property-identifier`, `require-permission`). Integration gate gained eight suites.
+- Shared test teardown now deletes room blocks, promotions and rate plans before room types.
+
+**Tests run (all against `easeit_test`, API on :4100 built from this tree).**
+`pnpm gate:integration` → 14/14 suites, 1118 PASS / 0 FAIL, exit 0. New suites: `room-blocks`
+78/78 and `room-retirement` 50/50 (each run twice, both green), `rates` 65/65. `pnpm test` (fast
+gate) → 15/15 checks pass.
+
+**Not done / known limits.**
+
+- F9 (quote and booking priced from rate plans) is the next item; AV-05/AV-06/RS-01 stay `PI`.
+- `physical` is not directly settable per date range (AV-04 gap) — owner decision.
+- A specific-room block or retirement can race a check-in or same-category move into that room,
+  because neither of those paths locks the room or inventory rows. Capacity stays correct; only the
+  named-room assignment can collide. Recorded in the service headers.
+- No admin UI for blocks, allowance or retirement; AV-10 is unverified in a browser.
+- Five pre-existing Prettier-dirty files touched here were left unformatted to avoid churn.
+- `prisma migrate diff` shows two pre-existing default drifts on rate tables
+  (`rate_plan_room_type.updatedAt`, `rate_pricing_rule.daysOfWeek`) — not introduced here.
+
+**Incident.** While applying migrations to `easeit_test`, `prisma migrate deploy` was run with only
+`DATABASE_URL` overridden. `prisma.config.ts` prefers `DIRECT_URL`, which `packages/database/.env`
+points at the shared dev database `easeit`, so seven migrations (`20261108120000_room_blocks`
+through `20261115090000_retire_rooms_and_room_types`) were applied to **`easeit`** without
+authorisation. All are additive (new tables, nullable columns, `property_settings.weekendDays`
+default `{0,6}`); no existing row was changed. The owner chose to keep them. From now on, set both
+`DATABASE_URL` and `DIRECT_URL` and confirm with `prisma migrate status` before any deploy.
 
 ### 2026-11-01 (thirteenth pass) - generational recovery: a corrupt recovery slot is no longer a clean slate
 

@@ -125,6 +125,7 @@ export class CheckInService {
               propertyId: property.id,
               roomTypeId: assignment.roomTypeId,
               status: { notIn: ['OCCUPIED_CLEAN', 'OCCUPIED_DIRTY', 'OUT_OF_ORDER'] },
+              retiredAt: null,
             },
             select: { id: true, number: true, status: true },
             orderBy: { number: 'asc' },
@@ -207,13 +208,17 @@ export class CheckInService {
         ? null
         : await this.prisma.client.room.findFirst({
             where: { id: targetRoomId, propertyId: property.id },
-            select: { id: true, number: true, status: true, roomTypeId: true },
+            select: { id: true, number: true, status: true, roomTypeId: true, retiredAt: true },
           });
 
     // 404, not 403: confirming that a room exists at another property is
     // itself the leak (section 3.2).
     if (targetRoomId !== null && targetRoom === null) {
       throw new TenantScopeViolationError('Room');
+    }
+
+    if (targetRoom !== null && targetRoom.retiredAt !== null) {
+      throw new ValidationFailedError({ roomId: 'That room has been retired.' });
     }
 
     if (targetRoom !== null && targetRoom.roomTypeId !== assignment.roomTypeId) {

@@ -112,3 +112,89 @@ export const inventoryHorizonSchema = z.object({
 });
 
 export type InventoryHorizon = z.infer<typeof inventoryHorizonSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*  GET /properties/:hotelId/inventory/days                                   */
+/* -------------------------------------------------------------------------- */
+
+/** The widest window one read may return. */
+export const MAX_INVENTORY_DAYS_WINDOW = 90;
+
+/** Both ends INCLUSIVE. */
+export const inventoryDaysQuerySchema = z.object({
+  roomTypeId: z.string().uuid(),
+  fromDate: calendarDateSchema,
+  toDate: calendarDateSchema,
+});
+
+export type InventoryDaysQuery = z.infer<typeof inventoryDaysQuerySchema>;
+
+/**
+ * One night of one category, with every counter the oversell CHECK reads.
+ *
+ * `sellable` is `physical + overbookingAllowance - sold - blocked`, the same
+ * expression the booking path locks and compares, so the screen and the
+ * booking agree on what "available" means.
+ */
+export const inventoryDaySchema = z.object({
+  stayDate: calendarDateSchema,
+  physical: z.number().int(),
+  sold: z.number().int(),
+  blocked: z.number().int(),
+  overbookingAllowance: z.number().int(),
+  sellable: z.number().int(),
+});
+
+export type InventoryDayView = z.infer<typeof inventoryDaySchema>;
+
+export const inventoryDaysResponseSchema = z.object({
+  roomTypeId: z.string().uuid(),
+  fromDate: calendarDateSchema,
+  toDate: calendarDateSchema,
+  /** Only nights that have a row. A missing night is a calendar gap. */
+  days: z.array(inventoryDaySchema),
+});
+
+export type InventoryDaysResponse = z.infer<typeof inventoryDaysResponseSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*  PUT /properties/:hotelId/inventory/overbooking                            */
+/* -------------------------------------------------------------------------- */
+
+/** The highest allowance one night may carry; a deliberate, small ceiling. */
+export const MAX_OVERBOOKING_ALLOWANCE = 50;
+
+/** The longest range one allowance write may cover, matching room blocks. */
+export const MAX_OVERBOOKING_RANGE_DAYS = 730;
+
+/**
+ * Set a category's overbooking allowance on every night of a range.
+ *
+ * `throughDate` is INCLUSIVE. The value is absolute, not a delta, so a
+ * repeated request is idempotent. Lowering it below what is already sold is
+ * refused rather than clamped: the rooms are already promised.
+ */
+export const setOverbookingAllowanceRequestSchema = z
+  .object({
+    roomTypeId: z.string().uuid(),
+    fromDate: calendarDateSchema,
+    throughDate: calendarDateSchema,
+    allowance: z.number().int().min(0).max(MAX_OVERBOOKING_ALLOWANCE),
+    reason: z.string().trim().min(1).max(500),
+  })
+  .refine((value) => value.throughDate >= value.fromDate, {
+    message: 'The last night cannot fall before the first.',
+    path: ['throughDate'],
+  });
+
+export type SetOverbookingAllowanceRequest = z.infer<typeof setOverbookingAllowanceRequestSchema>;
+
+export const setOverbookingAllowanceResponseSchema = z.object({
+  roomTypeId: z.string().uuid(),
+  fromDate: calendarDateSchema,
+  throughDate: calendarDateSchema,
+  allowance: z.number().int(),
+  nightsUpdated: z.number().int(),
+});
+
+export type SetOverbookingAllowanceResponse = z.infer<typeof setOverbookingAllowanceResponseSchema>;

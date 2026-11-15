@@ -56,13 +56,13 @@ import {
 /**
  * The refusal copy for a status that cannot be set here.
  *
- * Deliberately names no workflow. Room blocks are the supported way to make a
- * room unavailable, but the block endpoints do not exist yet, and pointing an
- * operator at a feature they cannot reach is worse than saying less.
+ * Room blocks are the supported way to take a room out of service: they record
+ * the dates and the reason and withhold the capacity, which a bare status
+ * cannot do.
  */
 const UNSETTABLE_STATUS_MESSAGE =
-  'This status cannot be set here. Room availability is managed separately and ' +
-  'is not yet available in this release.';
+  'This status cannot be set here. To take a room out of service, create a room block ' +
+  'for the dates instead.';
 
 @Injectable()
 export class RoomService {
@@ -94,7 +94,7 @@ export class RoomService {
     // message an operator can act on.
     if (!(await this.repository.roomTypeExists(property.id, request.roomTypeId))) {
       throw new ValidationFailedError({
-        roomTypeId: 'That room type does not belong to this property.',
+        roomTypeId: 'That room type does not belong to this property, or has been retired.',
       });
     }
 
@@ -158,6 +158,9 @@ export class RoomService {
 
     const before = await this.repository.findOne(property.id, roomId);
     if (before === null) throw new TenantScopeViolationError('Room');
+    if (before.retiredAt !== null) {
+      throw new ValidationFailedError({ status: 'This room has been retired.' });
+    }
 
     const current = before.status as RoomStatusValue;
     const target = request.status as RoomStatusValue;
@@ -259,7 +262,7 @@ function refusalMessage(refusal: StatusRefusal, current: RoomStatusValue): strin
 }
 
 /** Prisma row to wire shape, explicitly (section 5). */
-function toView(row: RoomRow): RoomView {
+export function toView(row: RoomRow): RoomView {
   return {
     id: row.id,
     number: row.number,
@@ -269,6 +272,7 @@ function toView(row: RoomRow): RoomView {
     roomTypeName: row.roomType.name,
     status: row.status as RoomView['status'],
     notes: row.notes,
+    retiredAt: row.retiredAt === null ? null : row.retiredAt.toISOString(),
   };
 }
 

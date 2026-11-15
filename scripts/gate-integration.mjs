@@ -145,6 +145,46 @@ const suites = [
     script: 'test/integration/create-race.test.mjs',
     why: 'create vs cancel, create vs cross-category move, three-way',
   },
+  {
+    name: 'inventory horizon',
+    script: 'test/integration/inventory-horizon.test.mjs',
+    why: 'per-date capacity, overbooking allowance, room blocks reduce sellable count',
+  },
+  {
+    name: 'room type CRUD',
+    script: 'test/integration/room-type-crud.test.mjs',
+    why: 'create/edit/retire a category; retiring one with live stays is refused',
+  },
+  {
+    name: 'room CRUD',
+    script: 'test/integration/room-crud.test.mjs',
+    why: 'add/edit/retire a room; retiring an occupied room is refused',
+  },
+  {
+    name: 'room status',
+    script: 'test/integration/room-status.test.mjs',
+    why: 'housekeeping status transitions and out-of-order handling',
+  },
+  {
+    name: 'inventory tenancy',
+    script: 'test/integration/inventory-tenancy.test.mjs',
+    why: 'another property’s room types, rooms and blocks are not-found, never 403',
+  },
+  {
+    name: 'room blocks + overbooking',
+    script: 'test/integration/room-blocks.test.mjs',
+    why: 'block/release counters per date and category, parallel blocks, allowance per range',
+  },
+  {
+    name: 'room retirement',
+    script: 'test/integration/room-retirement.test.mjs',
+    why: 'retire refusals, physical decrement, retire vs last booking race',
+  },
+  {
+    name: 'rates',
+    script: 'test/integration/rates.test.mjs',
+    why: 'plans, calendar precedence, occupancy and promotion arithmetic, tenancy',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

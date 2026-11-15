@@ -165,9 +165,12 @@ export class CreateReservationService {
     if (command.roomId !== null) {
       const room = await this.prisma.client.room.findFirst({
         where: { id: command.roomId, propertyId: property.id },
-        select: { id: true, roomTypeId: true, number: true, status: true },
+        select: { id: true, roomTypeId: true, number: true, status: true, retiredAt: true },
       });
       if (room === null) throw new TenantScopeViolationError('Room');
+      if (room.retiredAt !== null) {
+        throw new ValidationFailedError({ roomId: 'That room has been retired.' });
+      }
       if (room.roomTypeId !== command.roomTypeId) {
         throw new ValidationFailedError({
           roomId: 'That room does not belong to the selected room type.',
@@ -749,10 +752,19 @@ export class CreateReservationService {
   ): Promise<{ id: string; name: string; baseRateMinor: number; currency: string }> {
     const roomType = await this.prisma.client.roomType.findFirst({
       where: { id: roomTypeId, propertyId },
-      select: { id: true, name: true, baseRateMinor: true, currency: true },
+      select: { id: true, name: true, baseRateMinor: true, currency: true, retiredAt: true },
     });
 
     if (roomType === null) throw new EntityNotFoundError('Room type');
-    return roomType;
+    // A retired category is not sold, even if a night still shows headroom.
+    if (roomType.retiredAt !== null) {
+      throw new ValidationFailedError({ roomTypeId: 'That room type has been retired.' });
+    }
+    return {
+      id: roomType.id,
+      name: roomType.name,
+      baseRateMinor: roomType.baseRateMinor,
+      currency: roomType.currency,
+    };
   }
 }

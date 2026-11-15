@@ -164,6 +164,8 @@ export class TimelineRepository {
     return this.prisma.client.room.findMany({
       where: {
         propertyId,
+        // Retired rooms are out of the operational grid; they have no future stays.
+        retiredAt: null,
         ...(filter.roomTypeId === undefined ? {} : { roomTypeId: filter.roomTypeId }),
         ...(filter.floor === undefined ? {} : { floor: filter.floor }),
         ...housekeepingWhere,

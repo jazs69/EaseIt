@@ -193,7 +193,7 @@ export class RoomTypeService {
  * persistence detail and returning one leaks `propertyId`, the unread
  * `overbookingAllowance` column and every future addition (section 5).
  */
-function toView(row: RoomTypeRow): RoomTypeView {
+export function toView(row: RoomTypeRow): RoomTypeView {
   return {
     id: row.id,
     code: row.code,
@@ -204,6 +204,7 @@ function toView(row: RoomTypeRow): RoomTypeView {
     baseRate: { amountMinor: row.baseRateMinor, currency: row.currency },
     sortOrder: row.sortOrder,
     roomCount: row._count.rooms,
+    retiredAt: row.retiredAt === null ? null : row.retiredAt.toISOString(),
   };
 }
 

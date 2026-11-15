@@ -2,10 +2,9 @@
  * The wire contract for room blocks.
  *
  * ===========================================================================
- * SHIPPED AHEAD OF ITS ENDPOINTS, deliberately. The block endpoints belong to
- * a later increment that is blocked on a measured transaction timeout; these
- * schemas and the pure policy beside them land first so their shapes are
- * unit-tested before any writer consumes them.
+ * Consumed by `room-block.controller.ts`. The endpoints follow the bounded
+ * lock-wait protocol of CLAUDE.md section 3.1.1 (`ROW_LOCK_TIMEOUT_MS`), which
+ * is what they were waiting on.
  *
  * `throughDate` IS INCLUSIVE HERE and exclusive in the database. An operator
  * asked to block "10th to 15th" means six nights, and `room_block.throughDate`
@@ -122,6 +121,21 @@ export const roomBlockListResponseSchema = z.object({
 });
 
 export type RoomBlockListResponse = z.infer<typeof roomBlockListResponseSchema>;
+
+/**
+ * GET /properties/:hotelId/room-blocks
+ *
+ * Newest first. The cursor is the last block id of the previous page; it is
+ * opaque to the client and only ever resolved inside the caller's property.
+ */
+export const roomBlockListQuerySchema = z.object({
+  status: roomBlockStatusSchema.optional(),
+  roomTypeId: z.string().uuid().optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export type RoomBlockListQuery = z.infer<typeof roomBlockListQuerySchema>;
 
 /**
  * One active specific-room block overlapping one live assignment.

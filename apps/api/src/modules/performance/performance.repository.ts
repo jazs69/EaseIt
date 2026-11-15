@@ -174,7 +174,11 @@ export class PerformanceRepository {
 
     const grouped = await this.prisma.client.room.groupBy({
       by: ['propertyId'],
-      where: { propertyId: { in: [...propertyIds] }, status: { not: 'OUT_OF_ORDER' } },
+      where: {
+        propertyId: { in: [...propertyIds] },
+        status: { not: 'OUT_OF_ORDER' },
+        retiredAt: null,
+      },
       _count: { _all: true },
     });
 

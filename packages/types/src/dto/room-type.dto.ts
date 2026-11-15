@@ -122,6 +122,8 @@ export const roomTypeSchema = z.object({
   maxAdults: z.number().int().positive().nullable(),
   baseRate: rackRateSchema,
   sortOrder: z.number().int().nonnegative(),
+  /** ISO-8601 instant, or null while the category is sold. */
+  retiredAt: z.string().nullable(),
   /**
    * Physical rooms currently assigned to this category.
    *

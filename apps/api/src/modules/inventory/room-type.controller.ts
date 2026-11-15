@@ -15,7 +15,18 @@
  *   PATCH -> ROOMS_MANAGE
  */
 
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiConflictResponse,
@@ -40,6 +51,7 @@ import type { AuthenticatedRequest } from '../../common/auth/authenticated-user.
 import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { RetirementService } from './retirement.service.js';
 import { RoomTypeService } from './room-type.service.js';
 
 @ApiTags('inventory')
@@ -47,7 +59,10 @@ import { RoomTypeService } from './room-type.service.js';
 @Controller('properties')
 @UseGuards(SessionAuthGuard)
 export class RoomTypeController {
-  constructor(private readonly roomTypes: RoomTypeService) {}
+  constructor(
+    private readonly roomTypes: RoomTypeService,
+    private readonly retirement: RetirementService,
+  ) {}
 
   @Get(':hotelId/room-types')
   @ApiOperation({
@@ -113,6 +128,26 @@ export class RoomTypeController {
     body: UpdateRoomTypeRequest,
   ): Promise<RoomTypeView> {
     return this.roomTypes.update(this.userId(request), hotelId, roomTypeId, body);
+  }
+
+  @Post(':hotelId/room-types/:roomTypeId/retire')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Stop selling a category permanently',
+    description:
+      'Refused (409) while any room of the type is in service, or the category ' +
+      'has a current or future stay or an active block. Idempotent; never undone.',
+  })
+  @ApiOkResponse({ description: 'The retired room type.' })
+  @ApiNotFoundResponse({ description: 'No such property or room type, or no grant.' })
+  @ApiForbiddenResponse({ description: 'A grant without rooms:manage.' })
+  @ApiConflictResponse({ description: 'The category is still in use, or a concurrent change.' })
+  retire(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('roomTypeId') roomTypeId: string,
+  ): Promise<RoomTypeView> {
+    return this.retirement.retireRoomType(this.userId(request), hotelId, roomTypeId);
   }
 
   /** Unreachable while `SessionAuthGuard` is attached; asserted so that

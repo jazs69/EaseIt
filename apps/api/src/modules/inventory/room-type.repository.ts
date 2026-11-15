@@ -35,7 +35,9 @@ const ROOM_TYPE_SELECT = {
   baseRateMinor: true,
   currency: true,
   sortOrder: true,
-  _count: { select: { rooms: true } },
+  retiredAt: true,
+  // Active rooms only: a retired room is no longer stock.
+  _count: { select: { rooms: { where: { retiredAt: null } } } },
 } as const;
 
 export interface RoomTypeRow {
@@ -48,6 +50,7 @@ export interface RoomTypeRow {
   baseRateMinor: number;
   currency: string;
   sortOrder: number;
+  retiredAt: Date | null;
   _count: { rooms: number };
 }
 

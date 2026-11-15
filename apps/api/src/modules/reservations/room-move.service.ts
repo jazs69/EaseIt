@@ -106,7 +106,7 @@ export class RoomMoveService {
     }
 
     const rooms = await this.prisma.client.room.findMany({
-      where: { propertyId: property.id, status: { not: 'OUT_OF_ORDER' } },
+      where: { propertyId: property.id, status: { not: 'OUT_OF_ORDER' }, retiredAt: null },
       select: {
         id: true,
         number: true,
@@ -202,7 +202,7 @@ export class RoomMoveService {
         ? null
         : await this.prisma.client.room.findFirst({
             where: { id: command.roomId, propertyId: property.id },
-            select: { id: true, number: true, status: true, roomTypeId: true },
+            select: { id: true, number: true, status: true, roomTypeId: true, retiredAt: true },
           });
 
     // 404, not 403: confirming a room exists at another property is the leak
@@ -212,6 +212,9 @@ export class RoomMoveService {
     }
     if (target !== null && target.status === 'OUT_OF_ORDER') {
       throw new ValidationFailedError({ roomId: 'That room is out of order.' });
+    }
+    if (target !== null && target.retiredAt !== null) {
+      throw new ValidationFailedError({ roomId: 'That room has been retired.' });
     }
     if (target !== null && target.id === assignment.roomId) {
       throw new ValidationFailedError({ roomId: 'The stay is already in that room.' });

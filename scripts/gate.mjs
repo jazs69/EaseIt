@@ -107,6 +107,24 @@ const checks = [
     args: ['test/integration/cancel-retry.test.mjs'],
     why: 'the service-free unit suite failed',
   },
+  // Pure suites for inventory configuration and authorization. They read
+  // source/migration text or import pure policy modules, so like the suites
+  // above they need no database, API or Redis. They existed before but nothing
+  // ran them, so `pnpm test` said nothing about rooms, blocks or permissions.
+  ...[
+    'room-block-migration',
+    'room-block-policy',
+    'room-permissions',
+    'room-status-policy',
+    'inventory-horizon',
+    'property-identifier',
+    'require-permission',
+  ].map((suite) => ({
+    name: `unit tests (${suite})`,
+    command: process.execPath,
+    args: ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', `test/unit/${suite}.test.mjs`],
+    why: `the ${suite} suite failed`,
+  })),
 ];
 
 const results = [];

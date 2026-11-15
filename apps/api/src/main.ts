@@ -12,6 +12,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module.js';
 import { DomainExceptionFilter } from './common/filters/domain-exception.filter.js';
+import { UuidParamPipe } from './common/pipes/uuid-param.pipe.js';
 
 const API_PREFIX = 'api';
 
@@ -57,6 +58,8 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useGlobalPipes(
+    // Malformed :...Id params answer 404 instead of reaching the uuid cast as a 500.
+    new UuidParamPipe(),
     new ValidationPipe({
       // Strip unknown keys and reject requests that send them: a body that
       // tries to set its own `propertyId` must fail loudly, not silently

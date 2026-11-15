@@ -37,6 +37,7 @@ const ROOM_SELECT = {
   status: true,
   notes: true,
   roomTypeId: true,
+  retiredAt: true,
   roomType: { select: { code: true, name: true } },
 } as const;
 
@@ -47,6 +48,7 @@ export interface RoomRow {
   status: string;
   notes: string | null;
   roomTypeId: string;
+  retiredAt: Date | null;
   roomType: { code: string; name: string };
 }
 
@@ -109,7 +111,8 @@ export class RoomRepository {
   /** Does this property own this room type? Checked before a room names it. */
   async roomTypeExists(propertyId: string, roomTypeId: string): Promise<boolean> {
     const found = await this.prisma.client.roomType.findFirst({
-      where: { id: roomTypeId, propertyId },
+      // A retired category takes no new rooms.
+      where: { id: roomTypeId, propertyId, retiredAt: null },
       select: { id: true },
     });
     return found !== null;

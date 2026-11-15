@@ -3,8 +3,15 @@ import { Module } from '@nestjs/common';
 import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { TokenService } from '../../common/auth/token.service.js';
 import { InventoryController } from './inventory.controller.js';
+import { InventoryDayRepository } from './inventory-day.repository.js';
+import { InventoryDayService } from './inventory-day.service.js';
 import { InventoryHorizonRepository } from './inventory-horizon.repository.js';
 import { InventoryHorizonService } from './inventory-horizon.service.js';
+import { RetirementRepository } from './retirement.repository.js';
+import { RetirementService } from './retirement.service.js';
+import { RoomBlockController } from './room-block.controller.js';
+import { RoomBlockRepository } from './room-block.repository.js';
+import { RoomBlockService } from './room-block.service.js';
 import { RoomController } from './room.controller.js';
 import { RoomRepository } from './room.repository.js';
 import { RoomService } from './room.service.js';
@@ -51,14 +58,20 @@ import { RoomTypeService } from './room-type.service.js';
  * ---------------------------------------------------------------------------
  */
 @Module({
-  controllers: [InventoryController, RoomTypeController, RoomController],
+  controllers: [InventoryController, RoomTypeController, RoomController, RoomBlockController],
   providers: [
     InventoryHorizonService,
     InventoryHorizonRepository,
+    InventoryDayService,
+    InventoryDayRepository,
     RoomTypeService,
     RoomTypeRepository,
     RoomService,
     RoomRepository,
+    RoomBlockService,
+    RetirementService,
+    RetirementRepository,
+    RoomBlockRepository,
     TokenService,
     SessionAuthGuard,
   ],

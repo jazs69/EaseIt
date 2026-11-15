@@ -21,6 +21,8 @@ import {
   HttpStatus,
   Param,
   Post,
+  Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -35,6 +37,12 @@ import {
 } from '@nestjs/swagger';
 import {
   extendInventoryHorizonRequestSchema,
+  inventoryDaysQuerySchema,
+  setOverbookingAllowanceRequestSchema,
+  type InventoryDaysQuery,
+  type InventoryDaysResponse,
+  type SetOverbookingAllowanceRequest,
+  type SetOverbookingAllowanceResponse,
   type ExtendInventoryHorizonRequest,
   type ExtendInventoryHorizonResponse,
   type InventoryHorizon,
@@ -45,6 +53,7 @@ import type { AuthenticatedRequest } from '../../common/auth/authenticated-user.
 import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { InventoryDayService } from './inventory-day.service.js';
 import { InventoryHorizonService } from './inventory-horizon.service.js';
 
 @ApiTags('inventory')
@@ -52,7 +61,10 @@ import { InventoryHorizonService } from './inventory-horizon.service.js';
 @Controller('properties')
 @UseGuards(SessionAuthGuard)
 export class InventoryController {
-  constructor(private readonly inventory: InventoryHorizonService) {}
+  constructor(
+    private readonly inventory: InventoryHorizonService,
+    private readonly days: InventoryDayService,
+  ) {}
 
   @Get(':hotelId/inventory/horizon')
   @ApiOperation({
@@ -109,6 +121,46 @@ export class InventoryController {
     body: ExtendInventoryHorizonRequest,
   ): Promise<ExtendInventoryHorizonResponse> {
     return this.inventory.extend(this.userId(request), hotelId, body.throughDate);
+  }
+
+  @Get(':hotelId/inventory/days')
+  @ApiOperation({
+    summary: 'Per-night counters for one room type',
+    description:
+      'physical, sold, blocked, overbookingAllowance and the derived sellable ' +
+      'count, for at most 90 nights. Advisory: a booking re-checks under lock.',
+  })
+  @ApiOkResponse({ description: 'One row per configured night; gaps are absent.' })
+  @ApiNotFoundResponse({ description: 'No such property or room type, or no grant.' })
+  @ApiForbiddenResponse({ description: 'A grant without reservations:read.' })
+  inventoryDays(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Query(new ZodValidationPipe(inventoryDaysQuerySchema)) query: InventoryDaysQuery,
+  ): Promise<InventoryDaysResponse> {
+    return this.days.read(this.userId(request), hotelId, query);
+  }
+
+  @Put(':hotelId/inventory/overbooking')
+  @ApiOperation({
+    summary: 'Set the overbooking allowance for a date range',
+    description:
+      'Absolute and idempotent; throughDate is inclusive. Lowering it below ' +
+      'what is already sold or blocked on any night is refused, naming the night.',
+  })
+  @ApiOkResponse({ description: 'How many nights were set.' })
+  @ApiNotFoundResponse({ description: 'No such property or room type, or no grant.' })
+  @ApiForbiddenResponse({ description: 'A grant without inventory:override.' })
+  @ApiConflictResponse({
+    description: 'The calendar does not cover the range, or a concurrent change.',
+  })
+  setOverbooking(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Body(new ZodValidationPipe(setOverbookingAllowanceRequestSchema))
+    body: SetOverbookingAllowanceRequest,
+  ): Promise<SetOverbookingAllowanceResponse> {
+    return this.days.setOverbookingAllowance(this.userId(request), hotelId, body);
   }
 
   /**

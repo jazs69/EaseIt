@@ -128,6 +128,8 @@ export const roomSchema = z.object({
   /** The full enum, including the two values that cannot be set here. */
   status: roomStatusSchema,
   notes: z.string().nullable(),
+  /** ISO-8601 instant, or null while the room is in service. A retired room is never assigned. */
+  retiredAt: z.string().nullable(),
 });
 
 export type RoomView = z.infer<typeof roomSchema>;

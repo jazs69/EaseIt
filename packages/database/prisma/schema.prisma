@@ -678,6 +678,10 @@ model RoomType {
 
   sortOrder Int @default(0)
 
+  /// Set once, never cleared: a retired category is no longer sold. Null while active.
+  retiredAt       DateTime? @db.Timestamptz(6)
+  retiredByUserId String?   @db.Uuid
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -714,6 +718,10 @@ model Room {
   status RoomStatus @default(VACANT_CLEAN)
 
   notes String?
+
+  /// Set once, never cleared: a retired room is never assigned or counted as stock. Null while active.
+  retiredAt       DateTime? @db.Timestamptz(6)
+  retiredByUserId String?   @db.Uuid
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)

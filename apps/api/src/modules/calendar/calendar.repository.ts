@@ -147,6 +147,7 @@ export class CalendarRepository {
       where: {
         propertyId: { in: [...propertyIds] },
         status: { not: 'OUT_OF_ORDER' },
+        retiredAt: null,
       },
       _count: { _all: true },
     });

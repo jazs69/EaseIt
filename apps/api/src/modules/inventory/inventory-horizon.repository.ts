@@ -148,6 +148,7 @@ export class InventoryHorizonRepository {
                 WHERE r."roomTypeId" = rt."id"
                   AND r."propertyId" = rt."propertyId"
                   AND r."status" <> 'OUT_OF_ORDER'
+                  AND r."retiredAt" IS NULL
              ),
              0, 0, 0,
              now(), now()
