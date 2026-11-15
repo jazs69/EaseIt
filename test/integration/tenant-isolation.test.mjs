@@ -183,6 +183,15 @@ async function body() {
     const viaInclude = await scoped.property.findMany({ where: { id: { in: [A.propertyId, B.propertyId] } }, select: { id: true, reservations: { select: { id: true } } } });
     const leaked = viaInclude.find((p) => p.id === B.propertyId)?.reservations.length ?? 0;
     h.check("in A, a relation include from a global model shows none of B's rows", leaked === 0, String(leaked));
+    // ...and still shows A's own: a global-model query must carry the setting,
+    // or RLS hides every related row (the staff list once returned nobody).
+    const own = viaInclude.find((p) => p.id === A.propertyId)?.reservations.length ?? 0;
+    h.check("in A, the same include shows A's own rows", own === ownerA, `${String(own)} of ${String(ownerA)}`);
+    const staff = await scoped.user.findMany({
+      where: { propertyRoles: { some: { propertyId: A.propertyId } } },
+      select: { id: true },
+    });
+    h.check('in A, a global-model query filtered by a tenant relation finds A\'s staff', staff.length > 0, String(staff.length));
     const inTx = await scoped.$transaction(async (tx) => tx.reservation.count());
     h.check('in A, an interactive transaction is scoped too', inTx === ownerA, String(inTx));
     let batch = null;

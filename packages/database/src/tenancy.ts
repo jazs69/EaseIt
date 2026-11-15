@@ -252,7 +252,12 @@ export function createTenantClient(base: PrismaClient): PrismaClient {
   /**
    * Standalone: narrow, then run the query in a two-statement transaction with
    * the RLS settings, so the setting and the query share one connection.
-   * Global models need neither and run as they are.
+   *
+   * Global models get the settings too whenever a scope is bound: a query on
+   * `User` that filters or includes a tenant relation (`propertyRoles`) reads
+   * a tenant table, and without the setting RLS hides every related row -- the
+   * staff list returned nobody until this applied to all models. With no scope
+   * a global query runs as it is (sign-in, before any property exists).
    */
   const standalone = base.$extends({
     query: {
@@ -260,7 +265,7 @@ export function createTenantClient(base: PrismaClient): PrismaClient {
         async $allOperations({ model, operation, args, query }) {
           const scope = currentTenantScope();
           const scoped = scopeArguments(model, operation, args, scope);
-          if (!isTenantScopedModel(model) || scope === null) return query(scoped as typeof args);
+          if (scope === null) return query(scoped as typeof args);
           const [, result] = await base.$transaction([settingsFor(base, scope), query(scoped as typeof args)]);
           return result;
         },
