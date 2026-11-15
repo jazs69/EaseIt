@@ -796,6 +796,21 @@ compliance.
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
 
+### 2026-11-16 (twenty-third pass) - browser check of FO-12, FO-13 and RS-13
+
+**Browser check (dev database, one disposable booking "QA Disposable" at Grand Marine Goa, business
+date 2026-10-19).** Mark no-show, Refund and Close folio driven through the folio screen: status became
+NO SHOW, the ₹1,000 cash deposit refunded by the same method with the Refund action then disabling
+itself, and the folio closed. **Three defects found and fixed:** (1) a cancelled or no-show stay still
+forecast its unposted nights, so the page showed the whole tariff as due and the close dialog said a
+zero-balance folio was "not settled" -- no nights are forecast for CANCELLED/NO_SHOW now; (2) the
+header PAYMENTS figure ignored refunds -- now net of them (and the legacy unposted-advance row compares
+against payments net of refunds, as `paidAmountMinor` is); (3) a closed folio still offered Collect
+payment, Add charge, Apply discount and inline corrections -- all disabled now (the server already
+refused them). Regression checks added to `folio-settlement` and `no-show`; `pnpm gate:integration`
+19/19. The dev overlay's hydration warning is from a browser extension attribute (`cz-shortcut-listen`),
+not the app.
+
 ### 2026-11-15 (twenty-second pass) - RS-13 no-show
 
 **Status transitions.** RS-13 `NI`→`CV`. Counts: `CV` 46→47, `NI` 60→59. P1-11 (stay amendment

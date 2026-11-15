@@ -184,6 +184,9 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
   const currency = totals.currency;
   const settled = totals.balanceDueMinor <= 0;
   const folioOpen = folio.folioId !== null && folio.folioStatus === 'OPEN';
+  // A closed folio is settled history: the server refuses every posting (409
+  // FOLIO_ALREADY_CLOSED), so the screen does not offer them.
+  const folioClosed = folio.folioId !== null && folio.folioStatus !== 'OPEN';
   const stayClosable = CLOSABLE_STAY_STATUSES.has(reservation.status);
   const refundablePayments = folio.transactions.filter(
     (entry) => entry.kind === 'PAYMENT' && entry.isPosted && (entry.refundableMinor ?? 0) > 0,
@@ -305,8 +308,8 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             onClick={() => {
               setSheet('charge');
             }}
-            disabled={folio.folioId === null}
-            disabledReason="No folio yet — one opens at check-in"
+            disabled={folio.folioId === null || folioClosed}
+            disabledReason={folioClosed ? 'The folio is closed' : 'No folio yet — one opens at check-in'}
           />
           <ActionPill
             icon={Percent}
@@ -314,8 +317,8 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             onClick={() => {
               setSheet('discount');
             }}
-            disabled={folio.folioId === null}
-            disabledReason="No folio yet — one opens at check-in"
+            disabled={folio.folioId === null || folioClosed}
+            disabledReason={folioClosed ? 'The folio is closed' : 'No folio yet — one opens at check-in'}
           />
           {/* FO-12: refund against a posted payment. FO-13: close a settled
               folio for a stay that is no longer accruing charges. */}
@@ -352,7 +355,8 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
               charge to a stay nobody has arrived at is a different claim. */}
           <button
             type="button"
-            title="Collect payment"
+            title={folioClosed ? 'The folio is closed' : 'Collect payment'}
+            disabled={folioClosed}
             onClick={() => {
               /**
                * Opening the reference belongs here, in the click.
@@ -418,7 +422,8 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
           tab={tab}
           currency={currency}
           hotelId={hotelId}
-          folioId={folio.folioId}
+          // Only an open folio is correctable inline; a closed one is read-only.
+          folioId={folioOpen ? folio.folioId : null}
           roomNumber={reservation.roomNumber}
           onCorrected={setFolio}
           onOpenItemized={() => {

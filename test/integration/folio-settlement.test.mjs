@@ -242,6 +242,7 @@ async function body() {
   h.check('the page reports 3,000 still refundable on the cash payment', cashRow?.refundableMinor === 300000, JSON.stringify(cashRow?.refundableMinor));
   h.check('a refund row is not correctable, and has no refundable figure', refundRow?.isCorrectable === false && refundRow?.refundableMinor === null);
   h.check('the page counts it as a refund issued', r1.payload?.breakdown?.refundsIssuedMinor === 200000, JSON.stringify(r1.payload?.breakdown?.refundsIssuedMinor));
+  h.check('the header paid figure is net of refunds (8,000 - 2,000)', r1.payload?.totals?.paidMinor === 600000, String(r1.payload?.totals?.paidMinor));
 
   /* ------------------------------------------------------------------ 2 */
   console.log('\n2. Idempotent per key.');
@@ -320,6 +321,11 @@ async function body() {
   const closed = await close(clerk, folioId);
   const afterClose = await folioRow(folioId);
   h.check('a zero-balance folio closes', ok(closed) && closed.payload?.folioStatus === 'CLOSED', show(closed));
+  h.check(
+    'the cancelled stay forecasts no night: the page shows 0 due, matching the ledger',
+    (closed.payload?.transactions ?? []).every((t) => t.isPosted) && closed.payload?.totals?.balanceDueMinor === 0,
+    JSON.stringify(closed.payload?.totals),
+  );
   h.check('CLOSED with closedAt set, one FOLIO_CLOSED audit row', afterClose.status === 'CLOSED' && afterClose.closedAt !== null && (await audits(s1, 'FOLIO_CLOSED')) === 1);
   const twice = await close(clerk, folioId);
   const afterTwice = await folioRow(folioId);

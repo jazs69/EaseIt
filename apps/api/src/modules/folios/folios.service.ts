@@ -115,6 +115,12 @@ async function refundableOf(
   return refundableFrom(paymentId, lines);
 }
 
+/** Stays that will never be charged for an unposted night, so none is forecast. */
+const STAYS_NOT_ACCRUING: ReadonlySet<string> = new Set([
+  ReservationStatus.CANCELLED,
+  ReservationStatus.NO_SHOW,
+]);
+
 /** Stays whose folio still accrues charges, so it closes at check-out, not here (FO-13). */
 const STAYS_STILL_ACCRUING: ReadonlySet<string> = new Set([
   ReservationStatus.TENTATIVE,
@@ -350,6 +356,7 @@ export class FoliosService {
         isTaxExempt: reservation.isTaxExempt,
         roomTypeName: assignment?.roomType.name ?? 'Room',
         pricedNights: reservation.pricedNights,
+        status: reservation.status,
       },
       lines,
       roomNumber,
@@ -420,7 +427,9 @@ export class FoliosService {
          * beside it.
          */
         grossTotalMinor: breakdown.subtotalMinor + breakdown.taxMinor,
-        paidMinor: breakdown.paymentsReceivedMinor,
+        // Net of refunds: money the hotel still holds. The breakdown keeps
+        // received and refunded separately.
+        paidMinor: breakdown.paymentsReceivedMinor - breakdown.refundsIssuedMinor,
         balanceDueMinor: breakdown.balanceDueMinor,
         hasUnpostedCharges: transactions.some((entry) => !entry.isPosted),
       },
@@ -1557,6 +1566,7 @@ export class FoliosService {
       isTaxExempt: boolean;
       roomTypeName: string;
       pricedNights: readonly { stayDate: Date; rateMinor: number; taxMinor: number }[];
+      status: string;
     },
     lines: readonly LineRow[],
     roomNumber: string | null,
@@ -1665,7 +1675,15 @@ export class FoliosService {
       reservation.pricedNights.map((night) => [toBusinessDate(night.stayDate), night]),
     );
 
-    for (let offset = 0; offset < nights; offset += 1) {
+    /**
+     * A cancelled or no-show stay will never be charged for its remaining
+     * nights, so they are not forecast. Showing them made the page report the
+     * whole tariff as due on a stay that ended, and told a clerk a zero-balance
+     * folio was "not settled". Posted nights, if any, still show from the ledger.
+     */
+    const forecastsNights = !STAYS_NOT_ACCRUING.has(reservation.status);
+
+    for (let offset = 0; forecastsNights && offset < nights; offset += 1) {
       const date = toBusinessDate(
         new Date(reservation.arrivalDate.getTime() + offset * DAY_MS),
       );
@@ -1713,8 +1731,11 @@ export class FoliosService {
      * the payment is a real line and this difference is zero, so the row
      * disappears on its own rather than needing to be cleaned up.
      */
+    // Net of refunds, because `paidAmountMinor` is: a refund decrements it
+    // (FO-12), and comparing it with gross payments would hide part of a
+    // genuinely unposted advance.
     const postedPayments = lines
-      .filter((line) => line.kind === 'PAYMENT')
+      .filter((line) => line.kind === 'PAYMENT' || line.kind === 'REFUND')
       .reduce((sum, line) => sum + -line.amountMinor, 0);
     const unrecorded = reservation.paidAmountMinor - postedPayments;
 

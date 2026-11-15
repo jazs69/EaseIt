@@ -331,6 +331,17 @@ async function body() {
   });
   const closed = await h.call('POST', `${base}/folios/${folioId}/close`, clerk, { reason: 'No-show settled' });
   h.check('its deposit can be refunded and the folio closed (FO-12/13)', ok(refunded) && ok(closed) && closed.payload?.folioStatus === 'CLOSED', `${show(refunded)} | ${show(closed)}`);
+  // Found in the browser: the page forecast the never-to-happen night as due.
+  const page = closed.payload;
+  h.check(
+    'the no-show folio page forecasts no night and shows nothing due',
+    (page?.transactions ?? []).every((t) => t.isPosted) &&
+      page?.totals?.balanceDueMinor === 0 &&
+      page?.totals?.grossTotalMinor === 0 &&
+      page?.totals?.hasUnpostedCharges === false,
+    JSON.stringify(page?.totals),
+  );
+  h.check('and paid is net of the refund (0)', page?.totals?.paidMinor === 0, String(page?.totals?.paidMinor));
 
   await assertCounters('final', datesOf(shiftDays(today, -1), 8));
 }
