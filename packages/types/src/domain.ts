@@ -462,6 +462,10 @@ export const ErrorCode = {
    */
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
   ACCOUNT_DISABLED: 'ACCOUNT_DISABLED',
+  /** A reset or invitation link that is unknown, already used, superseded or expired (AU-08, AU-14). One code for all four, so the answer reveals nothing about which. */
+  AUTH_TOKEN_INVALID: 'AUTH_TOKEN_INVALID',
+  /** Deactivation refused: oneself, a portfolio operator, or a person who also works at properties the caller does not manage (AU-15). */
+  DEACTIVATION_REFUSED: 'DEACTIVATION_REFUSED',
   /** The second factor is outstanding; finish it at /auth/verify-otp. */
   TWO_FACTOR_REQUIRED: 'TWO_FACTOR_REQUIRED',
   /** Unknown, already-used, or superseded challenge id. */

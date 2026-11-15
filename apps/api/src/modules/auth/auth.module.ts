@@ -4,6 +4,7 @@ import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { TokenService } from '../../common/auth/token.service.js';
 import { AuthController } from './auth.controller.js';
 import { AuthRepository } from './auth.repository.js';
+import { AccountService } from './account.service.js';
 import { AuthService } from './auth.service.js';
 
 /**
@@ -19,7 +20,7 @@ import { AuthService } from './auth.service.js';
  */
 @Module({
   controllers: [AuthController],
-  providers: [AuthService, AuthRepository, TokenService, SessionAuthGuard],
-  exports: [AuthService, TokenService, SessionAuthGuard],
+  providers: [AuthService, AccountService, AuthRepository, TokenService, SessionAuthGuard],
+  exports: [AuthService, AccountService, TokenService, SessionAuthGuard],
 })
 export class AuthModule {}

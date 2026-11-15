@@ -216,6 +216,11 @@ const suites = [
     why: 'every tenant table has forced RLS; the app login sees nothing unscoped and only its property scoped; the extension scopes, stamps and refuses; cross-property API calls are 404',
   },
   {
+    name: 'account lifecycle (AU-08, AU-14, AU-15)',
+    script: 'test/integration/account-lifecycle.test.mjs',
+    why: 'single-use expiring reset and invitation links, sessions revoked on reset, invite/accept, deactivation blocks sign-in and sessions; needs MAIL_CAPTURE_DIR shared with the API',
+  },
+  {
     name: 'unavailable permissions (AU-13)',
     script: 'test/integration/unavailable-permissions.test.mjs',
     why: 'custom roles cannot grant unbuilt features; no role or session reports them',

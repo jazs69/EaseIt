@@ -10,6 +10,12 @@
 
 import {
   authenticatedResponseSchema,
+  forgotPasswordResultSchema,
+  setPasswordResultSchema,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResult,
+  type SetPasswordResult,
+  type SetPasswordWithTokenRequest,
   loginResultSchema,
   sessionSchema,
   twoFactorChallengeSchema,
@@ -25,6 +31,22 @@ import { apiFetch, ApiRequestError } from './api';
 /* -------------------------------------------------------------------------- */
 /*  Calls                                                                     */
 /* -------------------------------------------------------------------------- */
+
+/** AU-08: email a reset link. Answers the same for every address. */
+export function requestPasswordReset(request: ForgotPasswordRequest): Promise<ForgotPasswordResult> {
+  return apiFetch('/auth/password/forgot', forgotPasswordResultSchema, { method: 'POST', body: request });
+}
+
+/** AU-08 / AU-14: set a password with an emailed link (reset, or a first password from an invitation). */
+export function setPasswordWithToken(
+  kind: 'reset' | 'invitation',
+  request: SetPasswordWithTokenRequest,
+): Promise<SetPasswordResult> {
+  return apiFetch(kind === 'reset' ? '/auth/password/reset' : '/auth/invitations/accept', setPasswordResultSchema, {
+    method: 'POST',
+    body: request,
+  });
+}
 
 export function requestSignIn(credentials: LoginRequest): Promise<LoginResult> {
   return apiFetch('/auth/login', loginResultSchema, {

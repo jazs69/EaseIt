@@ -10,7 +10,7 @@
  */
 
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@repo/database';
+import { Prisma, withoutTenantScope } from '@repo/database';
 import { isPermissionAvailable, type Permission, type Role as RoleKeyType } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
@@ -352,5 +352,80 @@ export class AccessControlRepository {
       select: { id: true },
     });
     return user.id;
+  }
+
+  /* -- AU-14 / AU-15 ------------------------------------------------------ */
+
+  async propertyName(propertyId: string): Promise<string> {
+    const property = await this.prisma.client.property.findFirst({
+      where: { id: propertyId },
+      select: { name: true },
+    });
+    return property?.name ?? 'your property';
+  }
+
+  async findUser(userId: string): Promise<{
+    id: string;
+    email: string;
+    firstName: string;
+    isActive: boolean;
+  } | null> {
+    return this.prisma.client.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, firstName: true, isActive: true },
+    });
+  }
+
+  /**
+   * Where else this person works, and whether they hold a portfolio role.
+   *
+   * Deliberately cross-property (MT-08): deactivating an account is
+   * portfolio-wide, so the caller's authority has to be checked against every
+   * property the person can reach, not just this one.
+   */
+  async grantFootprint(userId: string, propertyId: string): Promise<{ otherProperties: number; isPortfolioOperator: boolean }> {
+    return withoutTenantScope('checking where a person works before deactivating them', async () => {
+      const grants = await this.prisma.client.userPropertyRole.findMany({
+        where: { userId },
+        select: { propertyId: true, role: { select: { key: true } } },
+      });
+      return {
+        otherProperties: new Set(grants.filter((g) => g.propertyId !== propertyId).map((g) => g.propertyId)).size,
+        isPortfolioOperator: grants.some((g) => g.role.key === 'SUPER_ADMIN'),
+      };
+    });
+  }
+
+  /**
+   * Activate or deactivate, with the audit row, in one transaction. A
+   * deactivation also stamps `sessionsValidFrom`, so every session the
+   * person holds stops working on its next request (AU-06).
+   */
+  async setActive(input: {
+    propertyId: string;
+    userId: string;
+    actorId: string;
+    active: boolean;
+    reason: string | null;
+    now: Date;
+  }): Promise<void> {
+    await this.prisma.client.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: input.userId },
+        data: input.active ? { isActive: true } : { isActive: false, sessionsValidFrom: input.now },
+      });
+      await tx.auditLog.create({
+        data: {
+          propertyId: input.propertyId,
+          actorUserId: input.actorId,
+          event: input.active ? 'USER_REACTIVATED' : 'USER_DEACTIVATED',
+          entityType: 'user',
+          entityId: input.userId,
+          before: { isActive: !input.active },
+          after: { isActive: input.active },
+          reason: input.reason,
+        },
+      });
+    });
   }
 }

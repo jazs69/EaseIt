@@ -114,6 +114,27 @@ export const inviteStaffRequestSchema = z.object({
 
 export type InviteStaffRequest = z.infer<typeof inviteStaffRequestSchema>;
 
+/**
+ * AU-14: what an invitation did. SENT -- a new person, emailed a single-use
+ * link to set their first password (or a still-pending invitation re-sent).
+ * NOT_NEEDED -- the person already has an account; they were granted roles
+ * here and sign in as usual. EMAIL_FAILED -- the account and roles exist but
+ * the email could not be delivered; inviting again re-sends it.
+ */
+export const inviteStaffResultSchema = z.object({
+  member: staffMemberSchema,
+  invitation: z.enum(['SENT', 'NOT_NEEDED', 'EMAIL_FAILED']),
+});
+
+export type InviteStaffResult = z.infer<typeof inviteStaffResultSchema>;
+
+/** AU-15: deactivate or reactivate a person. The reason is kept in the audit log. */
+export const userActivationRequestSchema = z.object({
+  reason: z.string().trim().max(200).nullable().default(null),
+});
+
+export type UserActivationRequest = z.infer<typeof userActivationRequestSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*  Session view                                                              */
 /* -------------------------------------------------------------------------- */

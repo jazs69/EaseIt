@@ -434,6 +434,7 @@ model User {
 
   propertyRoles       UserPropertyRole[]
   twoFactorChallenges TwoFactorChallenge[]
+  authTokens          AuthToken[]
 
   @@index([isActive])
   @@map("user")
@@ -2887,4 +2888,47 @@ model DailySnapshot {
 
   @@unique([propertyId, businessDate], name: "daily_snapshot_one_per_business_date")
   @@map("daily_snapshot")
+}
+
+/// What a one-time account token is for (AU-08, AU-14).
+enum AuthTokenPurpose {
+  /// "Forgot password": set a new password, then every session is revoked.
+  PASSWORD_RESET
+  /// An invited person sets their first password.
+  INVITATION
+}
+
+/// A single-use, expiring token emailed to a person (AU-08, AU-14).
+///
+/// ===========================================================================
+/// Only a SHA-256 hash of the token is stored: the token itself exists in the
+/// email and nowhere else, so a copy of this table cannot be used to reset
+/// anybody's password. Single use is enforced by consuming it with a
+/// conditional update (`consumedAt IS NULL AND expiresAt > now()`), so two
+/// concurrent submissions of one link cannot both succeed.
+///
+/// Portfolio-global, like `User` and `TwoFactorChallenge`: it belongs to an
+/// identity, and the reset flow runs before any property is resolved.
+/// ===========================================================================
+model AuthToken {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  purpose   AuthTokenPurpose
+  /// SHA-256 of the emailed token, hex.
+  tokenHash String           @unique
+
+  expiresAt  DateTime  @db.Timestamptz(6)
+  consumedAt DateTime? @db.Timestamptz(6)
+  /// Superseded by a newer token of the same purpose, or by deactivation.
+  revokedAt  DateTime? @db.Timestamptz(6)
+
+  /// Who sent an invitation; null for a self-service reset.
+  createdById String?  @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([userId, purpose])
+  @@map("auth_token")
 }

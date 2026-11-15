@@ -138,6 +138,9 @@ jobs:
             printf 'DIRECT_URL=%s\n' "$DB_URL"
             printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)"
             printf 'AUTH_COOKIE_NAME=easeit_session\n'
+            # Test-only mail transport: reset and invitation links land in files the
+            # account-lifecycle suite reads (refused in production by the env schema).
+            printf 'MAIL_CAPTURE_DIR=/tmp/easeit-mail\n'
           } > apps/api/.env
 
       - name: Build
@@ -230,6 +233,7 @@ jobs:
         env:
           EASEIT_TEST_DBS: easeit_ci
           EASEIT_API_URL: http://127.0.0.1:4100/api/v1
+          MAIL_CAPTURE_DIR: /tmp/easeit-mail
         run: |
           set +e
           pnpm gate:integration 2>&1 | tee /tmp/gate-integration.log

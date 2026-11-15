@@ -22,14 +22,20 @@
 /** The name of the cookie the API sets. Must match `AUTH_COOKIE_NAME`. */
 export const SESSION_COOKIE_NAME = process.env.NEXT_PUBLIC_AUTH_COOKIE_NAME ?? 'easeit_session';
 
-/** Where an unauthenticated visitor is sent, and the only public route. */
+/** Where an unauthenticated visitor is sent. */
 export const LOGIN_PATH = '/login';
 
 /** Where a signed-in operator lands when no safe `next` was preserved. */
 export const DEFAULT_SIGNED_IN_PATH = '/group-dashboard';
 
 /** Everything a signed-out visitor may reach. */
-const PUBLIC_PATHS = [LOGIN_PATH];
+/**
+ * Signed-out pages. Besides sign-in: asking for a reset link, using one, and
+ * accepting an invitation (AU-08, AU-14) -- each reached from an email by
+ * someone who by definition has no session. None redirects anywhere.
+ */
+export const FORGOT_PASSWORD_PATH = '/forgot-password';
+const PUBLIC_PATHS = [LOGIN_PATH, FORGOT_PASSWORD_PATH, '/reset-password', '/accept-invite'];
 
 export type AuthRoute =
   /** Serve the request as-is. */

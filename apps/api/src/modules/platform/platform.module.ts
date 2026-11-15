@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { PropertyContextService } from '../../common/context/property-context.service.js';
 import { ClockService } from './clock.service.js';
+import { CaptureMailer } from './mail/capture.mailer.js';
 import { LogMailer } from './mail/log.mailer.js';
 import { MAILER, type Mailer } from './mail/mailer.js';
 import { OutboxModule } from './outbox/outbox.module.js';
@@ -32,8 +33,12 @@ import { RateLimiterService } from './rate-limiter.service.js';
 const mailerProvider: Provider = {
   provide: MAILER,
   inject: [ConfigService],
-  useFactory: (config: ConfigService): Mailer =>
-    config.get<string>('SMTP_HOST') === undefined ? new LogMailer() : new SmtpMailer(config),
+  useFactory: (config: ConfigService): Mailer => {
+    // Tests only (refused in production by validateEnv): messages to files.
+    const capture = config.get<string>('MAIL_CAPTURE_DIR');
+    if (capture !== undefined) return new CaptureMailer(capture);
+    return config.get<string>('SMTP_HOST') === undefined ? new LogMailer() : new SmtpMailer(config);
+  },
 };
 
 @Global()

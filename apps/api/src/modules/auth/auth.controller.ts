@@ -37,6 +37,12 @@ import {
 } from '@nestjs/swagger';
 import {
   loginRequestSchema,
+  forgotPasswordRequestSchema,
+  setPasswordWithTokenSchema,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResult,
+  type SetPasswordResult,
+  type SetPasswordWithTokenRequest,
   resendOtpRequestSchema,
   verifyOtpRequestSchema,
   type AuthenticatedResponse,
@@ -62,6 +68,7 @@ import type { AuthenticatedRequest } from '../../common/auth/authenticated-user.
 import { UnauthenticatedError } from '../../common/errors/domain-error.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { TokenService } from '../../common/auth/token.service.js';
+import { AccountService } from './account.service.js';
 import { AuthService, type RequestOrigin } from './auth.service.js';
 import { CrossProperty } from '../../common/tenancy/cross-property.decorator.js';
 
@@ -75,6 +82,7 @@ export class AuthController {
 
   constructor(
     private readonly auth: AuthService,
+    private readonly accounts: AccountService,
     private readonly tokens: TokenService,
     private readonly config: ConfigService,
   ) {
@@ -254,6 +262,55 @@ export class AuthController {
         clearSessionCookieAttributes(this.config),
       ),
     );
+  }
+
+  /* -- Password reset and invitations (AU-08, AU-14) --------------------- */
+
+  @Post('password/forgot')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Email a password reset link',
+    description:
+      'Always answers 202 with the same body, whether or not the address has an account, ' +
+      'so the form cannot be used to discover accounts. Rate limited per address and per caller.',
+  })
+  @ApiTooManyRequestsResponse({ description: 'Too many requests.' })
+  async forgotPassword(
+    @Req() request: FastifyRequest,
+    @Body(new ZodValidationPipe(forgotPasswordRequestSchema)) body: ForgotPasswordRequest,
+  ): Promise<ForgotPasswordResult> {
+    await this.accounts.forgotPassword(body, originOf(request).ipAddress ?? 'unknown');
+    return { accepted: true };
+  }
+
+  @Post('password/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set a new password with a reset link',
+    description:
+      'The link works once and expires; a reused, superseded or expired link is 400 ' +
+      'AUTH_TOKEN_INVALID. Every existing session is revoked. Sign in afterwards as usual.',
+  })
+  @ApiOkResponse({ description: 'The address to sign in with.' })
+  resetPassword(
+    @Req() request: FastifyRequest,
+    @Body(new ZodValidationPipe(setPasswordWithTokenSchema)) body: SetPasswordWithTokenRequest,
+  ): Promise<SetPasswordResult> {
+    return this.accounts.resetPassword(body, originOf(request).ipAddress ?? 'unknown');
+  }
+
+  @Post('invitations/accept')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Accept an invitation by setting a first password',
+    description: 'Single-use and expiring, like a reset link. Sign in afterwards as usual.',
+  })
+  @ApiOkResponse({ description: 'The address to sign in with.' })
+  acceptInvitation(
+    @Req() request: FastifyRequest,
+    @Body(new ZodValidationPipe(setPasswordWithTokenSchema)) body: SetPasswordWithTokenRequest,
+  ): Promise<SetPasswordResult> {
+    return this.accounts.acceptInvitation(body, originOf(request).ipAddress ?? 'unknown');
   }
 }
 

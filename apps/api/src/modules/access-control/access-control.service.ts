@@ -23,19 +23,25 @@ import {
   UNAVAILABLE_PERMISSIONS,
   type ActivePropertyContext,
   type CreateRoleRequest,
+  type InviteStaffResult,
   type RoleDetailDto,
   type StaffMemberDto,
   type UpdateRoleRequest,
 } from '@repo/types';
+import { randomBytes } from 'node:crypto';
+
 import { hash } from 'bcryptjs';
 
 import {
+  DeactivationRefusedError,
   EntityNotFoundError,
   ForbiddenError,
   RoleImmutableError,
   RoleNameTakenError,
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
+import { AccountService } from '../auth/account.service.js';
+import { ClockService } from '../platform/clock.service.js';
 import {
   AccessControlRepository,
   type RoleRow,
@@ -44,7 +50,11 @@ import {
 
 @Injectable()
 export class AccessControlService {
-  constructor(private readonly repository: AccessControlRepository) {}
+  constructor(
+    private readonly repository: AccessControlRepository,
+    private readonly accounts: AccountService,
+    private readonly clock: ClockService,
+  ) {}
 
   /* -- Mapping ------------------------------------------------------------ */
 
@@ -236,36 +246,121 @@ export class AccessControlService {
     return updated === null ? this.toStaffMember(member) : this.toStaffMember(updated);
   }
 
+  /**
+   * AU-14: invite a person to this property.
+   *
+   * A new person gets an account whose password nobody knows -- a hash of 32
+   * random bytes, discarded -- and an emailed single-use link to set their
+   * own. (The previous placeholder hashed the email and a millisecond
+   * timestamp, which was guessable, so an invited account could have been
+   * signed into before its owner ever saw the invitation.) A person who
+   * already has an account is simply granted the roles here; one whose
+   * earlier invitation is still unaccepted is sent a fresh link.
+   */
   async inviteStaff(
     context: ActivePropertyContext,
     request: { email: string; firstName: string; lastName: string; roleIds: string[] },
-  ): Promise<StaffMemberDto> {
+  ): Promise<InviteStaffResult> {
     await this.assertGrantable(context, request.roleIds);
 
     const existing = await this.repository.findUserByEmail(request.email);
-
-    // An invite with a temporary secret, not a usable password. The real flow
-    // emails a single-use set-password link once the auth module exists.
-    const placeholder = await hash(`invite:${request.email}:${String(Date.now())}`, 12);
-
     const userId =
       existing?.id ??
       (await this.repository.createUser(
         request.email,
         request.firstName,
         request.lastName,
-        placeholder,
+        await hash(randomBytes(32).toString('base64url'), 12),
       ));
 
-    await this.repository.replaceGrants(
-      context.propertyId,
-      userId,
-      request.roleIds,
-      context.userId,
-    );
+    await this.repository.replaceGrants(context.propertyId, userId, request.roleIds, context.userId);
 
     const member = await this.repository.findStaffMember(context.propertyId, userId);
     if (member === null) throw new EntityNotFoundError('Staff member');
-    return this.toStaffMember(member);
+
+    const needsInvitation = existing === null || (await this.accounts.hasPendingInvitation(userId));
+    if (!needsInvitation) return { member: this.toStaffMember(member), invitation: 'NOT_NEEDED' };
+
+    const user = await this.repository.findUser(userId);
+    const sent = await this.accounts.sendInvitation({
+      userId,
+      email: request.email,
+      firstName: user?.firstName ?? request.firstName,
+      propertyName: await this.repository.propertyName(context.propertyId),
+      invitedById: context.userId,
+    });
+    return { member: this.toStaffMember(member), invitation: sent ? 'SENT' : 'EMAIL_FAILED' };
+  }
+
+  /* -- AU-15: deactivation ------------------------------------------------ */
+
+  /**
+   * Deactivate a person: they cannot sign in, every session they hold stops
+   * working on its next request, and every unused reset or invitation link is
+   * revoked. Their grants are kept, so reactivating restores access as it was.
+   *
+   * An account is portfolio-wide, so the caller's authority is checked against
+   * everywhere the person works. Refused, with the reason: deactivating
+   * oneself; a portfolio operator, unless the caller is one; and a person who
+   * also works at another property, unless the caller is a portfolio operator
+   * -- a property admin cannot lock someone out of a hotel they do not run.
+   * Removing their roles here (assign-roles with none) is the local option.
+   */
+  async deactivate(context: ActivePropertyContext, userId: string, reason: string | null): Promise<StaffMemberDto> {
+    const member = await this.authorizeActivation(context, userId, 'deactivate');
+    await this.repository.setActive({
+      propertyId: context.propertyId,
+      userId,
+      actorId: context.userId,
+      active: false,
+      reason,
+      now: this.clock.now(),
+    });
+    await this.accounts.revokePendingTokens(userId);
+    const updated = await this.repository.findStaffMember(context.propertyId, userId);
+    return this.toStaffMember(updated ?? member);
+  }
+
+  /** Reactivate; sessions revoked at deactivation stay revoked. */
+  async reactivate(context: ActivePropertyContext, userId: string, reason: string | null): Promise<StaffMemberDto> {
+    const member = await this.authorizeActivation(context, userId, 'reactivate');
+    await this.repository.setActive({
+      propertyId: context.propertyId,
+      userId,
+      actorId: context.userId,
+      active: true,
+      reason,
+      now: this.clock.now(),
+    });
+    const updated = await this.repository.findStaffMember(context.propertyId, userId);
+    return this.toStaffMember(updated ?? member);
+  }
+
+  private async authorizeActivation(
+    context: ActivePropertyContext,
+    userId: string,
+    action: 'deactivate' | 'reactivate',
+  ): Promise<StaffRow> {
+    // Someone with no grant here is not found, never forbidden (section 3.2).
+    const member = await this.repository.findStaffMember(context.propertyId, userId);
+    if (member === null) throw new EntityNotFoundError('Staff member');
+
+    if (userId === context.userId) {
+      throw new DeactivationRefusedError(`You cannot ${action} your own account.`);
+    }
+    if (!context.isPortfolioOperator) {
+      const footprint = await this.repository.grantFootprint(userId, context.propertyId);
+      if (footprint.isPortfolioOperator) {
+        throw new DeactivationRefusedError(`Only a portfolio operator can ${action} a portfolio operator.`);
+      }
+      if (footprint.otherProperties > 0) {
+        throw new DeactivationRefusedError(
+          `This person also works at ${String(footprint.otherProperties)} other propert` +
+            `${footprint.otherProperties === 1 ? 'y' : 'ies'}. Ask a portfolio operator to ${action} ` +
+            'the account, or remove their roles here instead.',
+        );
+      }
+    }
+    return member;
   }
 }

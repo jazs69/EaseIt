@@ -140,6 +140,41 @@ export const changePasswordRequestSchema = z.object({
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
 
 /* -------------------------------------------------------------------------- */
+/*  Password reset and invitation (AU-08, AU-14)                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Ask for a reset link. The answer is the same whether or not the address
+ * belongs to anyone, so the form cannot be used to discover accounts.
+ */
+export const forgotPasswordRequestSchema = z.object({
+  email: z.email().toLowerCase().trim(),
+});
+
+export type ForgotPasswordRequest = z.infer<typeof forgotPasswordRequestSchema>;
+
+export const forgotPasswordResultSchema = z.object({ accepted: z.literal(true) });
+export type ForgotPasswordResult = z.infer<typeof forgotPasswordResultSchema>;
+
+/** The emailed token: 43 URL-safe characters (32 random bytes). */
+export const accountTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'This link is not valid.');
+
+/** Set a new password with a reset link, or a first password with an invitation link. */
+export const setPasswordWithTokenSchema = z.object({
+  token: accountTokenSchema,
+  newPassword: passwordPolicySchema,
+});
+
+export type SetPasswordWithTokenRequest = z.infer<typeof setPasswordWithTokenSchema>;
+
+export const setPasswordResultSchema = z.object({
+  /** The address to sign in with; sign-in itself still needs the emailed code. */
+  email: z.string(),
+});
+
+export type SetPasswordResult = z.infer<typeof setPasswordResultSchema>;
+
+/* -------------------------------------------------------------------------- */
 /*  The outstanding challenge                                                 */
 /* -------------------------------------------------------------------------- */
 

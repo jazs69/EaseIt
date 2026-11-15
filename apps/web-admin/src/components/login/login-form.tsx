@@ -309,7 +309,7 @@ export function LoginForm({
             </label>
 
             <a
-              href="#forgot-password"
+              href="/forgot-password"
               className="text-sm text-zinc-400 transition hover:text-blue-400"
             >
               Forgot password?

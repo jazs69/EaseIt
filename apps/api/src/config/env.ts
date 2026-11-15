@@ -144,6 +144,14 @@ export const envSchema = z
      * could ever receive a code and every sign-in would fail.
      */
     SMTP_HOST: z.string().min(1).optional(),
+    /** Tests only: write mail to JSON files here instead of sending it. Refused in production. */
+    MAIL_CAPTURE_DIR: z.string().min(1).optional(),
+    /**
+     * The staff app's public origin, for links in emails (password reset,
+     * invitation). The token travels in the URL fragment, so it is never sent
+     * to any server or written to an access log.
+     */
+    WEB_ADMIN_URL: z.url().default('http://localhost:3001'),
     SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(587),
     /** True for implicit TLS on 465. Leave false for STARTTLS on 587. */
     SMTP_SECURE: booleanFromEnv.default(false),
@@ -239,6 +247,16 @@ export const envSchema = z
     }
 
     if (env.NODE_ENV !== 'production') return;
+
+    if (env.MAIL_CAPTURE_DIR !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_CAPTURE_DIR'],
+        message:
+          'MAIL_CAPTURE_DIR is a test transport and is refused in production: ' +
+          'reset and invitation links would be written to disk instead of sent.',
+      });
+    }
 
     if (env.SMTP_HOST === undefined) {
       ctx.addIssue({

@@ -477,3 +477,28 @@ export class NightAuditBlockedError extends DomainError {
     super(reason, details);
   }
 }
+
+/**
+ * A reset or invitation link that cannot be used (AU-08, AU-14): unknown,
+ * already used, superseded by a newer link, expired, or for an account that
+ * is no longer active. One answer for all of them, so a probe learns nothing
+ * about which; the person is told to ask for a new link.
+ */
+export class AuthTokenInvalidError extends DomainError {
+  readonly code = ErrorCode.AUTH_TOKEN_INVALID;
+  readonly httpStatus = HttpStatus.BAD_REQUEST;
+
+  constructor() {
+    super('This link is invalid or has expired. Ask for a new one.');
+  }
+}
+
+/** AU-15: a deactivation the caller may not make, with the reason in plain words. */
+export class DeactivationRefusedError extends DomainError {
+  readonly code = ErrorCode.DEACTIVATION_REFUSED;
+  readonly httpStatus = HttpStatus.CONFLICT;
+
+  constructor(reason: string) {
+    super(reason);
+  }
+}

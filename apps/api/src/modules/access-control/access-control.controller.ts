@@ -15,11 +15,20 @@
  * shared ESLint config enforces it.
  */
 
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiConflictResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import {
   assignRolesRequestSchema,
   createRoleRequestSchema,
+  inviteStaffRequestSchema,
+  userActivationRequestSchema,
   listStaffQuerySchema,
   Permission,
   updateRoleRequestSchema,
@@ -27,6 +36,9 @@ import {
   type ActivePropertyContext,
   type AssignRolesRequest,
   type CreateRoleRequest,
+  type InviteStaffRequest,
+  type InviteStaffResult,
+  type UserActivationRequest,
   type ListStaffQuery,
   type RoleDetailDto,
   type StaffMemberDto,
@@ -131,5 +143,53 @@ export class AccessControlController {
     @Body(new ZodValidationPipe(assignRolesRequestSchema)) body: AssignRolesRequest,
   ): Promise<StaffMemberDto> {
     return this.accessControl.assignRoles(context, body.userId, body.roleIds);
+  }
+
+  @Post('users/invite')
+  @RequirePermissions(Permission.USERS_MANAGE)
+  @ApiOperation({
+    summary: 'Invite a person to this property (AU-14)',
+    description:
+      'Creates the account if needed, grants the roles here, and emails a single-use link to ' +
+      'set a first password. An existing account is just granted the roles (NOT_NEEDED).',
+  })
+  @ApiOkResponse({ description: 'The staff member, and what happened to the invitation.' })
+  invite(
+    @ActiveContext() context: ActivePropertyContext,
+    @Body(new ZodValidationPipe(inviteStaffRequestSchema)) body: InviteStaffRequest,
+  ): Promise<InviteStaffResult> {
+    return this.accessControl.inviteStaff(context, body);
+  }
+
+  @Post('users/:userId/deactivate')
+  @RequirePermissions(Permission.USERS_MANAGE)
+  @ApiOperation({
+    summary: 'Deactivate a person (AU-15)',
+    description:
+      'They cannot sign in, every session they hold stops working, and unused reset or ' +
+      'invitation links are revoked. Refused (409 DEACTIVATION_REFUSED) for oneself, a portfolio ' +
+      'operator, or someone who also works at another property, unless the caller is a portfolio operator.',
+  })
+  @ApiOkResponse({ description: 'The staff member, now inactive.' })
+  @ApiConflictResponse({ description: 'Refused, with the reason.' })
+  @ApiNotFoundResponse({ description: 'No such person at this property.' })
+  deactivate(
+    @ActiveContext() context: ActivePropertyContext,
+    @Param('userId', new ParseUUIDPipe()) userId: string,
+    @Body(new ZodValidationPipe(userActivationRequestSchema)) body: UserActivationRequest,
+  ): Promise<StaffMemberDto> {
+    return this.accessControl.deactivate(context, userId, body.reason);
+  }
+
+  @Post('users/:userId/reactivate')
+  @RequirePermissions(Permission.USERS_MANAGE)
+  @ApiOperation({ summary: 'Reactivate a person (AU-15). Sessions revoked earlier stay revoked.' })
+  @ApiOkResponse({ description: 'The staff member, active again.' })
+  reactivate(
+    @ActiveContext() context: ActivePropertyContext,
+    @Param('userId', new ParseUUIDPipe()) userId: string,
+    @Body(new ZodValidationPipe(userActivationRequestSchema)) body: UserActivationRequest,
+  ): Promise<StaffMemberDto> {
+    return this.accessControl.reactivate(context, userId, body.reason);
   }
 }
