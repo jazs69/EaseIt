@@ -568,12 +568,20 @@ export class ReportsRepository {
         COALESCE(SUM(CASE WHEN l."kind" = 'ROOM_CHARGE'
                            AND l."reversesLineId" IS NULL
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "roomRevenue",
-        COALESCE(SUM(CASE WHEN l."kind" = 'TAX' AND p."kind" = 'ROOM_CHARGE'
+        -- Tax is TAX or a flagged negative tax ADJUSTMENT, attributed to the
+        -- charge it ultimately derives from: directly (the charge's own tax)
+        -- or through a correction (charge -> adjustment -> tax). Before this,
+        -- tax on corrections was missed entirely.
+        COALESCE(SUM(CASE WHEN (l."kind" = 'TAX' OR l."isTaxAdjustment")
+                           AND (p."kind" = 'ROOM_CHARGE'
+                                OR (p."kind" = 'ADJUSTMENT' AND gp."kind" = 'ROOM_CHARGE'))
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "roomTax",
         COALESCE(SUM(CASE WHEN l."kind" = 'SERVICE_CHARGE'
                            AND l."reversesLineId" IS NULL
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "serviceNet",
-        COALESCE(SUM(CASE WHEN l."kind" = 'TAX' AND p."kind" = 'SERVICE_CHARGE'
+        COALESCE(SUM(CASE WHEN (l."kind" = 'TAX' OR l."isTaxAdjustment")
+                           AND (p."kind" = 'SERVICE_CHARGE'
+                                OR (p."kind" = 'ADJUSTMENT' AND gp."kind" = 'SERVICE_CHARGE'))
                           THEN l."amountMinor" ELSE 0 END), 0)              AS "serviceTax",
         COALESCE(SUM(CASE WHEN l."kind" = 'PAYMENT'
                            AND l."paymentMethod" IN ('UPI', 'CARD', 'BANK_TRANSFER')
@@ -598,6 +606,7 @@ export class ReportsRepository {
       FROM "folio" f
       JOIN "folio_line" l ON l."folioId" = f."id"
       LEFT JOIN "folio_line" p ON p."id" = l."derivedFromLineId"
+      LEFT JOIN "folio_line" gp ON gp."id" = p."derivedFromLineId"
       WHERE f."propertyId" = ${propertyId}::uuid
         AND f."reservationId" = ANY(${reservationIds}::uuid[])
       GROUP BY f."reservationId"

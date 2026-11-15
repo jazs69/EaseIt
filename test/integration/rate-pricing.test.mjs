@@ -526,6 +526,96 @@ async function body() {
       );
     }
     h.check('the corrected nights total the agreed net within a paisa per night', Math.abs(netSum - 1600000) <= charges.length, `net ${String(netSum)}`);
+
+    /* ------------------------------------------------------------ 5c */
+    console.log('\n5c. Correcting DOWN: negative tax is a flagged adjustment.');
+    const down = await h.call(
+      'POST',
+      `${base}/folios/${deskFolio.id}/room-charges/correct`,
+      clerk,
+      { netAmountMinor: 1400000, reason: 'Goodwill' },
+    );
+    h.check('a downward stay correction: 2xx, not 500', down.status === 200 || down.status === 201, `HTTP ${String(down.status)} ${JSON.stringify(down.payload?.details ?? down.payload?.message ?? '')}`);
+
+    const ledger = async () =>
+      prisma.folioLine.findMany({
+        where: { propertyId: fixture.propertyId, folioId: deskFolio.id },
+        select: { id: true, kind: true, amountMinor: true, derivedFromLineId: true, chargeDate: true, isTaxAdjustment: true },
+      });
+    let rows = await ledger();
+    h.check('no TAX line is negative', rows.filter((l) => l.kind === 'TAX').every((l) => l.amountMinor >= 0));
+    const flagged = rows.filter((l) => l.isTaxAdjustment);
+    h.check(
+      'the negative tax is carried by flagged ADJUSTMENT lines',
+      flagged.length > 0 && flagged.every((l) => l.kind === 'ADJUSTMENT' && l.amountMinor < 0 && l.derivedFromLineId !== null),
+      `${String(flagged.length)} flagged`,
+    );
+
+    // Per night, tax = TAX + flagged adjustments; net = charge + unflagged adjustments.
+    const perNight = (all, charge) => {
+      const adj = all.filter((l) => l.kind === 'ADJUSTMENT' && !l.isTaxAdjustment && l.derivedFromLineId === charge.id);
+      const adjIds = new Set(adj.map((a) => a.id));
+      const net = charge.amountMinor + adj.reduce((s, a) => s + a.amountMinor, 0);
+      const tax = all
+        .filter((l) => (l.kind === 'TAX' || l.isTaxAdjustment) && (l.derivedFromLineId === charge.id || adjIds.has(l.derivedFromLineId)))
+        .reduce((s, l) => s + l.amountMinor, 0);
+      return { net, tax };
+    };
+    const stayCharges = rows.filter((l) => l.kind === 'ROOM_CHARGE' && l.derivedFromLineId === null);
+    let downNet = 0;
+    let ledgerTax = 0;
+    for (const charge of stayCharges) {
+      const { net, tax } = perNight(rows, charge);
+      downNet += net;
+      ledgerTax += tax;
+      const rate = charge.amountMinor === 800000 ? 18 : 5;
+      h.check(
+        `${charge.chargeDate.toISOString().slice(0, 10)} still ${String(rate)}% after a downward correction`,
+        Math.abs(tax - Math.round((net * rate) / 100)) <= 1,
+        `net ${String(net)} tax ${String(tax)}`,
+      );
+    }
+    h.check('the stay lands on the agreed net', Math.abs(downNet - 1400000) <= stayCharges.length, `net ${String(downNet)}`);
+
+    const page = await h.call('GET', `${base}/folios/by-booking/${desk.payload?.bookingCode}`, clerk);
+    const shownTax = (page.payload?.transactions ?? [])
+      .filter((t) => t.isPosted && t.kind === 'ROOM_CHARGE')
+      .reduce((s, t) => s + t.taxMinor, 0);
+    h.check('the folio page shows the reduced tax (flagged lines counted)', shownTax === ledgerTax, `page ${String(shownTax)} ledger ${String(ledgerTax)}`);
+
+    // Single-line correction, twice on the same night: the second must start
+    // from the first's result, not count it twice.
+    const night2Charge = stayCharges.find((c) => c.amountMinor === 800000);
+    for (const target of [700000, 650000]) {
+      const one = await h.call(
+        'POST',
+        `${base}/folios/${deskFolio.id}/lines/${night2Charge.id}/correct`,
+        clerk,
+        { netAmountMinor: target, reason: 'Night 2 rate' },
+      );
+      h.check(`single-night correction to net ${String(target)}: 2xx`, one.status === 200 || one.status === 201, `HTTP ${String(one.status)} ${JSON.stringify(one.payload?.details ?? one.payload?.message ?? '')}`);
+    }
+    rows = await ledger();
+    const n2 = perNight(rows, night2Charge);
+    h.check('after two corrections night 2 is exactly the last target', Math.abs(n2.net - 650000) <= 1, `net ${String(n2.net)}`);
+    h.check('and keeps its 18% band', Math.abs(n2.tax - Math.round((n2.net * 18) / 100)) <= 1, `tax ${String(n2.tax)}`);
+    h.check('still no negative TAX line', rows.filter((l) => l.kind === 'TAX').every((l) => l.amountMinor >= 0));
+
+    // The tax report reads the same ledger: TAX + flagged adjustments, including
+    // tax hung off corrections (charge -> adjustment -> tax).
+    const finalTax = stayCharges.reduce((s, c) => s + perNight(rows, c).tax, 0);
+    const report = await h.call(
+      'GET',
+      `${base}/reports/master-report?startDate=${today}&endDate=${shiftDays(today, 3)}&dateDimension=CHECKOUT&limit=200`,
+      // Financial reports need financial_reports:read; front desk rightly lacks it.
+      fixture.users.admin.cookie,
+    );
+    const reportRow = report.payload?.rows?.find((r) => r.bookingId === desk.payload?.bookingCode);
+    h.check(
+      'the master report’s room tax equals the ledger’s (flagged and correction tax included)',
+      report.status === 200 && reportRow?.roomTaxMinor === finalTax,
+      `HTTP ${String(report.status)} report ${String(reportRow?.roomTaxMinor)} ledger ${String(finalTax)}`,
+    );
   }
 
   /* -------------------------------------------------------------- 6 */

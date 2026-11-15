@@ -127,6 +127,24 @@ interface LineRow {
   paymentMethod: string | null;
   derivedFromLineId: string | null;
   reversesLineId: string | null;
+  /** A negative tax delta posted as an ADJUSTMENT (see the schema note). */
+  isTaxAdjustment: boolean;
+}
+
+/**
+ * Is this line tax? `TAX`, or an ADJUSTMENT flagged as a negative tax delta.
+ * The ONE definition every total in this file uses, so a downward correction
+ * reduces tax instead of masquerading as a change to the net.
+ */
+function isTaxLine(line: { kind: string; isTaxAdjustment: boolean }): boolean {
+  return line.kind === 'TAX' || line.isTaxAdjustment;
+}
+
+/** The kind and flag for a tax delta: TAX when >= 0, a flagged ADJUSTMENT when < 0. */
+function taxDeltaShape(deltaMinor: number): { kind: 'TAX' | 'ADJUSTMENT'; isTaxAdjustment: boolean } {
+  return deltaMinor < 0
+    ? { kind: 'ADJUSTMENT', isTaxAdjustment: true }
+    : { kind: 'TAX', isTaxAdjustment: false };
 }
 
 @Injectable()
@@ -210,6 +228,7 @@ export class FoliosService {
                 paymentMethod: true,
                 derivedFromLineId: true,
                 reversesLineId: true,
+                isTaxAdjustment: true,
               },
               orderBy: [{ chargeDate: 'asc' }, { createdAt: 'asc' }],
             },
@@ -802,7 +821,10 @@ export class FoliosService {
         amountMinor: true,
         chargeDate: true,
         paymentMethod: true,
-        derivedTax: { select: { id: true, amountMinor: true } },
+        // The charge's OWN tax only. Unfiltered, this relation also returned
+        // the charge's ADJUSTMENT children, which were then counted again
+        // below -- a second correction saw every earlier one twice.
+        derivedTax: { where: { kind: 'TAX' }, select: { id: true, amountMinor: true } },
         derivedFrom: { select: { id: true } },
       },
     });
@@ -837,7 +859,7 @@ export class FoliosService {
      */
     const existingTaxMinor = line.derivedTax.reduce((sum, tax) => sum + tax.amountMinor, 0);
     const adjustments = await this.prisma.client.folioLine.findMany({
-      where: { derivedFromLineId: line.id, kind: 'ADJUSTMENT' },
+      where: { derivedFromLineId: line.id, kind: 'ADJUSTMENT', isTaxAdjustment: false },
       select: { id: true, amountMinor: true },
     });
     const adjustmentTaxMinor =
@@ -847,7 +869,7 @@ export class FoliosService {
             await this.prisma.client.folioLine.aggregate({
               where: {
                 derivedFromLineId: { in: adjustments.map((entry) => entry.id) },
-                kind: 'TAX',
+                OR: [{ kind: 'TAX' }, { isTaxAdjustment: true }],
               },
               _sum: { amountMinor: true },
             })
@@ -939,7 +961,8 @@ export class FoliosService {
           data: {
             propertyId: property.id,
             folioId: folio.id,
-            kind: 'TAX',
+            // A negative delta is a flagged ADJUSTMENT: TAX lines are >= 0.
+            ...taxDeltaShape(deltaTaxMinor),
             description: `Tax on correction — ${line.description}`,
             amountMinor: deltaTaxMinor,
             currency: folio.currency,
@@ -1053,18 +1076,29 @@ export class FoliosService {
     const ids = charges.map((charge) => charge.id);
     const children = await this.prisma.client.folioLine.findMany({
       where: { derivedFromLineId: { in: ids } },
-      select: { id: true, kind: true, amountMinor: true, derivedFromLineId: true },
+      select: {
+        id: true,
+        kind: true,
+        amountMinor: true,
+        derivedFromLineId: true,
+        isTaxAdjustment: true,
+      },
     });
     const adjustmentIds = new Set(
-      children.filter((child) => child.kind === 'ADJUSTMENT').map((child) => child.id),
+      children
+        .filter((child) => child.kind === 'ADJUSTMENT' && !child.isTaxAdjustment)
+        .map((child) => child.id),
     );
     const grandchildren = await this.prisma.client.folioLine.findMany({
-      where: { derivedFromLineId: { in: [...adjustmentIds] }, kind: 'TAX' },
+      where: {
+        derivedFromLineId: { in: [...adjustmentIds] },
+        OR: [{ kind: 'TAX' }, { isTaxAdjustment: true }],
+      },
       select: { amountMinor: true, derivedFromLineId: true },
     });
 
     const ownTaxMinor = children
-      .filter((child) => child.kind === 'TAX')
+      .filter((child) => isTaxLine(child))
       .reduce((sum, child) => sum + child.amountMinor, 0);
     // The posted nights before tax. Used for the implied rate below and for
     // apportioning the correction across nights further down.
@@ -1073,7 +1107,7 @@ export class FoliosService {
       baseNetMinor +
       ownTaxMinor +
       children
-        .filter((child) => child.kind === 'ADJUSTMENT')
+        .filter((child) => child.kind === 'ADJUSTMENT' && !child.isTaxAdjustment)
         .reduce((sum, child) => sum + child.amountMinor, 0) +
       grandchildren.reduce((sum, child) => sum + child.amountMinor, 0);
 
@@ -1094,7 +1128,7 @@ export class FoliosService {
      */
     const nightRates = charges.map((charge) => {
       const nightTaxMinor = children
-        .filter((child) => child.kind === 'TAX' && child.derivedFromLineId === charge.id)
+        .filter((child) => isTaxLine(child) && child.derivedFromLineId === charge.id)
         .reduce((sum, child) => sum + child.amountMinor, 0);
       const rate = impliedRatePercent(charge.amountMinor, nightTaxMinor);
       return reservation.isTaxExempt || nightTaxMinor === 0 ? 0 : rate;
@@ -1219,7 +1253,8 @@ export class FoliosService {
             data: {
               propertyId: property.id,
               folioId: folio.id,
-              kind: 'TAX',
+              // A negative delta is a flagged ADJUSTMENT: TAX lines are >= 0.
+              ...taxDeltaShape(shareTaxMinor),
               description: `Tax on correction — ${charge.description}`,
               amountMinor: shareTaxMinor,
               currency: folio.currency,
@@ -1320,7 +1355,7 @@ export class FoliosService {
 
     for (const line of lines) {
       if (line.derivedFromLineId === null) continue;
-      if (line.kind === 'TAX') {
+      if (isTaxLine(line)) {
         taxByParent.set(
           line.derivedFromLineId,
           (taxByParent.get(line.derivedFromLineId) ?? 0) + line.amountMinor,
@@ -1351,13 +1386,13 @@ export class FoliosService {
      */
     const adjustmentParent = new Map<string, string>();
     for (const line of lines) {
-      if (line.kind === 'ADJUSTMENT' && line.derivedFromLineId !== null) {
+      if (line.kind === 'ADJUSTMENT' && !line.isTaxAdjustment && line.derivedFromLineId !== null) {
         adjustmentParent.set(line.id, line.derivedFromLineId);
       }
     }
 
     for (const line of lines) {
-      if (line.kind !== 'TAX' || line.derivedFromLineId === null) continue;
+      if (!isTaxLine(line) || line.derivedFromLineId === null) continue;
       const charge = adjustmentParent.get(line.derivedFromLineId);
       if (charge === undefined) continue;
       // Into the row's TAX, not its NET. Folding it into net left the tax

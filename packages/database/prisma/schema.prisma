@@ -2466,6 +2466,12 @@ model FolioLine {
   derivedFrom       FolioLine?  @relation("TaxDerivation", fields: [derivedFromLineId], references: [id], onDelete: SetNull)
   derivedTax        FolioLine[] @relation("TaxDerivation")
 
+  /// A NEGATIVE tax delta, posted as an ADJUSTMENT because
+  /// `folio_line_sign_matches_kind` keeps TAX lines non-negative. Tax is
+  /// `kind = TAX OR isTaxAdjustment`; every folio total and tax report must
+  /// read it that way. Only ever set on an ADJUSTMENT derived from another line.
+  isTaxAdjustment Boolean @default(false)
+
   /// For a correction: the line it cancels.
   reversesLineId String?     @db.Uuid
   reverses       FolioLine?  @relation("Reversal", fields: [reversesLineId], references: [id], onDelete: SetNull)
