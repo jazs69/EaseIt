@@ -10,6 +10,8 @@
 
 import {
   cancelReservationResultSchema,
+  frontDeskBoardSchema,
+  type FrontDeskBoard,
   changeStayDatesPreviewSchema,
   changeStayDatesResultSchema,
   type ChangeStayDatesCommand,
@@ -1765,6 +1767,16 @@ export function startNightAudit(hotelId: string): Promise<StartNightAuditResult>
 
 const housekeepingPath = (hotelId: string): string =>
   `/properties/${encodeURIComponent(hotelId)}/housekeeping`;
+
+/** FD-09: today's arrivals, departures and in-house guests. */
+export function fetchFrontDeskBoard(
+  hotelId: string,
+  options: { cookieHeader?: string } = {},
+): Promise<FrontDeskBoard> {
+  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/front-desk/board`, frontDeskBoardSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
 
 export function fetchHousekeepingBoard(
   hotelId: string,

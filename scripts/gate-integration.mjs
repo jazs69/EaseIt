@@ -211,6 +211,11 @@ const suites = [
     why: 'extend/shorten/move release and sell per date and category, kept nights keep their price, total = sum of nights, charged nights protected, last-room race, change vs cancel race, tenancy',
   },
   {
+    name: 'front-desk board (FD-09)',
+    script: 'test/integration/front-desk-board.test.mjs',
+    why: 'due in / arrived / overdue arrivals, due out / departed today / overstays, in house; room readiness; balances only with folio:read; housekeeping 403; tenancy',
+  },
+  {
     name: 'night audit (NA-01 .. NA-06)',
     script: 'test/integration/night-audit.test.mjs',
     why: 'enqueue-only requests, 8 ordered steps, no-show roll, nightly charge once, settle, snapshot, date roll, idempotent re-run, racing executors, resume, per-timezone schedule',

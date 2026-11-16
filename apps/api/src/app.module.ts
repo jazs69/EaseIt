@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnv } from './config/env.js';
 import { AccessControlModule } from './modules/access-control/access-control.module.js';
 import { NightAuditModule } from './modules/nightaudit/night-audit.module.js';
+import { FrontDeskModule } from './modules/frontdesk/frontdesk.module.js';
 import { HousekeepingModule } from './modules/housekeeping/housekeeping.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CalendarModule } from './modules/calendar/calendar.module.js';
@@ -59,6 +60,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     AccessControlModule,
     NightAuditModule,
     HousekeepingModule,
+    FrontDeskModule,
   ],
 })
 export class AppModule {}
