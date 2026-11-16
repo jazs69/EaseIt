@@ -288,7 +288,7 @@ async function body() {
   const csv = await download(`${base}/invoices/${inv.id}/csv`, clerk);
   const csvText = csv.bytes.toString('utf8');
   h.check('CSV: 200 text/csv', csv.status === 200 && csv.type.startsWith('text/csv'), `${String(csv.status)} ${csv.type}`);
-  h.check('CSV: names the document and its total', csvText.startsWith(`Tax Invoice,${inv.number}\r\n`) && csvText.includes(`Total,${(t.totalMinor / 100).toFixed(2)}`));
+  h.check('CSV: names the document and its total', csvText.startsWith(`﻿Tax Invoice,${inv.number}\r\n`) && csvText.includes(`Total,${(t.totalMinor / 100).toFixed(2)}`));
   if (process.env.INVOICE_PDF_OUT) {
     const { writeFileSync } = await import('node:fs');
     writeFileSync(process.env.INVOICE_PDF_OUT, pdf.bytes);

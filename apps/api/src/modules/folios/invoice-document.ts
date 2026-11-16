@@ -146,7 +146,9 @@ export function renderInvoiceCsv(invoice: Invoice): string {
       { t: amount(payment.amountMinor), amount: true },
     ]);
   }
-  return `${rows.map((row) => row.join(',')).join('\r\n')}\r\n`;
+  // A UTF-8 byte-order mark first: without it Excel reads the file as the
+  // local code page and turns "—" and "₹" into mojibake.
+  return `\uFEFF${rows.map((row) => row.join(',')).join('\r\n')}\r\n`;
 }
 
 /* -------------------------------------------------------------------------- */

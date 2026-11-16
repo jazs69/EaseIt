@@ -143,7 +143,8 @@ const invoice = {
 
 const csv = renderInvoiceCsv(invoice);
 const csvLines = csv.split('\r\n');
-check('first row names the document', csvLines[0] === 'Tax Invoice,INV_2627-00007', csvLines[0]);
+check('starts with a UTF-8 BOM, for Excel', csv.startsWith('\uFEFF'));
+check('first row names the document', csvLines[0] === '\uFEFFTax Invoice,INV_2627-00007', csvLines[0]);
 check('a line with formula text is guarded and quoted', csv.includes('"\'=cmd|calc, ""room"" ₹ \\ (night)"'));
 check('amounts are plain decimals, unguarded', csv.includes(',100.00,18.00,18.00,118.00'));
 check('the total row', csvLines.includes('Total,10620.00'));

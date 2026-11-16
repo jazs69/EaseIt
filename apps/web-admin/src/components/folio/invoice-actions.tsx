@@ -37,7 +37,11 @@ function save(blob: Blob, name: string): void {
   document.body.append(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  // Not revoked at once: with "ask where to save" on, Chrome is still holding
+  // the download behind its Save dialog and needs the URL until it finishes.
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60_000);
 }
 
 const pill =
