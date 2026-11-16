@@ -23,6 +23,8 @@ import { ApiRequestError } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
 import { changeStayDates, previewStayDates } from '@/lib/properties-client';
 
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 export interface ChangeDatesDialogProps {
   hotelId: string;
   reservationId: string;
@@ -87,8 +89,10 @@ export function ChangeDatesDialog({
       : Number(overrideMatch[1]) * 100 + Number((overrideMatch[2] ?? '').padEnd(2, '0'));
   const overrideInvalid = override.trim() !== '' && overrideMatch === null;
 
-  const canPreview =
-    !unchanged && arrival !== '' && departure !== '' && departure > arrival && !overrideInvalid;
+  // A native date input accepts a six-digit year while it is being typed;
+  // only a complete YYYY-MM-DD pair is worth asking the API about.
+  const datesComplete = CALENDAR_DATE.test(arrival) && CALENDAR_DATE.test(departure);
+  const canPreview = !unchanged && datesComplete && departure > arrival && !overrideInvalid;
   const key = `${arrival}|${departure}|${String(overrideMinor)}`;
   const current = canPreview && answer?.key === key ? answer : null;
   const preview = current?.preview ?? null;
@@ -190,6 +194,7 @@ export function ChangeDatesDialog({
               <span className="text-[11px] text-zinc-400">Check-in</span>
               <input
                 type="date"
+                max="9999-12-31"
                 value={arrival}
                 disabled={inHouse || saving}
                 onChange={(event) => {
@@ -202,6 +207,7 @@ export function ChangeDatesDialog({
               <span className="text-[11px] text-zinc-400">Check-out</span>
               <input
                 type="date"
+                max="9999-12-31"
                 value={departure}
                 disabled={saving}
                 onChange={(event) => {

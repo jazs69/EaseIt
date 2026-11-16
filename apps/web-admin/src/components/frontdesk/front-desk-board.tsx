@@ -128,7 +128,14 @@ export function FrontDeskBoardView({ hotelId, initial }: { hotelId: string; init
                 <th className="px-3 py-2 font-medium">Stay</th>
                 <th className="px-3 py-2 font-medium">Room</th>
                 <th className="px-3 py-2 font-medium">Pax</th>
-                {board.showsBalances ? <th className="px-3 py-2 text-right font-medium">Balance</th> : null}
+                {board.showsBalances ? (
+                  <th
+                    className="px-3 py-2 text-right font-medium"
+                    title="Charges posted so far, less payments. The folio's Due also counts nights not yet posted, so the two agree on the departure day."
+                  >
+                    Posted balance
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -199,7 +206,11 @@ function BoardRow({
             (row.balanceMinor ?? 0) > 0 ? 'text-amber-200' : 'text-zinc-400',
           )}
         >
-          {row.balanceMinor === null ? '—' : formatMoney(row.balanceMinor, row.currency)}
+          {row.balanceMinor === null
+            ? '—'
+            : row.balanceMinor < 0
+              ? `${formatMoney(-row.balanceMinor, row.currency)} credit`
+              : formatMoney(row.balanceMinor, row.currency)}
         </td>
       ) : null}
     </tr>
