@@ -82,7 +82,11 @@ async function body() {
   const admin = fixture.users.admin.cookie;
   const clerk = fixture.users.clerk.cookie;
   const path = (room) => `/properties/${fixture.propertyCode}/rooms/${room.id}/status`;
-  const setStatus = (room, status, cookie = hk) => h.call('POST', path(room), cookie, { status });
+  // INSPECTED needs housekeeping:manage (HK-04), so by default it is set as the
+  // supervisor; every other status as the housekeeper. Authority for INSPECTED
+  // itself is asserted explicitly in section 2.
+  const setStatus = (room, status, cookie = status === 'INSPECTED' ? admin : hk) =>
+    h.call('POST', path(room), cookie, { status });
   const storedStatus = async (room) =>
     (await prisma.room.findUnique({ where: { id: room.id }, select: { status: true } }))?.status;
 
@@ -145,14 +149,23 @@ async function body() {
       data: { status: 'VACANT_CLEAN' },
     });
 
-    const real = await setStatus(fixture.rooms.FREE, 'INSPECTED');
+    // HK-04: INSPECTED is a supervisor's verdict. A housekeeper (update_status
+    // only) is refused; a holder of housekeeping:manage may mark it.
+    const byHousekeeper = await setStatus(fixture.rooms.FREE, 'INSPECTED', hk);
+    h.check(
+      'a housekeeper cannot mark a room INSPECTED (needs housekeeping:manage): 403',
+      byHousekeeper.status === 403 && (await storedStatus(fixture.rooms.FREE)) === 'VACANT_CLEAN',
+      `HTTP ${String(byHousekeeper.status)}`,
+    );
+
+    const real = await setStatus(fixture.rooms.FREE, 'INSPECTED', admin);
     h.check(
       'a genuine transition from a pinned state succeeds',
       real.status === 200,
       `VACANT_CLEAN -> INSPECTED, HTTP ${String(real.status)}`,
     );
 
-    const same = await setStatus(fixture.rooms.FREE, 'INSPECTED');
+    const same = await setStatus(fixture.rooms.FREE, 'INSPECTED', admin);
     h.check(
       'and repeating it is refused 400, not silently accepted',
       same.status === 400,

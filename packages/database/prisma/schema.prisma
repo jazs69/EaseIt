@@ -371,6 +371,7 @@ model Property {
   outboxEvents   OutboxEvent[]
   nightAuditRuns NightAuditRun[]
   dailySnapshots DailySnapshot[]
+  housekeepingTasks HousekeepingTask[]
   settings       PropertySettings?
   taxSlabs       PropertyTaxSlab[]
   media          PropertyMedia[]
@@ -733,6 +734,7 @@ model Room {
 
   reservationRooms ReservationRoom[]
   roomBlocks       RoomBlock[]
+  housekeepingTasks HousekeepingTask[]
 
   @@unique([propertyId, number], name: "room_unique_number_per_property")
   @@index([propertyId, roomTypeId])
@@ -2931,4 +2933,69 @@ model AuthToken {
 
   @@index([userId, purpose])
   @@map("auth_token")
+}
+
+/// ===========================================================================
+/// Housekeeping (HK-01 .. HK-04).
+///
+/// A task is one piece of work on one room: clean it, deep-clean it, turn it
+/// down, or inspect it. At most one active (OPEN or IN_PROGRESS) task per room
+/// and type -- a partial unique index, so two supervisors cannot both queue
+/// the same cleaning. Completion is tracked (who, when), and completing a
+/// cleaning or recording an inspection changes the room's status in the same
+/// transaction, audited, through the same transition rules as the status
+/// endpoint.
+/// ===========================================================================
+enum HousekeepingTaskType {
+  CLEAN
+  DEEP_CLEAN
+  TURNDOWN
+  INSPECTION
+}
+
+enum HousekeepingTaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum InspectionResult {
+  PASSED
+  FAILED
+}
+
+model HousekeepingTask {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  roomId String @db.Uuid
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  type   HousekeepingTaskType
+  status HousekeepingTaskStatus @default(OPEN)
+
+  /// Who it is assigned to; null while unassigned.
+  assignedToId String? @db.Uuid
+  notes        String?
+
+  /// The business date the task was raised on (section 3.3), not now().
+  businessDate DateTime @db.Date
+
+  createdById   String    @db.Uuid
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  startedAt     DateTime? @db.Timestamptz(6)
+  completedAt   DateTime? @db.Timestamptz(6)
+  completedById String?   @db.Uuid
+  cancelledAt   DateTime? @db.Timestamptz(6)
+
+  /// Set on an INSPECTION task when it is recorded.
+  inspectionResult InspectionResult?
+
+  @@index([propertyId, status])
+  @@index([propertyId, roomId])
+  @@index([propertyId, assignedToId, status])
+  @@map("housekeeping_task")
 }

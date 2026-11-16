@@ -10,6 +10,13 @@
 
 import {
   cancelReservationResultSchema,
+  housekeepingBoardSchema,
+  housekeepingTaskViewSchema,
+  queueCleaningResultSchema,
+  type CreateHousekeepingTaskCommand,
+  type HousekeepingBoard,
+  type HousekeepingTaskView,
+  type QueueCleaningResult,
   nightAuditOverviewSchema,
   startNightAuditResultSchema,
   type NightAuditOverview,
@@ -1718,4 +1725,51 @@ export function startNightAudit(hotelId: string): Promise<StartNightAuditResult>
     method: 'POST',
     body: {},
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Housekeeping (HK-02 .. HK-04)                                              */
+/* -------------------------------------------------------------------------- */
+
+const housekeepingPath = (hotelId: string): string =>
+  `/properties/${encodeURIComponent(hotelId)}/housekeeping`;
+
+export function fetchHousekeepingBoard(
+  hotelId: string,
+  options: { cookieHeader?: string } = {},
+): Promise<HousekeepingBoard> {
+  return apiFetch(`${housekeepingPath(hotelId)}/board`, housekeepingBoardSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+export function createHousekeepingTask(
+  hotelId: string,
+  body: CreateHousekeepingTaskCommand,
+): Promise<HousekeepingTaskView> {
+  return apiFetch(`${housekeepingPath(hotelId)}/tasks`, housekeepingTaskViewSchema, {
+    method: 'POST',
+    body,
+  });
+}
+
+export function queueHousekeepingCleaning(hotelId: string): Promise<QueueCleaningResult> {
+  return apiFetch(`${housekeepingPath(hotelId)}/tasks/queue-cleaning`, queueCleaningResultSchema, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+/** start / complete / cancel / assign / inspect on one task. */
+export function actOnHousekeepingTask(
+  hotelId: string,
+  taskId: string,
+  verb: 'start' | 'complete' | 'cancel' | 'assign' | 'inspect',
+  body: Record<string, unknown> = {},
+): Promise<HousekeepingTaskView> {
+  return apiFetch(
+    `${housekeepingPath(hotelId)}/tasks/${encodeURIComponent(taskId)}/${verb}`,
+    housekeepingTaskViewSchema,
+    { method: 'POST', body },
+  );
 }

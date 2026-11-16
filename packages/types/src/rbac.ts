@@ -102,6 +102,8 @@ export const Permission = {
   /* -- Housekeeping ------------------------------------------------------- */
   HOUSEKEEPING_READ: 'housekeeping:read',
   HOUSEKEEPING_UPDATE_STATUS: 'housekeeping:update_status',
+  /** HK-03/HK-04: create, assign and cancel tasks, record inspections, mark a room INSPECTED. */
+  HOUSEKEEPING_MANAGE: 'housekeeping:manage',
 
   /* -- Inventory configuration -------------------------------------------- */
   /**
@@ -254,7 +256,14 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
   {
     key: P.HOUSEKEEPING_UPDATE_STATUS,
     label: 'Update room status',
-    description: 'Mark rooms clean, dirty, inspected or out of order.',
+    description: 'Mark rooms clean or dirty, and start and finish assigned tasks.',
+    category: C.HOUSEKEEPING,
+    sensitive: false,
+  },
+  {
+    key: P.HOUSEKEEPING_MANAGE,
+    label: 'Supervise housekeeping',
+    description: 'Create and assign tasks, record inspections and mark rooms inspected.',
     category: C.HOUSEKEEPING,
     sensitive: false,
   },
@@ -543,7 +552,6 @@ export function primaryRole(roles: readonly Role[]): Role | null {
  * then cover the permission check.
  */
 export const UNAVAILABLE_PERMISSIONS: Readonly<Partial<Record<Permission, string>>> = {
-  [Permission.HOUSEKEEPING_READ]: 'The housekeeping module is not built yet.',
   [Permission.CHANNELS_READ]: 'The channel manager is not built yet.',
   [Permission.CHANNELS_SYNC]: 'The channel manager is not built yet.',
 };

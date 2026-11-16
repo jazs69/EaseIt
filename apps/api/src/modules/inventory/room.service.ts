@@ -154,7 +154,15 @@ export class RoomService {
     roomId: string,
     request: ChangeRoomStatusRequest,
   ): Promise<RoomView> {
-    const property = await this.authorise(userId, codeOrId, Permission.HOUSEKEEPING_UPDATE_STATUS);
+    // HK-04: INSPECTED is a supervisor's verdict, not a cleaner's -- marking a
+    // room inspected needs housekeeping:manage, the same authority that records
+    // an inspection. Clean and dirty stay with housekeeping:update_status.
+    const property = await this.authorise(
+      userId,
+      codeOrId,
+      Permission.HOUSEKEEPING_UPDATE_STATUS,
+      request.status === 'INSPECTED' ? Permission.HOUSEKEEPING_MANAGE : undefined,
+    );
 
     const before = await this.repository.findOne(property.id, roomId);
     if (before === null) throw new TenantScopeViolationError('Room');
@@ -228,6 +236,7 @@ export class RoomService {
     userId: string,
     codeOrId: string,
     required: Permission,
+    alsoRequired?: Permission,
   ): Promise<{ id: string }> {
     const grants = await this.prisma.client.userPropertyRole.findMany({
       where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
@@ -241,6 +250,7 @@ export class RoomService {
     if (first === undefined) throw new TenantScopeViolationError('Property');
 
     requirePermissionFromGrants(grants, required);
+    if (alsoRequired !== undefined) requirePermissionFromGrants(grants, alsoRequired);
 
     return { id: first.property.id };
   }

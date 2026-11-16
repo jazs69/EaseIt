@@ -114,7 +114,7 @@ const QUICK_LINKS = [
      *
      * A bed reads as "the physical room" where the brush below reads as "the
      * work on it" — this screen is categories, numbers and floors, and the
-     * housekeeping board remains unbuilt. Deliberately placed before
+     * housekeeping board is its own screen. Deliberately placed before
      * Housekeeping, because a room has to exist before it can be cleaned.
      */
     icon: BedDouble,
@@ -126,7 +126,7 @@ const QUICK_LINKS = [
     label: 'Housekeeping',
     icon: BrushCleaning,
     scoped: true,
-    ready: false,
+    ready: true,
   },
   { href: '/favourites', label: 'Favourites', icon: Star, scoped: true, ready: false },
 ] as const;

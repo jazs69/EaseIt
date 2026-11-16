@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 60      | 29.3% |
-| `PI` PARTIALLY IMPLEMENTED | 93      | 45.4% |
-| `NI` NOT IMPLEMENTED       | 45      | 22.0% |
+| `CV` COMPLETE AND VERIFIED | 64      | 31.2% |
+| `PI` PARTIALLY IMPLEMENTED | 94      | 45.9% |
+| `NI` NOT IMPLEMENTED       | 40      | 19.5% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -120,7 +120,8 @@ What exists is a **reservations-and-folio core with group reporting**, not yet a
       bookings: implemented and verified (2026-11-15).**
 - [x] **FO-05 / FO-06 — Downward folio corrections on taxed charges no longer 500 (2026-11-15).**
       Negative tax is a flagged ADJUSTMENT; the constraint is unchanged.
-- [ ] **HK-01 — No housekeeping module.** Permissions exist; table, endpoint and screen do not.
+- [x] **HK-01 … HK-05 — Housekeeping board, tasks and inspections built and verified (2026-11-16).**
+      The board screen is not yet exercised in a browser.
 - [ ] **NA-01 / NA-05 — No night audit, no business-date roll.** `property.businessDate` is read
       everywhere and advanced by nothing. The books never close.
 - [x] **FO-03 / FO-04 — Folio payment idempotency implemented and verified (2026-10-31).** Was:
@@ -341,11 +342,11 @@ Parent status: **`NI`** — module named in CLAUDE.md §2, absent in every layer
 
 | ID    | Subfeature                           | St   | Evidence                  | U/A/L/D/I | Tests | Acceptance criterion                               | Dep   | Pri | Launch | Verified   | Method |
 | ----- | ------------------------------------ | ---- | ------------------------- | --------- | ----- | -------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| HK-01 | Housekeeping module                  | `NI` | no `modules/housekeeping` | ✖/✖/✖/✖/– | none  | Module exists with room status ownership           | RM-05 | 1   | M      | 2026-10-29 | SI     |
-| HK-02 | Room status board                    | `NI` | —                         | ✖/✖/✖/✖/– | none  | Board shows live status per room and updates it    | HK-01 | 1   | M      | 2026-10-29 | SI     |
-| HK-03 | Task assignment                      | `NI` | —                         | ✖/✖/✖/✖/– | none  | Tasks assignable to staff with completion tracking | HK-01 | 2   | M      | 2026-10-29 | SI     |
-| HK-04 | Inspection                           | `NI` | —                         | ✖/✖/✖/✖/– | none  | Inspection pass/fail gates a room back to sellable | HK-02 | 3   | A      | 2026-10-29 | SI     |
-| HK-05 | Housekeeping read-only on financials | `NI` | role template exists      | ✖/✖/✖/✔/– | none  | Housekeeping role cannot read or write folios      | AU-09 | 2   | M      | 2026-10-29 | SI     |
+| HK-01 | Housekeeping module                  | `CV` | 2026-11-16: `modules/housekeeping` (board, tasks, inspections); room status still written by one conditional, audited path. `housekeeping.test.mjs` | ✖/✖/✖/✖/– | none  | Module exists with room status ownership           | RM-05 | 1   | M      | 2026-10-29 | SI     |
+| HK-02 | Room status board                    | `PI` | 2026-11-16: `GET .../housekeeping/board` (status, occupancy, arrivals/departures today, open tasks, assignable staff; no guest names or money) and the `/housekeeping` screen (top bar enabled). API tested; screen not yet exercised in a browser | ✖/✖/✖/✖/– | none  | Board shows live status per room and updates it    | HK-01 | 1   | M      | 2026-10-29 | SI     |
+| HK-03 | Task assignment                      | `CV` | 2026-11-16: create/assign/start/complete/cancel, queue cleaning; one active task per room and type (partial unique index, race-tested); who and when recorded; a finished cleaning makes a dirty room clean in the same transaction | ✖/✖/✖/✖/– | none  | Tasks assignable to staff with completion tracking | HK-01 | 2   | M      | 2026-10-29 | SI     |
+| HK-04 | Inspection                           | `CV` | 2026-11-16: PASSED turns a clean vacant room INSPECTED; FAILED sends it back to VACANT_DIRTY and queues a re-clean; INSPECTED (by inspection or directly) needs the new `housekeeping:manage` | ✖/✖/✖/✖/– | none  | Inspection pass/fail gates a room back to sellable | HK-02 | 3   | A      | 2026-10-29 | SI     |
+| HK-05 | Housekeeping read-only on financials | `CV` | 2026-11-16: the housekeeping role is refused folio reads, payments and the financial report (403); the board carries no guest names or money | ✖/✖/✖/✔/– | none  | Housekeeping role cannot read or write folios      | AU-09 | 2   | M      | 2026-10-29 | SI     |
 
 ### 2.11 Maintenance
 
@@ -795,6 +796,35 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-16 (twenty-seventh pass) - housekeeping (HK-01 .. HK-05)
+
+**Status transitions.** HK-01, HK-03, HK-04, HK-05 `NI`→`CV`; HK-02 `NI`→`PI` (screen not yet
+browser-checked). P1-4 met at the API. Counts: `CV` 60→64, `PI` 93→94, `NI` 45→40.
+
+**Implemented.** Migration `20261116180000_housekeeping_tasks` (additive: `housekeeping_task` with a
+partial unique index -- one OPEN/IN_PROGRESS task per room and type -- an outcome CHECK, forced RLS
+like every tenant table, and the new `housekeeping:manage` permission row granted to the Property
+Admin and Super Admin templates). `HousekeepingService`: board; create/assign/cancel and queue
+cleaning (`housekeeping:manage`); start/complete one's own task, claiming an unassigned one
+(`housekeeping:update_status`); inspections (`housekeeping:manage`). Completing a cleaning and
+recording an inspection change the room with the same conditional, audited update the status
+endpoint uses, in the task's transaction with the room row locked; a moved status is refused.
+**Rule change (HK-04):** setting INSPECTED through the room-status endpoint now also needs
+`housekeeping:manage`; a housekeeper can still mark clean and dirty. `housekeeping:read` is
+grantable again (AU-13 list updated). Web admin: `/housekeeping` board (filters, queue cleaning,
+add/assign/start/finish/cancel tasks, pass/fail inspections); the top-bar item is enabled.
+
+**Tests.** New `housekeeping` suite (in the gate): board status, occupancy, arrivals and departures
+today, no names or money, assignable staff; 403 creating without manage, 400 assigning to front
+desk, two racing creators make one task, someone else's task 403, start/complete with who and when,
+dirty→clean and occupied-dirty→occupied-clean, completing twice refused, claim on start, reassign,
+cancel frees the slot, queue cleaning once; inspection: dirty cannot pass, housekeeper cannot record,
+PASSED→INSPECTED, an open inspection cannot be "completed", FAILED→VACANT_DIRTY + re-clean task, no
+direct INSPECTED shortcut for a housekeeper; HK-05 folio/payment/report 403; cross-property 404.
+`room-status` updated for the INSPECTED rule (housekeeper 403, supervisor 200). **Mutation-checked:**
+with the cleaning→status step removed, four checks fail. Gate 23/23, folio and outbox suites and
+`pnpm test` pass, API as `easeit_app`.
 
 ### 2026-11-16 (twenty-sixth pass) - password reset, invitations, deactivation (AU-08, AU-14, AU-15)
 

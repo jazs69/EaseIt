@@ -221,6 +221,11 @@ const suites = [
     why: 'single-use expiring reset and invitation links, sessions revoked on reset, invite/accept, deactivation blocks sign-in and sessions; needs MAIL_CAPTURE_DIR shared with the API',
   },
   {
+    name: 'housekeeping (HK-01 .. HK-05)',
+    script: 'test/integration/housekeeping.test.mjs',
+    why: 'board, one active task per room and type under a race, assignment and completion tracking, inspection gating, housekeeping blind to folios, tenancy',
+  },
+  {
     name: 'unavailable permissions (AU-13)',
     script: 'test/integration/unavailable-permissions.test.mjs',
     why: 'custom roles cannot grant unbuilt features; no role or session reports them',

@@ -24,7 +24,6 @@ const h = createHarness({
 });
 
 const UNAVAILABLE = [
-  'housekeeping:read',
   'channels:read',
   'channels:sync',
 ];
