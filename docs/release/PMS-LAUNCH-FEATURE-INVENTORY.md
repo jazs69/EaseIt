@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 67      | 32.7% |
-| `PI` PARTIALLY IMPLEMENTED | 95      | 46.3% |
-| `NI` NOT IMPLEMENTED       | 36      | 17.6% |
+| `CV` COMPLETE AND VERIFIED | 68      | 33.2% |
+| `PI` PARTIALLY IMPLEMENTED | 96      | 46.8% |
+| `NI` NOT IMPLEMENTED       | 34      | 16.6% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -393,8 +393,8 @@ Parent status: **`PI`** — five report types exist; none is tested, and all pre
 | NO-01 | SMTP mailer                          | `PI` | `apps/api/src/modules/platform/mail/smtp.mailer.ts`; `onModuleInit` catches a failed `verify()` and logs — boot is **not** blocked | –/✔/✔/–/✔ | none  | Delivery proven against a sandbox SMTP; failures surface as alerts | —     | 2   | M      | 2026-10-29 | SI     |
 | NO-02 | Logging mailer fallback              | `PI` | `log.mailer.ts`, selected when `SMTP_HOST` is unset                                                                                | –/✔/✔/–/– | none  | Development never silently sends real mail                         | NO-01 | 3   | M      | 2026-10-29 | SI     |
 | NO-03 | OTP delivery                         | `PI` | via the mailer, from `auth.service.ts`                                                                                             | ✔/✔/✔/✔/✔ | none  | OTP arrives, expires and cannot be replayed                        | AU-02 | 2   | M      | 2026-10-29 | SI     |
-| NO-04 | Booking confirmation email           | `NI` | no template or handler                                                                                                             | ✖/✖/✖/–/✖ | none  | Confirmation is sent through the outbox, exactly once per booking  | NO-05 | 1   | M      | 2026-10-29 | SI     |
-| NO-05 | Outbox-driven business notifications | `NI` | `OutboxEventType` has exactly one value, `OUTBOX_SELF_TEST` (`schema.prisma:1664`); only `handlers/self-test.handler.ts` exists    | ✖/✖/✖/✔/– | none  | Real event types with idempotent handlers and dead-letter alerting | WK-12 | 1   | M      | 2026-10-29 | SI     |
+| NO-04 | Booking confirmation email           | `CV` | 2026-11-17: `CreateReservationService` enqueues `RESERVATION_CONFIRMATION_EMAIL` in the booking transaction (CONFIRMED with an email only; `UNIQUE_FOREVER` key per reservation; id-only payload). `reservations/booking-confirmation.handler.ts` reads the stay at send time, skips cancelled / no-show / no email, sends via `MAILER` with a stable Message-ID, records `RESERVATION_CONFIRMATION_SENT` and does not resend after it. Template `booking-confirmation.email.ts` (escaped HTML + text). Migration `20261117090000_reservation_confirmation_email`. `booking-confirmation.test.mjs`, `test/unit/booking-confirmation-email.test.mjs`. BullMQ leg covered by `test:outbox:redis`, not re-run | ✖/✖/✖/–/✖ | none  | Confirmation is sent through the outbox, exactly once per booking  | NO-05 | 1   | M      | 2026-10-29 | SI     |
+| NO-05 | Outbox-driven business notifications | `PI` | 2026-11-17: first business notification on the outbox (NO-04, idempotent handler, permanent vs retryable errors, dead letters warned by the worker). No other notification types (check-out receipt, cancellation, audit report) yet | ✖/✖/✖/✔/– | none  | Real event types with idempotent handlers and dead-letter alerting | WK-12 | 1   | M      | 2026-10-29 | SI     |
 | NO-06 | SMS / WhatsApp                       | `NI` | none                                                                                                                               | ✖/✖/✖/–/✖ | none  | —                                                                  | NO-05 | 3   | P      | 2026-10-29 | SI     |
 
 ### 2.15 Booking engine (optional module)
@@ -796,6 +796,39 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-17 (thirty-second pass) - booking confirmation email (NO-04)
+
+**Status transitions.** NO-04 `NI`→`CV`; NO-05 `NI`→`PI`. Counts: `CV` 67→68, `PI` 95→96, `NI` 36→34.
+
+**Implemented.** A CONFIRMED booking with a guest email writes one `RESERVATION_CONFIRMATION_EMAIL`
+outbox row in its own transaction (section 3.1: no mail inside a transaction), keyed
+`reservation-confirmation:<id>` under `UNIQUE_FOREVER`, so a booking commits with its promise to
+confirm or not at all and never gets a second row. The payload is the id only: no guest PII in
+the queue. An instant check-in (the guest is at the desk) and a booking with no email write none.
+The worker handler reads the stay at send time: cancelled or no-show is not confirmed, a missing
+email is skipped, another property's event and a malformed payload are permanent failures. It
+sends text + HTML (every person-supplied value escaped, subject stripped of line breaks, dates
+printed from their stored parts) with a stable Message-ID, then writes a
+`RESERVATION_CONFIRMATION_SENT` audit row (relay id, no address); a replay that finds it does not
+send again. A relay failure throws, records nothing and is retried by the outbox. The remaining
+window is a crash between the relay accepting and the marker committing, where a duplicate is
+possible and the shared Message-ID lets mail clients treat it as the same message.
+
+**Tests.** `booking-confirmation.test.mjs` (in the gate) drives the compiled handler inside the
+event's property scope with the capture mailer, as `night-audit.test.mjs` drives its handlers (no
+Redis): one row with an id-only payload and the right key; a second enqueue suppressed; none for
+no email, null email, instant check-in or a failed booking; SENT once with the facts in the body;
+a replay ALREADY_SENT; cancelled before delivery NOT_CONFIRMABLE; cross-property and malformed
+payloads permanent; a relay failure retryable with no marker, then SENT on retry.
+`booking-confirmation-email.test.mjs` (fast gate): dates independent of host time zone, content,
+money, HTML escaping, no line break in the subject. **Mutation-checked:** without the enqueue four
+checks fail; without the sent-marker check four fail.
+
+**Not done.** A confirmation for a booking confirmed later (there is no TENTATIVE-to-CONFIRMED
+path yet), re-sending on request, a per-property sender address and template, and the BullMQ leg
+in this suite (it is the outbox's own, in `test:outbox:redis`). The dev worker needs Redis; with
+the real SMTP in `apps/api/.env`, a running worker emails real guest addresses.
 
 ### 2026-11-16 (thirty-first pass) - invoices (FO-14)
 

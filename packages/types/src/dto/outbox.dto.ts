@@ -37,6 +37,7 @@ export const outboxEventTypeSchema = z.enum([
   'OUTBOX_SELF_TEST',
   'NIGHT_AUDIT_RUN',
   'NIGHT_AUDIT_COMPLETED',
+  'RESERVATION_CONFIRMATION_EMAIL',
 ]);
 
 export type OutboxEventType = z.infer<typeof outboxEventTypeSchema>;
@@ -94,6 +95,17 @@ export const nightAuditCompletedPayloadSchema = z.object({
 
 export type NightAuditCompletedPayload = z.infer<typeof nightAuditCompletedPayloadSchema>;
 
+/**
+ * NO-04: email the guest their booking confirmation.
+ *
+ * Only the id travels. The handler reads the stay as it is when the mail is
+ * sent, so a booking cancelled before the worker reaches it is not
+ * confirmed, and no guest name or address sits in the queue (section 5).
+ */
+export const reservationConfirmationPayloadSchema = z.object({ reservationId: z.uuid() });
+
+export type ReservationConfirmationPayload = z.infer<typeof reservationConfirmationPayloadSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*  Registry                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -110,6 +122,7 @@ export const OUTBOX_PAYLOAD_VERSION: Record<OutboxEventType, number> = {
   OUTBOX_SELF_TEST: 1,
   NIGHT_AUDIT_RUN: 1,
   NIGHT_AUDIT_COMPLETED: 1,
+  RESERVATION_CONFIRMATION_EMAIL: 1,
 };
 
 /**
@@ -123,6 +136,7 @@ export const OUTBOX_PAYLOAD_SCHEMAS: Record<string, z.ZodType> = {
   'OUTBOX_SELF_TEST:1': outboxSelfTestPayloadSchema,
   'NIGHT_AUDIT_RUN:1': nightAuditRunPayloadSchema,
   'NIGHT_AUDIT_COMPLETED:1': nightAuditCompletedPayloadSchema,
+  'RESERVATION_CONFIRMATION_EMAIL:1': reservationConfirmationPayloadSchema,
 };
 
 export function outboxPayloadSchemaFor(

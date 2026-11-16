@@ -2737,6 +2737,9 @@ enum OutboxEventType {
   NIGHT_AUDIT_RUN
   /// NA-04 step 8: a run finished. Reports and notifications hang off this.
   NIGHT_AUDIT_COMPLETED
+  /// NO-04: email the guest their booking confirmation. Enqueued in the
+  /// booking's own transaction, once per reservation (UNIQUE_FOREVER).
+  RESERVATION_CONFIRMATION_EMAIL
 }
 
 /// How a row's `dedupeKey` constrains other rows.

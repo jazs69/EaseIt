@@ -1,8 +1,10 @@
 # The transactional outbox
 
 Phase A of the Channel Manager. This is the delivery foundation only: there is no
-channel, no mapping, no ARI push and no inbound reservation handling here, and the
-only registered handler is a fake that performs no network call.
+channel, no mapping, no ARI push and no inbound reservation handling here. Handlers
+registered today: the self-test fake, the night audit (`NIGHT_AUDIT_RUN`,
+`NIGHT_AUDIT_COMPLETED`) and the booking confirmation email
+(`RESERVATION_CONFIRMATION_EMAIL`, NO-04).
 
 ---
 

@@ -216,6 +216,11 @@ const suites = [
     why: 'due in / arrived / overdue arrivals, due out / departed today / overstays, in house; room readiness; balances only with folio:read; housekeeping 403; tenancy',
   },
   {
+    name: 'booking confirmation email (NO-04)',
+    script: 'test/integration/booking-confirmation.test.mjs',
+    why: 'one outbox row per confirmed booking in its own transaction (none without email, for instant check-in or a failed booking), id-only payload, sent once by the worker handler, cancelled stay skipped, tenancy, retry after a relay failure',
+  },
+  {
     name: 'invoices (FO-14)',
     script: 'test/integration/invoices.test.mjs',
     why: 'closed folio only, agrees with the folio page, gapless per-year numbering, re-issue and 8-way race give one invoice, PDF/CSV, immutable by trigger, permissions, tenancy, company bill-to, hotel GSTIN',

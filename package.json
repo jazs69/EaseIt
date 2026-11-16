@@ -38,6 +38,7 @@
     "test:stay-dates": "node test/integration/stay-dates.test.mjs",
     "test:front-desk-board": "node test/integration/front-desk-board.test.mjs",
     "test:invoices": "node test/integration/invoices.test.mjs",
+    "test:booking-confirmation": "node test/integration/booking-confirmation.test.mjs",
     "test:night-audit": "node test/integration/night-audit.test.mjs",
     "test:tenancy": "node test/integration/tenant-isolation.test.mjs",
     "test:accounts": "node test/integration/account-lifecycle.test.mjs",

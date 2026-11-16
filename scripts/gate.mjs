@@ -122,6 +122,8 @@ const checks = [
     'unavailable-permissions',
     // FO-14: invoice numbering, amount formatting, CSV guard and PDF structure.
     'invoice-document',
+    // NO-04: confirmation email wording, dates, money and HTML escaping.
+    'booking-confirmation-email',
   ].map((suite) => ({
     name: `unit tests (${suite})`,
     command: process.execPath,

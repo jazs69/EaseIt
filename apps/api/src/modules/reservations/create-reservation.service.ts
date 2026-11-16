@@ -26,7 +26,8 @@
  * loudly.
  *
  * Nothing slow or external happens inside: no HTTP, no queue publish, no mail.
- * Those belong in the outbox once `platform` has one.
+ * The confirmation email is an outbox row written in this transaction and
+ * sent by the worker afterwards (NO-04).
  *
  * Serialization failures (40001), CHECK violations (23514) and exclusion
  * violations (23P01) are **retried** up to three times with jittered backoff,
@@ -75,6 +76,7 @@ import { requirePermissionFromGrants } from '../../common/property-scope/require
 import { PropertyTaxService } from '../properties/property-tax.service.js';
 import { PromotionService } from '../rates/promotion.service.js';
 import { RateCalendarService } from '../rates/rate-calendar.service.js';
+import { OutboxService } from '../platform/outbox/outbox.service.js';
 import { postCheckIn } from './check-in-posting.js';
 import { quoteStay, nightsBetween, stayDates, type QuoteInput } from './reservation-pricing.js';
 
@@ -96,6 +98,7 @@ export class CreateReservationService {
     private readonly tax: PropertyTaxService,
     private readonly rates: RateCalendarService,
     private readonly promotions: PromotionService,
+    private readonly outbox: OutboxService,
   ) {}
 
   /**
@@ -799,6 +802,25 @@ export class CreateReservationService {
               },
               reason: null,
             },
+          });
+        }
+
+        /**
+         * NO-04: the confirmation email, promised in this transaction.
+         *
+         * Only for a CONFIRMED booking with an address to send to: an
+         * instant check-in is a guest already standing at the desk. The
+         * key is the reservation id under UNIQUE_FOREVER, so there is never
+         * a second row for this booking, and a rolled-back attempt takes
+         * its row with it.
+         */
+        if (status === ReservationStatus.CONFIRMED && booker.email !== null && booker.email !== '') {
+          await this.outbox.enqueue(tx, {
+            propertyId: property.id,
+            eventType: 'RESERVATION_CONFIRMATION_EMAIL',
+            payload: { reservationId: reservation.id },
+            dedupeKey: `reservation-confirmation:${reservation.id}`,
+            dedupeMode: 'UNIQUE_FOREVER',
           });
         }
 

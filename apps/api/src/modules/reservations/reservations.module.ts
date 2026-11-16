@@ -21,6 +21,8 @@ import { ReservationSearchRepository } from './reservation-search.repository.js'
 import { ReservationSearchService } from './reservation-search.service.js';
 import { PropertiesModule } from '../properties/properties.module.js';
 import { RatesModule } from '../rates/rates.module.js';
+import { OutboxModule } from '../platform/outbox/outbox.module.js';
+import { BookingConfirmationHandler, BookingConfirmationRegistrar } from './booking-confirmation.handler.js';
 
 /**
  * The `reservations` bounded context.
@@ -43,7 +45,9 @@ import { RatesModule } from '../rates/rates.module.js';
   // rules in the properties module), so that module is imported rather than
   // its service re-provided here.
   // RatesModule for RateCalendarService: quotes and bookings price from a plan (F9).
-  imports: [PropertiesModule, RatesModule],
+  // OutboxModule: a booking enqueues its confirmation email in its own
+  // transaction, and this module registers the handler that sends it (NO-04).
+  imports: [PropertiesModule, RatesModule, OutboxModule],
   controllers: [
     ReservationSearchController,
     CreateReservationController,
@@ -64,6 +68,8 @@ import { RatesModule } from '../rates/rates.module.js';
     ReservationDetailController,
   ],
   providers: [
+    BookingConfirmationHandler,
+    BookingConfirmationRegistrar,
     CancelReservationService,
     ChangeStayDatesService,
     CheckInService,
