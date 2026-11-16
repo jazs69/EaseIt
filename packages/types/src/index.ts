@@ -14,6 +14,7 @@ export * from './dto/access-control.dto.js';
 export * from './dto/auth.dto.js';
 export * from './dto/calendar.dto.js';
 export * from './dto/cancel-reservation.dto.js';
+export * from './dto/change-stay-dates.dto.js';
 export * from './dto/folio.dto.js';
 export * from './dto/night-audit.dto.js';
 export * from './dto/housekeeping.dto.js';

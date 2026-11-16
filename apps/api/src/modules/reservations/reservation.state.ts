@@ -163,3 +163,32 @@ export function noShowRefusal(status: ReservationStatus): NoShowRefusal | null {
       return 'CHECKED_OUT';
   }
 }
+
+/**
+ * How a status may have its dates changed (RS-11, RS-12), or why it cannot.
+ *
+ * `ANY` — nobody has arrived, so both ends may move (CONFIRMED).
+ * `DEPARTURE_ONLY` — the guest is in the room: the arrival happened and is
+ * history, so only the departure may move, and never before a night already
+ * charged to the folio (checked in the service, which can see the folio).
+ *
+ * TENTATIVE and ON_HOLD are refused for now: they hold a room without
+ * consuming inventory, so their dates change under different rules and no
+ * flow creates them today. CHECKED_OUT, CANCELLED and NO_SHOW are over.
+ */
+export type DateChangeRule = 'ANY' | 'DEPARTURE_ONLY' | 'REFUSED';
+
+export function dateChangeRule(status: ReservationStatus): DateChangeRule {
+  switch (status) {
+    case ReservationStatus.CONFIRMED:
+      return 'ANY';
+    case ReservationStatus.CHECKED_IN:
+      return 'DEPARTURE_ONLY';
+    case ReservationStatus.TENTATIVE:
+    case ReservationStatus.ON_HOLD:
+    case ReservationStatus.CHECKED_OUT:
+    case ReservationStatus.CANCELLED:
+    case ReservationStatus.NO_SHOW:
+      return 'REFUSED';
+  }
+}

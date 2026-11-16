@@ -10,6 +10,11 @@
 
 import {
   cancelReservationResultSchema,
+  changeStayDatesPreviewSchema,
+  changeStayDatesResultSchema,
+  type ChangeStayDatesCommand,
+  type ChangeStayDatesPreview,
+  type ChangeStayDatesResult,
   housekeepingBoardSchema,
   housekeepingTaskViewSchema,
   queueCleaningResultSchema,
@@ -791,6 +796,33 @@ export function cancelReservation(
   return apiFetch(
     `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/cancel`,
     cancelReservationResultSchema,
+    { method: 'POST', body },
+  );
+}
+
+/** RS-11/12: what a date change would add, remove and cost. Commits nothing. */
+export function previewStayDates(
+  hotelId: string,
+  reservationId: string,
+  body: ChangeStayDatesCommand,
+  signal?: AbortSignal,
+): Promise<ChangeStayDatesPreview> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/dates/preview`,
+    changeStayDatesPreviewSchema,
+    signal === undefined ? { method: 'POST', body } : { method: 'POST', body, signal },
+  );
+}
+
+/** RS-11/12: change, extend or shorten a stay. */
+export function changeStayDates(
+  hotelId: string,
+  reservationId: string,
+  body: ChangeStayDatesCommand,
+): Promise<ChangeStayDatesResult> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/reservations/${encodeURIComponent(reservationId)}/dates`,
+    changeStayDatesResultSchema,
     { method: 'POST', body },
   );
 }

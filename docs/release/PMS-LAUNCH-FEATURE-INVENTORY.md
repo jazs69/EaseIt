@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 64      | 31.2% |
-| `PI` PARTIALLY IMPLEMENTED | 94      | 45.9% |
-| `NI` NOT IMPLEMENTED       | 40      | 19.5% |
+| `CV` COMPLETE AND VERIFIED | 65      | 31.7% |
+| `PI` PARTIALLY IMPLEMENTED | 95      | 46.3% |
+| `NI` NOT IMPLEMENTED       | 38      | 18.5% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -271,8 +271,8 @@ lifecycle amendments are missing.
 | RS-08 | Reservation detail                      | `PI` | `reservation-detail.controller.ts:41`                                                                                                                                                       | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | Detail payload matches persisted state and respects tenant scope              | —     | 2   | M      | 2026-10-29 | SI         |
 | RS-09 | Reservation notes                       | `PI` | `reservation-detail.controller.ts:60`; `ReservationNote`; migration `20261018020000`                                                                                                        | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | Note persists, is attributed and is audited                                   | —     | 3   | A      | 2026-10-29 | SI         |
 | RS-10 | Reservation search                      | `PI` | `reservation-search.controller.ts:43`; migration `20261016220000`                                                                                                                           | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | Cursor pagination; tenant-scoped; indexed                                     | —     | 2   | M      | 2026-10-29 | SI         |
-| RS-11 | Modify dates / occupancy                | `NI` | no endpoint                                                                                                                                                                                 | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Amending dates re-checks inventory for added nights and releases removed ones | AV-04 | 1   | M      | 2026-10-29 | SI         |
-| RS-12 | Extend / shorten stay                   | `NI` | —                                                                                                                                                                                           | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Same invariants as RS-11, tested per date                                     | RS-11 | 1   | M      | 2026-10-29 | SI         |
+| RS-11 | Modify dates / occupancy                | `PI` | 2026-11-16: `POST .../reservations/:id/dates` (+ `/dates/preview`), `ChangeStayDatesService`: removed nights released, added nights sold under the CHECK, per date and category. `stay-dates.test.mjs`. Occupancy (adults/children) changes not built; the dialog not yet browser-checked | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Amending dates re-checks inventory for added nights and releases removed ones | AV-04 | 1   | M      | 2026-10-29 | SI         |
+| RS-12 | Extend / shorten stay                   | `CV` | 2026-11-16: same endpoint; extend/shorten a confirmed or in-house stay, kept nights keep their price, total = sum of nights, never before a charged night; last-room race, change vs cancel race, lock timeout tested | ✖/✖/✖/–/– | none                                                                                                                                                                                                                                                                                                                                                    | Same invariants as RS-11, tested per date                                     | RS-11 | 1   | M      | 2026-10-29 | SI         |
 | RS-13 | No-show handling                        | `CV` | 2026-11-15: `POST .../reservations/:id/no-show` (`CancelReservationService.markNoShow`), `noShowRefusal` in `reservation.state.ts`; shares the cancellation transaction and release code; `no-show.test.mjs`, mutation-checked                                                                                             | ✖/✖/~/✔/– | none                                                                                                                                                                                                                                                                                                                                                    | A no-show roll sets the status and keeps inventory consistent                 | NA-04 | 1   | M      | 2026-10-29 | SI         |
 | RS-14 | Group / multi-room bookings             | `PI` | schema permits many `ReservationRoom`; cancel releases per category                                                                                                                         | ~/✔/✔/✔/– | release logic for N rooms asserted in cancellation suite                                                                                                                                                                                                                                                                                                | Create a group booking through the product; release is per-category           | RM-02 | 2   | A      | 2026-10-29 | TR         |
 | RS-15 | Reservation state machine               | `CV` | `reservation.state.ts:56` `CONSUMES_INVENTORY`, `:86` `cancelRefusal`                                                                                                                       | –/✔/✔/–/– | asserted via cancellation suite steps 6, 7, 7b, 7d                                                                                                                                                                                                                                                                                                      | Legal transitions live in one place and are enforced in the domain layer      | —     | 1   | M      | 2026-10-29 | TR         |
@@ -796,6 +796,41 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-16 (twenty-eighth pass) - stay dates (RS-11, RS-12)
+
+**Status transitions.** RS-12 `NI`→`CV`; RS-11 `NI`→`PI` (dates done; occupancy changes not built,
+and the dialog is not yet browser-checked). P1-11 met for dates. Counts: `CV` 64→65, `PI` 94→95,
+`NI` 40→38.
+
+**Implemented.** No schema change. `POST .../reservations/:id/dates` and `/dates/preview`
+(`reservations:edit`), `ChangeStayDatesService`. CONFIRMED stays move either end (arrival not before
+the business date); CHECKED_IN stays move only the departure, never to or before a night already
+charged to the folio; other statuses and multi-room bookings are refused. One transaction, section
+3.1.1 order: reservation row FOR UPDATE (property-scoped) under the shared `lock_timeout`, status,
+dates, total and room assignment re-validated, charged nights re-read; then `inventory_day`
+ascending by date and category: removed nights released only after verifying one row per night with
+`sold` >= 1, added nights refused on a missing row (`INVENTORY_NOT_CONFIGURED`) or no room left, then
+sold under `inventory_day_not_oversold`; the room row's dates updated under
+`reservation_room_no_overlap` (a clash is 409, the clerk moves or unassigns first). Money: kept
+`reservation_night` rows untouched; added nights priced like a booking -- the stay's rate plan
+without a promotion, the rack rate, or a manual price -- taxed per night; the total moves by exactly
+the removed and added nights, so it stays their sum. A pre-F9 stay's kept nights are written from the
+even split the folio already shows. `expectedTotalMinor` refuses a commit whose total differs from
+the preview. Audit `RESERVATION_DATES_CHANGED`. Retries as the other writers: `DomainError` first,
+55P03 → 409 unretried, 40001/40P01 bounded. Web admin: Booking actions → Modify check-in / Modify
+checkout open a dialog that previews added and removed nights and the new total.
+
+**Tests.** New `stay-dates` suite (in the gate), counters asserted per date and per category after
+every step: extend (preview commits nothing, committed total = previewed, kept rows unchanged, rack
+pricing, one audit row), shorten, move later, both ends with a manual price; stale
+`expectedTotalMinor` 400; sold-out night, booked room and calendar end each 409 with nothing changed;
+in-house arrival move 400, extend, shorten past a charged night 400, shorten after it; same dates,
+past arrival, reversed dates, cancelled stay 400; no `reservations:edit` 403; another property 404
+(change and preview); pre-F9 stay shortened; two extensions racing for the last room (one 200, one
+409); eight identical parallel changes (one 200); change vs cancellation in both queue orders under
+the row lock; bounded wait 409 in ~3 s. **Mutation-checked:** with the release made a no-op, the
+counters check fails from the first shortening on.
 
 ### 2026-11-16 (twenty-seventh pass) - housekeeping (HK-01 .. HK-05)
 

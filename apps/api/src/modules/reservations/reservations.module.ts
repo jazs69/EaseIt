@@ -4,6 +4,8 @@ import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { TokenService } from '../../common/auth/token.service.js';
 import { CancelReservationController } from './cancel-reservation.controller.js';
 import { CancelReservationService } from './cancel-reservation.service.js';
+import { ChangeStayDatesController } from './change-stay-dates.controller.js';
+import { ChangeStayDatesService } from './change-stay-dates.service.js';
 import { CheckInController } from './check-in.controller.js';
 import { CheckInService } from './check-in.service.js';
 import { CheckOutController } from './check-out.controller.js';
@@ -54,6 +56,8 @@ import { RatesModule } from '../rates/rates.module.js';
     // `/check-out` is a literal segment under `:reservationId` as well, so it
     // is registered above the detail controller for the same reason.
     CheckOutController,
+    // `/dates` is a literal segment under `:reservationId` too.
+    ChangeStayDatesController,
     // Registered last: its `:reservationId` route would otherwise shadow the
     // literal sibling paths above it, and `/reservations/quote` would be read
     // as a reservation whose id is "quote".
@@ -61,6 +65,7 @@ import { RatesModule } from '../rates/rates.module.js';
   ],
   providers: [
     CancelReservationService,
+    ChangeStayDatesService,
     CheckInService,
     CheckOutService,
     CreateReservationService,

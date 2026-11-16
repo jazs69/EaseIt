@@ -20,13 +20,14 @@
  * A clerk told that is better off than one left guessing, and better off than
  * one waiting for a button that never arrives.
  *
- * The other three are still inert. Modifying a check-in or check-out date is a
- * re-book — re-pricing the stay and re-locking inventory across a changed
- * range. Editing a rate plan needs the `rates` module and its RatePlan
- * aggregate. Each is a transactional change to money or inventory, and wiring
- * one to a handler that closes the menu and does nothing would be worse than
- * leaving it inert — a front desk that finds a button silently did nothing
- * stops trusting the buttons that work.
+ * `Modify check-in` and `Modify checkout` open the date-change dialog
+ * (RS-11, RS-12), which previews the nights added and removed and their price
+ * before committing. They are shown only for a stay whose dates can change
+ * (confirmed, or in house for the checkout). Editing a rate plan is still
+ * inert: it needs the `rates` module's RatePlan aggregate, and wiring it to a
+ * handler that does nothing would be worse than leaving it inert — a front
+ * desk that finds a button silently did nothing stops trusting the buttons
+ * that work.
  * ===========================================================================
  */
 
@@ -44,6 +45,7 @@ import { useState } from 'react';
 
 import { ActionMenu, ActionMenuItem } from '@/components/common/action-menu';
 import { CancelBookingDialog } from './cancel-booking-dialog';
+import { ChangeDatesDialog } from './change-dates-dialog';
 import { RoomMoveSheet } from './room-move-sheet';
 
 export interface BookingActionsMenuProps {
@@ -58,6 +60,8 @@ export interface BookingActionsMenuProps {
   confirmationCode?: string | null;
   /** Called after a successful cancellation. Defaults to `onMoved`'s refresh. */
   onCancelled?: () => void;
+  /** The stay as it is, for the date-change dialog. Without it those items stay inert. */
+  stay?: { status: string; arrivalDate: string; departureDate: string } | null;
 }
 
 export function BookingActionsMenu({
@@ -68,7 +72,15 @@ export function BookingActionsMenu({
   guestName,
   confirmationCode,
   onCancelled,
+  stay,
 }: BookingActionsMenuProps) {
+  const [datesOpen, setDatesOpen] = useState(false);
+  const datesStay =
+    stay != null && (stay.status === 'CONFIRMED' || stay.status === 'CHECKED_IN') ? stay : null;
+  const openDates = (close: () => void) => () => {
+    close();
+    setDatesOpen(true);
+  };
   const [sheetOpen, setSheetOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState<'cancel' | 'no-show' | null>(null);
 
@@ -86,16 +98,20 @@ export function BookingActionsMenu({
       >
         {(close) => (
           <>
-            <ActionMenuItem
-              label="Modify check-in"
-              icon={ArrowRightToLine}
-              needs="date changes: re-pricing the stay and re-locking inventory"
-            />
-            <ActionMenuItem
-              label="Modify checkout"
-              icon={ArrowRightFromLine}
-              needs="date changes: truncating or extending nights against inventory"
-            />
+            {datesStay !== null && datesStay.status !== 'CHECKED_IN' ? (
+              <ActionMenuItem
+                label="Modify check-in"
+                icon={ArrowRightToLine}
+                onSelect={openDates(close)}
+              />
+            ) : null}
+            {datesStay !== null ? (
+              <ActionMenuItem
+                label="Modify checkout"
+                icon={ArrowRightFromLine}
+                onSelect={openDates(close)}
+              />
+            ) : null}
             <ActionMenuItem
               label="Edit rate plan"
               icon={PenLine}
@@ -152,6 +168,25 @@ export function BookingActionsMenu({
           onCancelled={() => {
             setCancelOpen(null);
             (onCancelled ?? onMoved)();
+          }}
+        />
+      ) : null}
+
+      {datesOpen && datesStay !== null ? (
+        <ChangeDatesDialog
+          hotelId={hotelId}
+          reservationId={reservationId}
+          status={datesStay.status}
+          arrivalDate={datesStay.arrivalDate}
+          departureDate={datesStay.departureDate}
+          guestName={guestName ?? null}
+          confirmationCode={confirmationCode ?? null}
+          onClose={() => {
+            setDatesOpen(false);
+          }}
+          onChanged={() => {
+            setDatesOpen(false);
+            onMoved();
           }}
         />
       ) : null}

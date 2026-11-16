@@ -35,6 +35,7 @@
     "test:payment": "node scripts/test-payment.mjs",
     "test:settlement": "node test/integration/folio-settlement.test.mjs",
     "test:no-show": "node test/integration/no-show.test.mjs",
+    "test:stay-dates": "node test/integration/stay-dates.test.mjs",
     "test:night-audit": "node test/integration/night-audit.test.mjs",
     "test:tenancy": "node test/integration/tenant-isolation.test.mjs",
     "test:accounts": "node test/integration/account-lifecycle.test.mjs",

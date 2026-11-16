@@ -289,6 +289,11 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             hasRoom={reservation.roomNumber !== null}
             guestName={reservation.guestName}
             confirmationCode={reservation.bookingCode}
+            stay={{
+              status: reservation.status,
+              arrivalDate: reservation.arrivalDate,
+              departureDate: reservation.departureDate,
+            }}
             onMoved={() => {
               // The move changed the room on the stay, which the whole page is
               // drawn from, so it is refetched rather than patched.

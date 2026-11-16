@@ -206,6 +206,11 @@ const suites = [
     why: 'release once per date and category, idempotent and parallel, refusals, no-show vs cancel race',
   },
   {
+    name: 'stay dates (RS-11, RS-12)',
+    script: 'test/integration/stay-dates.test.mjs',
+    why: 'extend/shorten/move release and sell per date and category, kept nights keep their price, total = sum of nights, charged nights protected, last-room race, change vs cancel race, tenancy',
+  },
+  {
     name: 'night audit (NA-01 .. NA-06)',
     script: 'test/integration/night-audit.test.mjs',
     why: 'enqueue-only requests, 8 ordered steps, no-show roll, nightly charge once, settle, snapshot, date roll, idempotent re-run, racing executors, resume, per-timezone schedule',

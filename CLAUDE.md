@@ -211,7 +211,9 @@ binding on anything that writes `reservation`, `reservation_room` or `inventory_
 **Reservation row first, then inventory.** Any operation that mutates an existing stay takes
 `SELECT … FROM reservation WHERE "id" = … AND "propertyId" = … FOR UPDATE` as its first blocking
 statement, and only then locks `inventory_day`. This holds in
-`cancel-reservation.service.ts:224`, `room-move.service.ts:308` and `check-in.service.ts:336`.
+`cancel-reservation.service.ts:224`, `room-move.service.ts:308` and `check-in.service.ts:336`, and
+in the date change (RS-11/12, `ChangeStayDatesService.commit`), which then releases removed nights
+and sells added ones in one ascending `inventory_day` lock, with the shared `lock_timeout`.
 No-show (RS-13, `CancelReservationService.markNoShow`) runs the cancellation transaction itself, sharing
 `releaseHeldNights`. `create-reservation.service.ts:271` is the one path that locks inventory first, and it is safe
 precisely because it has no existing reservation row to contend for — it creates one. Do not
