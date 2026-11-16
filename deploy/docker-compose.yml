@@ -1,0 +1,144 @@
+# EaseIt on one server (CI-14). See deploy/README.md for the runbook.
+#
+#   cp .env.example .env    # then fill it in
+#   docker compose pull
+#   docker compose up -d    # `migrate` runs first; API and worker wait for it
+#
+# PostgreSQL and Redis publish no ports: only Caddy faces the internet, on 80
+# and 443, and terminates TLS for the four sites with automatic certificates.
+
+name: easeit
+
+x-api-env: &api-env
+  NODE_ENV: production
+  PORT: '4000'
+  # The API and worker connect as the app role, never the owner, so the
+  # tenant row-level security policies bind every query (MT-04).
+  DATABASE_URL: postgresql://${APP_DB_ROLE:-easeit_app}:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-easeit}?schema=public
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (64 random hex characters)}
+  AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-easeit_session}
+  AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:?set AUTH_COOKIE_DOMAIN (the shared parent domain, e.g. .example.com)}
+  AUTH_COOKIE_SECURE: 'true'
+  WEB_ADMIN_URL: https://${ADMIN_DOMAIN:?set ADMIN_DOMAIN}
+  API_CORS_ORIGINS: https://${ADMIN_DOMAIN},https://${BOOKING_DOMAIN:?set BOOKING_DOMAIN},https://${MARKETING_DOMAIN:?set MARKETING_DOMAIN}
+  SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+  SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST (sign-in codes are emailed)}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  # Required: the API refuses an empty value, and production relays need a login.
+  SMTP_USER: ${SMTP_USER:?set SMTP_USER}
+  SMTP_PASS: ${SMTP_PASS:?set SMTP_PASS}
+  SMTP_FROM: ${SMTP_FROM:?set SMTP_FROM}
+  # Required: the API refuses mock GSTIN data in production (invoices carry the
+  # legal name a lookup returns).
+  GST_PROVIDER: ${GST_PROVIDER:?set GST_PROVIDER to sandbox or cashfree}
+  GST_API_KEY: ${GST_API_KEY:?set GST_API_KEY}
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-easeit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-easeit}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # The outbox's state lives in PostgreSQL; Redis only carries jobs, and the
+    # worker rediscovers lost ones from the database. Appendonly still avoids
+    # needless re-delivery after a restart.
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot, before every start: migrations, reference data, app role.
+  migrate:
+    image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-ops:${EASEIT_VERSION:?set EASEIT_VERSION}
+    command: ['migrate']
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-easeit}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-easeit}?schema=public
+      APP_DB_ROLE: ${APP_DB_ROLE:-easeit_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-api:${EASEIT_VERSION}
+    restart: unless-stopped
+    environment: *api-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Same image, different process: drains the outbox (emails, night audit) and
+  # runs the per-property night-audit schedule (on by default in production).
+  worker:
+    image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-api:${EASEIT_VERSION}
+    command: ['node', 'dist/worker.js']
+    restart: unless-stopped
+    environment: *api-env
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web-admin:
+    image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-web-admin:${EASEIT_VERSION}
+    restart: unless-stopped
+    depends_on: [api]
+
+  web-booking:
+    image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-web-booking:${EASEIT_VERSION}
+    restart: unless-stopped
+    depends_on: [api]
+
+  web-marketing:
+    image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-web-marketing:${EASEIT_VERSION}
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      BOOKING_DOMAIN: ${BOOKING_DOMAIN}
+      MARKETING_DOMAIN: ${MARKETING_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL (certificate expiry notices)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on: [api, web-admin, web-booking, web-marketing]
+
+volumes:
+  pgdata:
+  redisdata:
+  caddydata:
+  caddyconfig:

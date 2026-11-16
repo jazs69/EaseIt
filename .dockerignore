@@ -1,0 +1,22 @@
+# Build context for the root Dockerfile (CI-14). Secrets and local state never
+# enter an image; everything the build produces is rebuilt inside it.
+.git
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+packages/database/generated
+
+# Environment files: secrets stay on the server, never in a layer.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Not needed to build or run.
+research
+docs
+test
+playwright-report
+*.log

@@ -1,0 +1,38 @@
+# TLS termination and routing for the four public hostnames (CI-14).
+# Caddy obtains and renews certificates itself; each domain's DNS A/AAAA
+# record must point at this server before the first start.
+
+{
+	email {$ACME_EMAIL}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+{$API_DOMAIN} {
+	import common
+	reverse_proxy api:4000
+}
+
+{$ADMIN_DOMAIN} {
+	import common
+	header X-Frame-Options "DENY"
+	reverse_proxy web-admin:3000
+}
+
+{$BOOKING_DOMAIN} {
+	import common
+	reverse_proxy web-booking:3000
+}
+
+{$MARKETING_DOMAIN} {
+	import common
+	reverse_proxy web-marketing:3000
+}

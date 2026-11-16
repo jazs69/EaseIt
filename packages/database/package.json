@@ -14,7 +14,8 @@
   "files": [
     "dist",
     "prisma",
-    "generated"
+    "generated",
+    "prisma.config.ts"
   ],
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json",
@@ -31,7 +32,8 @@
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
     "db:validate": "prisma validate",
-    "db:format": "prisma format"
+    "db:format": "prisma format",
+    "db:provision": "tsx prisma/provision.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",

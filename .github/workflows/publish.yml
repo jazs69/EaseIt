@@ -1,0 +1,124 @@
+# Publish versioned images (CI-14).
+#
+# Push a tag like v1.4.0 and this:
+#   1. runs the release checks (release.yml: integration, resilience, backup and
+#      restore against real PostgreSQL 17 and Redis) and stops if they fail;
+#   2. builds the five images from the root Dockerfile;
+#   3. starts the whole stack from those images (deploy/smoke.sh): migrations,
+#      app role, API ready as the app role, worker up, web apps answering, a
+#      property provisioned and its invitation accepted;
+#   4. only then pushes them to GHCR as <version>, <major>.<minor> and sha-<commit>.
+#
+# Deploying stays a human step on the server (deploy/README.md): nothing here
+# holds server credentials.
+#
+# The web images compile their public URLs in, so set these repository
+# variables (Settings > Secrets and variables > Actions > Variables):
+#   PUBLIC_API_URL        e.g. https://api.example.com
+#   PUBLIC_ADMIN_URL      e.g. https://admin.example.com
+#   PUBLIC_MARKETING_URL  e.g. https://www.example.com
+
+name: Publish images
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: release checks
+    uses: ./.github/workflows/release.yml
+
+  images:
+    name: build, smoke test, push
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
+      SMOKE_TAG: smoke-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to build web images without their public URLs
+        env:
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: |
+          if [ -z "$PUBLIC_API_URL" ]; then
+            echo "Repository variable PUBLIC_API_URL is not set; see the header of publish.yml." >&2
+            exit 1
+          fi
+
+      - name: Lower-case registry path
+        run: echo "REGISTRY=${REGISTRY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the five images (loaded locally for the smoke test)
+        env:
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+          PUBLIC_ADMIN_URL: ${{ vars.PUBLIC_ADMIN_URL }}
+          PUBLIC_MARKETING_URL: ${{ vars.PUBLIC_MARKETING_URL }}
+        run: |
+          set -euo pipefail
+          for target in api ops web-admin web-booking web-marketing; do
+            docker buildx build --load --target "$target" \
+              --cache-from type=gha,scope=easeit --cache-to type=gha,scope=easeit,mode=max \
+              --build-arg NEXT_PUBLIC_API_URL="$PUBLIC_API_URL" \
+              --build-arg NEXT_PUBLIC_ADMIN_URL="$PUBLIC_ADMIN_URL" \
+              --build-arg NEXT_PUBLIC_MARKETING_URL="$PUBLIC_MARKETING_URL" \
+              -t "$REGISTRY/easeit-$target:$SMOKE_TAG" .
+          done
+          docker image ls "$REGISTRY/*"
+
+      - name: Smoke test the stack
+        env:
+          EASEIT_REGISTRY: ${{ env.REGISTRY }}
+          EASEIT_VERSION: ${{ env.SMOKE_TAG }}
+        run: bash deploy/smoke.sh
+
+      - name: Version tags
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+            echo "tags=$version ${version%.*} sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          else
+            # A manual run from a branch publishes only the commit tag.
+            echo "tags=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          for target in api ops web-admin web-booking web-marketing; do
+            for tag in ${{ steps.version.outputs.tags }}; do
+              docker tag "$REGISTRY/easeit-$target:$SMOKE_TAG" "$REGISTRY/easeit-$target:$tag"
+              docker push "$REGISTRY/easeit-$target:$tag"
+            done
+          done
+          {
+            echo "### Published"
+            echo
+            for target in api ops web-admin web-booking web-marketing; do
+              echo "- \`$REGISTRY/easeit-$target\`: ${{ steps.version.outputs.tags }}"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

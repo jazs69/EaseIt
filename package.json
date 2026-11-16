@@ -58,7 +58,8 @@
     "gate": "node scripts/gate.mjs",
     "gate:integration": "node scripts/gate-integration.mjs",
     "gate:resilience": "node scripts/gate-resilience.mjs",
-    "require:services": "node scripts/require-services.mjs"
+    "require:services": "node scripts/require-services.mjs",
+    "db:provision": "pnpm --filter @repo/database db:provision"
   },
   "devDependencies": {
     "@repo/config": "workspace:*",

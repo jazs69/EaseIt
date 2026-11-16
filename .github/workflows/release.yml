@@ -14,6 +14,8 @@ name: Release checks
 
 on:
   workflow_dispatch:
+  # publish.yml runs these checks first and ships images only if they pass.
+  workflow_call:
   schedule:
     # 02:30 UTC daily. Cron here is UTC regardless of property timezones.
     - cron: '30 2 * * *'
@@ -88,6 +90,9 @@ jobs:
             printf 'REDIS_URL=redis://127.0.0.1:6380\n'
             printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 32)"
             printf 'AUTH_COOKIE_NAME=easeit_session\n'
+            # Test-only mail transport, as in pr.yml: the account-lifecycle suite
+            # reads reset and invitation links from these files.
+            printf 'MAIL_CAPTURE_DIR=/tmp/easeit-mail\n'
           } > apps/api/.env
 
       - name: Build
@@ -99,6 +104,19 @@ jobs:
           cd packages/database
           pnpm exec prisma migrate deploy
           pnpm exec tsx prisma/seed.ts
+
+      # MT-04, as in pr.yml: row-level security binds only a role that is neither
+      # a superuser nor BYPASSRLS, and the container's owner login is a
+      # superuser. The API connects as easeit_app with a per-run password, so
+      # the tenant-isolation suite proves the policies for the real login.
+      - name: Create the API's database role and point the API at it
+        run: |
+          set -euo pipefail
+          APP_PW="$(openssl rand -hex 24)"
+          DATABASE_URL="postgresql://easeit:easeit_ci_local_only@127.0.0.1:5432/easeit_ci?schema=public" \
+            APP_DB_PASSWORD="$APP_PW" node scripts/db-app-role.mjs
+          APP_URL="postgresql://easeit_app:${APP_PW}@127.0.0.1:5432/easeit_ci?schema=public"
+          sed -i "s#^DATABASE_URL=.*#DATABASE_URL=${APP_URL}#" apps/api/.env
 
       # Started from `apps/api` for the same reason as pr.yml: load-env.ts and
       # ConfigModule both resolve `.env` against cwd, and this workflow writes
@@ -130,6 +148,7 @@ jobs:
         env:
           EASEIT_TEST_DBS: easeit_ci
           EASEIT_API_URL: http://127.0.0.1:4100/api/v1
+          MAIL_CAPTURE_DIR: /tmp/easeit-mail
         run: pnpm gate:integration
 
       - name: Resilience gate
