@@ -36,7 +36,6 @@ import {
   Mail,
   Percent,
   Plus,
-  Printer,
   RotateCcw,
   TriangleAlert,
   Undo2,
@@ -66,6 +65,7 @@ import {
 } from '@repo/types';
 
 import { BookingActionsMenu } from './booking-actions-menu';
+import { InvoiceActions } from './invoice-actions';
 import { useFolioSummaryRows, type FolioSummaryRow } from './use-folio-summary-rows';
 import { EditableFolioCell } from './editable-folio-cell';
 
@@ -353,7 +353,16 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
           />
           <ActionPill icon={Mail} label="Email folio" needs="the platform module's mail outbox" />
           <ActionPill icon={RotateCcw} label="Rollback" needs="reversing entries in the folios module" />
-          <ActionPill icon={Printer} label="Print" needs="invoice rendering" />
+          {/* FO-14: issued from a closed folio, then downloaded as PDF or CSV. */}
+          <InvoiceActions
+            hotelId={hotelId}
+            folioId={folio.folioId}
+            folioClosed={folio.folioStatus === 'CLOSED'}
+            invoice={folio.invoice}
+            onIssued={() => {
+              router.refresh();
+            }}
+          />
           {/* Always live, even with no folio: taking money is a deliberate act
               by a named clerk, and the server opens the container for it. The
               charge and discount pills still need a folio, because posting a

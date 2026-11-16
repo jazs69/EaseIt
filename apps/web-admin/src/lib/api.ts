@@ -135,6 +135,27 @@ export async function apiFetch<T>(
   return parsed.data;
 }
 
+/**
+ * A file from the API (an invoice PDF or CSV), with the session cookie and
+ * the same typed errors as `apiFetch`. Browser-only: the caller saves the
+ * blob through an object URL.
+ */
+export async function apiDownload(path: string): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${API_PREFIX}${path}`, {
+      credentials: 'include',
+      cache: 'no-store',
+    });
+  } catch (cause) {
+    throw new ApiUnreachableError(cause);
+  }
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, await readErrorBody(response));
+  }
+  return response.blob();
+}
+
 async function readErrorBody(response: Response): Promise<Partial<ApiError>> {
   try {
     const payload: unknown = await response.json();

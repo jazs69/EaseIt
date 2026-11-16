@@ -4,6 +4,8 @@ import { SessionAuthGuard } from '../../common/auth/session-auth.guard.js';
 import { TokenService } from '../../common/auth/token.service.js';
 import { FoliosController } from './folios.controller.js';
 import { FoliosService } from './folios.service.js';
+import { InvoicesController } from './invoices.controller.js';
+import { InvoicesService } from './invoices.service.js';
 import { PropertiesModule } from '../properties/properties.module.js';
 
 /**
@@ -24,8 +26,8 @@ import { PropertiesModule } from '../properties/properties.module.js';
   // rules in the properties module), so that module is imported rather than
   // its service re-provided here.
   imports: [PropertiesModule],
-  controllers: [FoliosController],
-  providers: [FoliosService, TokenService, SessionAuthGuard],
+  controllers: [FoliosController, InvoicesController],
+  providers: [FoliosService, InvoicesService, TokenService, SessionAuthGuard],
   exports: [FoliosService],
 })
 export class FoliosModule {}

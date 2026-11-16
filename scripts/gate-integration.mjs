@@ -216,6 +216,11 @@ const suites = [
     why: 'due in / arrived / overdue arrivals, due out / departed today / overstays, in house; room readiness; balances only with folio:read; housekeeping 403; tenancy',
   },
   {
+    name: 'invoices (FO-14)',
+    script: 'test/integration/invoices.test.mjs',
+    why: 'closed folio only, agrees with the folio page, gapless per-year numbering, re-issue and 8-way race give one invoice, PDF/CSV, immutable by trigger, permissions, tenancy, company bill-to, hotel GSTIN',
+  },
+  {
     name: 'night audit (NA-01 .. NA-06)',
     script: 'test/integration/night-audit.test.mjs',
     why: 'enqueue-only requests, 8 ordered steps, no-show roll, nightly charge once, settle, snapshot, date roll, idempotent re-run, racing executors, resume, per-timezone schedule',

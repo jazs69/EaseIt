@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { businessDateSchema, propertyIdSchema, reservationStatusSchema } from '../domain.js';
 import { folioLineSchema } from './check-in.dto.js';
 import { paymentMethodSchema } from './create-reservation.dto.js';
+import { invoiceRefSchema } from './invoice.dto.js';
 
 /* -------------------------------------------------------------------------- */
 /*  A transaction row                                                          */
@@ -223,6 +224,9 @@ export const folioPageSchema = z.object({
 
   transactions: z.array(folioTransactionSchema),
   breakdown: folioBreakdownSchema,
+
+  /** The invoice raised from this folio, once it is closed and invoiced (FO-14). */
+  invoice: invoiceRefSchema.nullable(),
 });
 
 export type FolioPage = z.infer<typeof folioPageSchema>;

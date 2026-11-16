@@ -17,6 +17,7 @@ export * from './dto/cancel-reservation.dto.js';
 export * from './dto/change-stay-dates.dto.js';
 export * from './dto/front-desk-board.dto.js';
 export * from './dto/folio.dto.js';
+export * from './dto/invoice.dto.js';
 export * from './dto/night-audit.dto.js';
 export * from './dto/housekeeping.dto.js';
 export * from './dto/group.dto.js';

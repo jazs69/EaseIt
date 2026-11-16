@@ -107,6 +107,7 @@ export function TimingsTab({ state }: { state: PropertySettingsState }) {
       bookingPrefix: setup.settings.bookingPrefix,
       folioPrefix: setup.settings.folioPrefix,
       invoicePrefix: setup.settings.invoicePrefix,
+      gstin: setup.settings.gstin,
     };
     void saveSettings(patch, 'timings');
   };

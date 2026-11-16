@@ -39,6 +39,8 @@ import {
   type CancelReservationResult,
   checkInPreflightSchema,
   folioPageSchema,
+  invoiceSchema,
+  type Invoice,
   moveRoomOptionsSchema,
   moveRoomResultSchema,
   reservationDetailSchema,
@@ -170,7 +172,7 @@ import {
 
 import { z } from 'zod';
 
-import { API_BASE_URL, apiFetch } from './api';
+import { API_BASE_URL, apiDownload, apiFetch } from './api';
 
 export interface FetchMyGroupOptions {
   status?: PropertyStatusFilter;
@@ -679,6 +681,22 @@ export function closeFolio(
     `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/close`,
     folioPageSchema,
     { method: 'POST', body },
+  );
+}
+
+/** Issue the invoice for a closed folio, or get the one already issued (FO-14). */
+export function issueInvoice(hotelId: string, folioId: string): Promise<Invoice> {
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/folios/${encodeURIComponent(folioId)}/invoice`,
+    invoiceSchema,
+    { method: 'POST' },
+  );
+}
+
+/** The invoice as a file to save. */
+export function downloadInvoice(hotelId: string, invoiceId: string, format: 'pdf' | 'csv'): Promise<Blob> {
+  return apiDownload(
+    `/properties/${encodeURIComponent(hotelId)}/invoices/${encodeURIComponent(invoiceId)}/${format}`,
   );
 }
 

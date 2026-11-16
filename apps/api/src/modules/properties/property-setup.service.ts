@@ -44,6 +44,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { validateSlabTable } from './tax-engine.js';
+import { inspectGstin } from '../companies/gstin.js';
 
 /** What the settings columns default to for a property with no row yet. */
 const SETTINGS_DEFAULTS = {
@@ -51,6 +52,7 @@ const SETTINGS_DEFAULTS = {
   bookingPrefix: 'SFBOOKING_',
   folioPrefix: 'FOL_',
   invoicePrefix: 'INV_',
+  gstin: null as string | null,
   autoHoldReleaseHours: 4,
   nightAuditHour: '02:00',
   // F3. Sunday and Saturday, which is exactly what the two hardcoded Sat/Sun
@@ -89,6 +91,7 @@ export class PropertySetupService {
           bookingPrefix: true,
           folioPrefix: true,
           invoicePrefix: true,
+          gstin: true,
           autoHoldReleaseHours: true,
           nightAuditHour: true,
           weekendDays: true,
@@ -184,6 +187,7 @@ export class PropertySetupService {
         bookingPrefix: settings?.bookingPrefix ?? SETTINGS_DEFAULTS.bookingPrefix,
         folioPrefix: settings?.folioPrefix ?? SETTINGS_DEFAULTS.folioPrefix,
         invoicePrefix: settings?.invoicePrefix ?? SETTINGS_DEFAULTS.invoicePrefix,
+        gstin: settings?.gstin ?? null,
         autoHoldReleaseHours:
           settings?.autoHoldReleaseHours ?? SETTINGS_DEFAULTS.autoHoldReleaseHours,
         nightAuditHour: settings?.nightAuditHour ?? SETTINGS_DEFAULTS.nightAuditHour,
@@ -276,6 +280,15 @@ export class PropertySetupService {
      * first would set every untouched column to undefined. Spreading field by
      * field keeps the write exactly as wide as the request was.
      */
+    // The hotel's GSTIN goes on every invoice it issues (FO-14), so a typo is
+    // refused here by the same structure and check-digit test companies use.
+    if (patch.gstin !== undefined && patch.gstin !== null) {
+      const inspection = inspectGstin(patch.gstin);
+      if (!inspection.isValid) {
+        throw new ValidationFailedError({ gstin: inspection.reason ?? 'That GSTIN is not valid.' });
+      }
+    }
+
     const changes = {
       ...(patch.standardCheckInTime !== undefined
         ? { standardCheckInTime: patch.standardCheckInTime }
@@ -289,6 +302,7 @@ export class PropertySetupService {
       ...(patch.bookingPrefix !== undefined ? { bookingPrefix: patch.bookingPrefix } : {}),
       ...(patch.folioPrefix !== undefined ? { folioPrefix: patch.folioPrefix } : {}),
       ...(patch.invoicePrefix !== undefined ? { invoicePrefix: patch.invoicePrefix } : {}),
+      ...(patch.gstin !== undefined ? { gstin: patch.gstin } : {}),
       ...(patch.autoHoldReleaseHours !== undefined
         ? { autoHoldReleaseHours: patch.autoHoldReleaseHours }
         : {}),
@@ -311,6 +325,7 @@ export class PropertySetupService {
           bookingPrefix: true,
           folioPrefix: true,
           invoicePrefix: true,
+          gstin: true,
           autoHoldReleaseHours: true,
           nightAuditHour: true,
           weekendDays: true,
@@ -335,6 +350,7 @@ export class PropertySetupService {
           bookingPrefix: true,
           folioPrefix: true,
           invoicePrefix: true,
+          gstin: true,
           autoHoldReleaseHours: true,
           nightAuditHour: true,
           weekendDays: true,
@@ -790,7 +806,7 @@ export class PropertySetupService {
  * and that still holds.
  */
 function pick(
-  source: Record<string, string | number | readonly number[]>,
+  source: Record<string, string | number | readonly number[] | null>,
   keys: readonly string[],
 ): Prisma.InputJsonObject {
   return Object.fromEntries(

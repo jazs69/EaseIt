@@ -290,6 +290,7 @@ export class FoliosService {
             id: true,
             status: true,
             currency: true,
+            invoice: { select: { id: true, number: true, invoiceDate: true, issuedAt: true } },
             lines: {
               select: {
                 id: true,
@@ -436,6 +437,18 @@ export class FoliosService {
 
       transactions,
       breakdown,
+
+      invoice:
+        reservation.folio?.invoice == null
+          ? null
+          : {
+              id: reservation.folio.invoice.id,
+              number: reservation.folio.invoice.number,
+              invoiceDate: toBusinessDate(
+                reservation.folio.invoice.invoiceDate,
+              ) as FolioPage['reservation']['arrivalDate'],
+              issuedAt: reservation.folio.invoice.issuedAt.toISOString(),
+            },
     };
   }
 

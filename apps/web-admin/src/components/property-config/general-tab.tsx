@@ -74,6 +74,16 @@ export function GeneralTab({
     setDraft({ from: setup, value: { ...prefixes, ...patch } });
   };
 
+  // FO-14: the hotel's GSTIN, tagged against the payload like the prefixes.
+  const [gstinDraft, setGstinDraft] = useState<{ from: PropertySetup; value: string } | null>(null);
+  const gstinText =
+    gstinDraft !== null && gstinDraft.from === setup ? gstinDraft.value : (setup.settings.gstin ?? '');
+  const gstinNormalised = gstinText.trim().toUpperCase();
+  const gstinValue = gstinNormalised === '' ? null : gstinNormalised;
+  const gstinDirty = gstinValue !== setup.settings.gstin;
+  const gstinError =
+    gstinValue !== null && !/^[0-9A-Z]{15}$/.test(gstinValue) ? 'A GSTIN is 15 letters and digits.' : null;
+
   const [media, setMedia] = useState<readonly PropertyMedia[]>(setup.media);
   const [mediaFrom, setMediaFrom] = useState<PropertySetup>(setup);
   const shownMedia = mediaFrom === setup ? media : setup.media;
@@ -186,6 +196,43 @@ export function GeneralTab({
               disabled={saving}
               onChange={(invoicePrefix) => {
                 update({ invoicePrefix });
+              }}
+            />
+          </Field>
+        </div>
+      </Section>
+
+      <Section
+        title="Invoicing"
+        description="The hotel's GSTIN is printed as the supplier on every invoice issued from now on. Without it an invoice is titled Invoice, not Tax Invoice."
+        action={
+          <SaveBar
+            dirty={gstinDirty}
+            saving={saving}
+            saved={savedTab === 'invoicing'}
+            onSave={() => {
+              if (gstinError === null) void saveSettings({ gstin: gstinValue }, 'invoicing');
+            }}
+            onReset={() => {
+              setGstinDraft(null);
+            }}
+          />
+        }
+      >
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Field
+            label="GSTIN"
+            htmlFor="property-gstin"
+            hint="15 characters. Checked against its check digit when saved; leave empty if not registered."
+            error={gstinError ?? undefined}
+          >
+            <TextInput
+              id="property-gstin"
+              value={gstinText}
+              disabled={saving}
+              placeholder="27AAPFU0939F1ZV"
+              onChange={(value) => {
+                setGstinDraft({ from: setup, value });
               }}
             />
           </Field>

@@ -347,37 +347,39 @@ model Property {
   customRoles Role[]
   staffRoles  UserPropertyRole[]
 
-  roomTypes      RoomType[]
-  rooms          Room[]
-  inventoryDays  InventoryDay[]
-  roomBlocks     RoomBlock[]
-  ratePlans      RatePlan[]
-  ratePlanRooms  RatePlanRoomType[]
-  ratePlanDays   RatePlanDay[]
-  restrictions   RateRestrictionDay[]
-  pricingRules   RatePricingRule[]
-  pricingPrices  RatePricingRulePrice[]
-  promotions     Promotion[]
-  promotionPlans PromotionRatePlan[]
-  promotionRooms PromotionRoomType[]
-  promoCodes     PromoCode[]
-  redemptions    PromotionRedemption[]
-  reservations   Reservation[]
-  pricedNights   ReservationNight[]
-  gatewayConfigs PaymentGatewayConfig[]
-  companies      Company[]
-  folios         Folio[]
-  auditLogs      AuditLog[]
-  outboxEvents   OutboxEvent[]
-  nightAuditRuns NightAuditRun[]
-  dailySnapshots DailySnapshot[]
+  roomTypes         RoomType[]
+  rooms             Room[]
+  inventoryDays     InventoryDay[]
+  roomBlocks        RoomBlock[]
+  ratePlans         RatePlan[]
+  ratePlanRooms     RatePlanRoomType[]
+  ratePlanDays      RatePlanDay[]
+  restrictions      RateRestrictionDay[]
+  pricingRules      RatePricingRule[]
+  pricingPrices     RatePricingRulePrice[]
+  promotions        Promotion[]
+  promotionPlans    PromotionRatePlan[]
+  promotionRooms    PromotionRoomType[]
+  promoCodes        PromoCode[]
+  redemptions       PromotionRedemption[]
+  reservations      Reservation[]
+  pricedNights      ReservationNight[]
+  gatewayConfigs    PaymentGatewayConfig[]
+  companies         Company[]
+  folios            Folio[]
+  invoices          Invoice[]
+  invoiceSequences  InvoiceSequence[]
+  auditLogs         AuditLog[]
+  outboxEvents      OutboxEvent[]
+  nightAuditRuns    NightAuditRun[]
+  dailySnapshots    DailySnapshot[]
   housekeepingTasks HousekeepingTask[]
-  settings       PropertySettings?
-  taxSlabs       PropertyTaxSlab[]
-  media          PropertyMedia[]
-  amenityLinks   PropertyAmenityLink[]
-  policies       PropertyPolicy[]
-  fees           FeeAndSurcharge[]
+  settings          PropertySettings?
+  taxSlabs          PropertyTaxSlab[]
+  media             PropertyMedia[]
+  amenityLinks      PropertyAmenityLink[]
+  policies          PropertyPolicy[]
+  fees              FeeAndSurcharge[]
 
   @@index([status])
   @@map("property")
@@ -473,7 +475,7 @@ model TwoFactorChallenge {
   codeHash String
 
   /// When the *current* code stops working. A resend replaces both.
-  expiresAt DateTime @db.Timestamptz(6)
+  expiresAt  DateTime @db.Timestamptz(6)
   /// Start of the resend cooldown for the current code.
   lastSentAt DateTime @db.Timestamptz(6)
 
@@ -732,8 +734,8 @@ model Room {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  reservationRooms ReservationRoom[]
-  roomBlocks       RoomBlock[]
+  reservationRooms  ReservationRoom[]
+  roomBlocks        RoomBlock[]
   housekeepingTasks HousekeepingTask[]
 
   @@unique([propertyId, number], name: "room_unique_number_per_property")
@@ -976,8 +978,8 @@ model RatePlan {
 
   /// Derived (linked) plan, AV-06: priced as the parent's nightly rate adjusted by
   /// derivationKind/Value. Null on a plan priced from its own calendar.
-  parentRatePlanId String?   @db.Uuid
-  parentRatePlan   RatePlan? @relation("RatePlanDerivation", fields: [parentRatePlanId], references: [id], onDelete: Restrict)
+  parentRatePlanId String?    @db.Uuid
+  parentRatePlan   RatePlan?  @relation("RatePlanDerivation", fields: [parentRatePlanId], references: [id], onDelete: Restrict)
   derivedPlans     RatePlan[] @relation("RatePlanDerivation")
   /// PERCENT (basis points, signed) or FIXED (minor units per night, signed).
   derivationKind   String?
@@ -1036,7 +1038,9 @@ model RatePlanRoomType {
   /// enforces it.
   baseOccupancy Int @default(2)
 
-  /* -- F4: occupancy and extra-person pricing --------------------------- */
+  /**
+   * -- F4: occupancy and extra-person pricing ---------------------------
+   */
 
   /// Whether extra-guest charges apply at all for this assignment.
   ///
@@ -1070,14 +1074,14 @@ model RatePlanRoomType {
 
   /// Children are priced separately from adults, because properties do not
   /// charge them alike — and several do not charge them at all.
-  extraChildChargeKind ExtraGuestChargeKind @default(FIXED)
-  extraChildChargeValue Int @default(0)
+  extraChildChargeKind  ExtraGuestChargeKind @default(FIXED)
+  extraChildChargeValue Int                  @default(0)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
-  days       RatePlanDay[]
-  rulePrices RatePricingRulePrice[]
+  days            RatePlanDay[]
+  rulePrices      RatePricingRulePrice[]
   restrictionDays RateRestrictionDay[]
 
   @@id([ratePlanId, roomTypeId])
@@ -1408,7 +1412,7 @@ model Promotion {
   name        String
   description String?
 
-  discountKind PromotionDiscountKind
+  discountKind  PromotionDiscountKind
   /// Basis points when `PERCENT` (capped at 10000 = 100%); integer minor units
   /// when `FIXED_PER_NIGHT`. One column, because the kind says how to read it.
   discountValue Int
@@ -1532,11 +1536,11 @@ model PromoCode {
   promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
 
   /// As entered, for display only. Never matched against.
-  code String
+  code           String
   /// Upper-cased and trimmed. The matched and unique form.
   codeNormalized String
 
-  isActive Boolean @default(true)
+  isActive  Boolean   @default(true)
   /// Inclusive — the last calendar date the code may be used. Null = no expiry.
   expiresOn DateTime? @db.Date
 
@@ -1717,9 +1721,9 @@ model Reservation {
   /// `checkedInAt` already existed for the hourly calendar view; these record
   /// the rest of the desk transaction. `checkedInBy` is a staff user id rather
   /// than a name, so a renamed account does not rewrite history.
-  checkedInBy            String?  @db.Uuid
+  checkedInBy            String? @db.Uuid
   keyCardsIssued         Int?
-  registrationCardSigned Boolean  @default(false)
+  registrationCardSigned Boolean @default(false)
 
   /// How the desk payment was taken, and any reference for it.
   ///
@@ -1776,7 +1780,9 @@ model Reservation {
   /// or no-show booking.
   cancelledAt DateTime? @db.Timestamptz(6)
 
-  /* -- Commercial attribution ------------------------------------------- */
+  /**
+   * -- Commercial attribution -------------------------------------------
+   */
 
   /// The operator's own reference, distinct from `confirmationCode`. A group
   /// booking taken against a tour operator's paperwork carries their number
@@ -1800,7 +1806,9 @@ model Reservation {
   isComplimentary      Boolean @default(false)
   complimentaryRemarks String?
 
-  /* -- OTA settlement ---------------------------------------------------- */
+  /**
+   * -- OTA settlement ----------------------------------------------------
+   */
 
   /// What the channel actually settles, in integer minor units.
   ///
@@ -1827,7 +1835,9 @@ model Reservation {
   otaTaxMinor           Int @default(0)
   otaNetAmountMinor     Int @default(0)
 
-  /* -- Promotions -------------------------------------------------------- */
+  /**
+   * -- Promotions --------------------------------------------------------
+   */
 
   /// The discount a promotion took off this booking, and the code that did it.
   /// Integer minor units like every other amount. A promotions module would own
@@ -1836,7 +1846,9 @@ model Reservation {
   promoAmountMinor  Int     @default(0)
   appliedCouponCode String?
 
-  /* -- Deposits ---------------------------------------------------------- */
+  /**
+   * -- Deposits ----------------------------------------------------------
+   */
 
   /// A refundable security deposit held against the stay.
   ///
@@ -1860,12 +1872,13 @@ model Reservation {
   ratePlanId String?   @db.Uuid
   ratePlan   RatePlan? @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
 
-  rooms           ReservationRoom[]
-  guests          ReservationGuest[]
-  folio           Folio?
-  internalNotes   ReservationNote[]
+  rooms         ReservationRoom[]
+  guests        ReservationGuest[]
+  folio         Folio?
+  invoices      Invoice[]
+  internalNotes ReservationNote[]
   /// What each night was sold for. Written once at booking; never repriced.
-  pricedNights    ReservationNight[]
+  pricedNights  ReservationNight[]
 
   @@unique([propertyId, confirmationCode], name: "reservation_unique_code_per_property")
   /// Idempotency for inbound OTA ingestion (CLAUDE.md section 5). Postgres
@@ -2128,7 +2141,7 @@ model ReservationNote {
   authorUserId String? @db.Uuid
   /// Their name as it was when they wrote it, so a renamed or departed
   /// account does not blank the byline on an old note.
-  authorName String
+  authorName   String
 
   body String
 
@@ -2172,6 +2185,11 @@ model PropertySettings {
   bookingPrefix String @default("SFBOOKING_")
   folioPrefix   String @default("FOL_")
   invoicePrefix String @default("INV_")
+
+  /// The hotel's own GSTIN, printed as the supplier on its invoices (FO-14).
+  /// Null until configured; an invoice issued without it is titled "Invoice",
+  /// not "Tax Invoice", because a tax invoice must name the registered supplier.
+  gstin String? @db.Char(15)
 
   /// How long an unconfirmed hold survives before inventory is released.
   autoHoldReleaseHours Int @default(4)
@@ -2423,9 +2441,81 @@ model Folio {
 
   lines FolioLine[]
 
+  /// FO-14: at most one, issued from the folio once it is closed.
+  invoice Invoice?
+
   @@unique([propertyId, customFolioId], name: "folio_unique_custom_id_per_property")
   @@index([propertyId, status])
   @@map("folio")
+}
+
+/// A numbered, immutable invoice raised from a closed folio (FO-14).
+///
+/// ===========================================================================
+/// **Issued only from a CLOSED folio.** A closed folio is settled at zero and
+/// refuses every posting (each folio write re-checks OPEN under its lock), so
+/// the lines an invoice is built from can no longer change. Three triggers in
+/// the migration make that a database fact rather than a convention: an
+/// invoice row cannot be updated, no line can be added to an invoiced folio,
+/// and an invoiced folio cannot be reopened.
+///
+/// **`document` is the snapshot.** Seller, bill-to, stay, lines and totals as
+/// they were at issue. A later edit to the hotel's address or a company's
+/// name does not rewrite an invoice already given to a guest. The scalar
+/// totals beside it exist for listing and reporting without parsing JSON.
+///
+/// **Numbering** is per property and per Indian financial year (April to
+/// March, from the business date), gapless: `invoice_sequence` is advanced in
+/// the same transaction as the insert, so a rollback returns the number.
+/// ===========================================================================
+model Invoice {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  folioId String @unique @db.Uuid
+  folio   Folio  @relation(fields: [folioId], references: [id], onDelete: Cascade)
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  /// Printed number, e.g. `INV_2627-00001`.
+  number     String
+  /// Indian financial year, `2026-27`.
+  fiscalYear String
+  sequence   Int
+
+  /// The business date it was issued on (section 3.3), not a timestamp.
+  invoiceDate DateTime @db.Date
+  issuedAt    DateTime @db.Timestamptz(6)
+  issuedById  String?  @db.Uuid
+
+  currency      String @db.Char(3)
+  subtotalMinor Int
+  taxMinor      Int
+  totalMinor    Int
+  /// Payments less refunds.
+  paidMinor     Int
+
+  document Json
+
+  @@unique([propertyId, number], map: "invoice_unique_number_per_property")
+  @@unique([propertyId, fiscalYear, sequence], map: "invoice_unique_sequence_per_year")
+  @@index([propertyId, invoiceDate])
+  @@map("invoice")
+}
+
+/// The last invoice number used, per property and financial year (FO-14).
+model InvoiceSequence {
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  fiscalYear String
+  lastNumber Int
+
+  @@id([propertyId, fiscalYear])
+  @@map("invoice_sequence")
 }
 
 /// One immutable line of a folio.
@@ -2621,9 +2711,15 @@ model PaymentGatewayConfig {
   @@map("payment_gateway_config")
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Transactional outbox                                                      */
-/* -------------------------------------------------------------------------- */
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Transactional outbox
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
 
 /// What an outbox row asks to be done.
 ///
@@ -2776,13 +2872,10 @@ model OutboxEvent {
   /// which cannot lead with a tenant it does not have. Leading with
   /// `propertyId` here would make the only hot query in this table unindexed.
   @@index([status, availableAt])
-
   /// Lease reaping: find IN_FLIGHT rows whose lease has expired.
   @@index([status, leaseExpiresAt])
-
   /// Tenant-led, for the operator-facing view of a property's backlog.
   @@index([propertyId, status, createdAt])
-
   @@map("outbox_event")
 }
 
@@ -2842,14 +2935,14 @@ model NightAuditStep {
   run   NightAuditRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   /// 1..8, the canonical order of section 3.3.
-  step   Int
-  name   String
-  status NightAuditStepStatus
+  step       Int
+  name       String
+  status     NightAuditStepStatus
   /// What the step did: counts, exceptions, figures. Deterministic for a
   /// given ledger, so a re-run of a completed step is skipped, not repeated.
-  outcome   Json
-  startedAt DateTime @db.Timestamptz(6)
-  finishedAt DateTime @db.Timestamptz(6)
+  outcome    Json
+  startedAt  DateTime             @db.Timestamptz(6)
+  finishedAt DateTime             @db.Timestamptz(6)
 
   @@unique([propertyId, runId, step], name: "night_audit_step_one_per_run")
   @@map("night_audit_step")

@@ -325,7 +325,11 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
   folio is OPEN, and maps `55P03` to `TransactionConflictError`. Close vs payment and refund vs refund
   are race-tested (`folio-settlement.test.mjs`); interleavings with the other stay operations are not. There is deliberately **no retry wrapper
   around folio payments**: a check-in opens the folio and posts the arrival night with no idempotency
-  key, so retrying could double-post.
+  key, so retrying could double-post. Invoice issue (FO-14, `invoices.service.ts`) takes the same
+  reservation → folio locks, re-checks CLOSED, then advances its year's `invoice_sequence` row last;
+  nothing else locks that table. Once a folio is invoiced, triggers refuse any new `folio_line`, any
+  reopening of the folio and any UPDATE of the invoice, so a new folio-writing path cannot silently
+  change an invoiced bill.
 - **Create-reservation racing cancellation or a room move** on the same room type and dates.
 
 **Requirements for any future module writing these tables.** `nightaudit` now exists and follows them

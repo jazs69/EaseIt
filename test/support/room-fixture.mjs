@@ -72,7 +72,7 @@ export function requireEnvironment(suiteName) {
 }
 
 /** The role templates a suite may ask for, by `RoleKey`. */
-const ROLE_KEYS = ['PROPERTY_ADMIN', 'FRONT_DESK', 'HOUSEKEEPING', 'REVENUE_MANAGER', 'NIGHT_AUDITOR'];
+const ROLE_KEYS = ['PROPERTY_ADMIN', 'FRONT_DESK', 'HOUSEKEEPING', 'REVENUE_MANAGER', 'NIGHT_AUDITOR', 'POS_STAFF'];
 
 export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, prisma }) {
   if (!prefix || !slugPrefix || !emailDomain) {

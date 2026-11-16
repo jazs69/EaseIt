@@ -120,6 +120,8 @@ const checks = [
     'property-identifier',
     'require-permission',
     'unavailable-permissions',
+    // FO-14: invoice numbering, amount formatting, CSV guard and PDF structure.
+    'invoice-document',
   ].map((suite) => ({
     name: `unit tests (${suite})`,
     command: process.execPath,

@@ -83,6 +83,11 @@ export const propertySettingsSchema = z.object({
   bookingPrefix: z.string().min(1).max(24),
   folioPrefix: z.string().min(1).max(24),
   invoicePrefix: z.string().min(1).max(24),
+  /**
+   * The hotel's own GSTIN, printed as the supplier on its invoices (FO-14).
+   * Null until configured. The server checks the check digit before saving.
+   */
+  gstin: z.string().trim().toUpperCase().length(15).nullable(),
   autoHoldReleaseHours: z.number().int().min(1).max(168),
   nightAuditHour: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   /**
