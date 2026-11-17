@@ -184,6 +184,20 @@ describe('SandboxGstProvider', () => {
     expect(header(calls.at(-1), 'authorization')).toBe('jwt-2');
   });
 
+  it("the provider's own message reaches the error, e.g. a live key on the test host", async () => {
+    const { fn } = fakeFetch((url) =>
+      url.endsWith('/authenticate')
+        ? json(200, { data: { access_token: 'jwt' } })
+        : json(403, { code: 403, message: 'Use test API key for test environment' }),
+    );
+    const provider = new SandboxGstProvider(fn, 'https://x', 'k', 's', () => 0);
+    await expect(provider.lookup(GSTIN, signal)).rejects.toMatchObject({
+      retryable: false,
+      status: 403,
+      message: 'sandbox returned HTTP 403: Use test API key for test environment',
+    });
+  });
+
   it('bad credentials are a permanent, non-retryable error', async () => {
     const { fn } = fakeFetch(() => json(401, { code: 401, message: 'Invalid API key' }));
     const provider = new SandboxGstProvider(fn, 'https://x', 'k', 's', () => 0);

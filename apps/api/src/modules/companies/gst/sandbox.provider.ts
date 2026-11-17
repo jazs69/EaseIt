@@ -20,7 +20,7 @@ import {
   asRecord,
   asText,
   buildAddress,
-  errorForStatus,
+  errorForResponse,
   GstProviderError,
   networkError,
   type FetchLike,
@@ -79,7 +79,7 @@ export class SandboxGstProvider implements GstProvider {
       // An expired or revoked token: one fresh token, one more try.
       response = await this.search(gstin, await this.accessToken(signal, true), signal);
     }
-    if (!response.ok) throw errorForStatus('sandbox', response.status);
+    if (!response.ok) throw await errorForResponse('sandbox', response);
     return mapSandboxSearch(await this.json(response));
   }
 
@@ -123,7 +123,7 @@ export class SandboxGstProvider implements GstProvider {
     }
     if (!response.ok) {
       this.token = null;
-      throw errorForStatus('sandbox authenticate', response.status);
+      throw await errorForResponse('sandbox authenticate', response);
     }
     const value = asText(asRecord(asRecord(await this.json(response))['data'])['access_token']);
     if (value === null) {

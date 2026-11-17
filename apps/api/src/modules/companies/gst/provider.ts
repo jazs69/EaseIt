@@ -66,10 +66,26 @@ export function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-/** Classifies a non-2xx response; never includes the body (it may echo inputs). */
-export function errorForStatus(provider: string, status: number): GstProviderError {
+/**
+ * Classifies a non-2xx response. Carries the provider's own short `message`
+ * when it sent one (e.g. Sandbox's "Use test API key for test environment"),
+ * because that is what tells an operator what to fix. Only that field, cut
+ * to 160 characters, and never the request: no key or secret can reach it.
+ */
+export async function errorForResponse(
+  provider: string,
+  response: Response,
+): Promise<GstProviderError> {
+  let message: string | null = null;
+  try {
+    const record = asRecord(await response.json());
+    message = asText(record['message']) ?? asText(asRecord(record['error'])['message']);
+  } catch {
+    // Not JSON: the status alone is all there is.
+  }
+  const status = response.status;
   return new GstProviderError(
-    `${provider} returned HTTP ${String(status)}`,
+    `${provider} returned HTTP ${String(status)}${message === null ? '' : `: ${message.slice(0, 160)}`}`,
     status === 429 || status >= 500,
     status,
   );

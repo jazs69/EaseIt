@@ -20,7 +20,7 @@ import {
   asRecord,
   asText,
   buildAddress,
-  errorForStatus,
+  errorForResponse,
   GstProviderError,
   networkError,
   type FetchLike,
@@ -96,7 +96,7 @@ export class CashfreeGstProvider implements GstProvider {
     } catch (cause) {
       throw networkError('cashfree', cause);
     }
-    if (!response.ok) throw errorForStatus('cashfree', response.status);
+    if (!response.ok) throw await errorForResponse('cashfree', response);
     let body: unknown;
     try {
       body = await response.json();
