@@ -6,7 +6,8 @@
 #   2. builds the five images from the root Dockerfile;
 #   3. starts the whole stack from those images (deploy/smoke.sh): migrations,
 #      app role, API ready as the app role, worker up, web apps answering, a
-#      property provisioned and its invitation accepted;
+#      property provisioned and its invitation accepted, a backup taken and
+#      restore-rehearsed, and a full restore + activate the API comes back on;
 #   4. only then pushes them to GHCR as <version>, <major>.<minor> and sha-<commit>.
 #
 # Deploying stays a human step on the server (deploy/README.md): nothing here

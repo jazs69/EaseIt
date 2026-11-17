@@ -118,6 +118,34 @@ services:
     image: ${EASEIT_REGISTRY:-ghcr.io/your-org}/easeit-web-marketing:${EASEIT_VERSION}
     restart: unless-stopped
 
+  # Nightly pg_dump with a restore rehearsal after every dump (deploy/backup.sh).
+  # Same image as the database, so the client always matches the server.
+  # Unhealthy when no backup has succeeded for 26 hours.
+  backup:
+    image: postgres:17
+    restart: unless-stopped
+    entrypoint: ['bash', '/backup.sh']
+    command: ['schedule']
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-easeit}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-easeit}
+      BACKUP_TIME: ${BACKUP_TIME:-20:30}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_MIN_KEEP: ${BACKUP_MIN_KEEP:-3}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'test -n "$$(find /backups/last-success -mmin -1560 2>/dev/null)"']
+      interval: 30s
+      timeout: 5s
+      start_period: 1h
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped

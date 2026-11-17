@@ -52,7 +52,7 @@ git tag v1.0.0 && git push origin v1.0.0
 
 ```bash
 sudo mkdir -p /opt/easeit && cd /opt/easeit
-# copy deploy/docker-compose.yml, deploy/Caddyfile and deploy/.env.example here
+# copy deploy/docker-compose.yml, Caddyfile, backup.sh and .env.example here
 cp .env.example .env && chmod 600 .env
 # fill in .env: domains, EASEIT_REGISTRY/EASEIT_VERSION, and generate secrets:
 openssl rand -hex 24   # POSTGRES_PASSWORD
@@ -114,12 +114,75 @@ docker compose up -d            # migrate runs first; api/worker restart after i
 docker compose ps
 ```
 
-Migrations only ever roll forward. **Rolling back** to an earlier image is safe
-only when the release being undone added no migration; otherwise restore the
-backup taken before the upgrade (#15, backups) or ship a fix forward. Take a
-backup before every upgrade until the scheduled backups are in place.
+Take a backup first: `docker compose run --rm backup now` (it dumps, restores
+the dump into a scratch database, checks it and only then reports success).
 
-## 6. Day to day
+Migrations only ever roll forward. **Rolling back** to an earlier image is safe
+only when the release being undone added no migration; otherwise restore that
+pre-upgrade backup (section 6) with the earlier `EASEIT_VERSION`, or ship a
+fix forward.
+
+## 6. Backups and recovery
+
+The `backup` service dumps the database once a day at `BACKUP_TIME` (UTC;
+default 20:30, which is 02:00 in India), into `BACKUP_DIR` (default
+`/opt/easeit/backups`). **A backup only counts once it has been restored**: each
+dump is restored into a scratch database and checked in four layers (object
+inventory, the double-booking guards and every constraint, each table's row
+count against a manifest read in the same snapshot as the dump, and the
+inventory and booking invariants), then the scratch database is dropped. Files
+older than `BACKUP_RETENTION_DAYS` (14) are deleted, except the newest
+`BACKUP_MIN_KEEP` (3) verified ones. The service turns **unhealthy** when no
+backup has succeeded for 26 hours.
+
+```bash
+docker compose run --rm backup list      # what exists and whether it verified
+docker compose run --rm backup now       # an extra backup, e.g. before an upgrade
+docker compose run --rm backup verify    # rehearse a restore of the newest one again
+docker compose ps backup                 # healthy = a good backup in the last 26 h
+```
+
+**Copy the backups off this server.** A backup on the same disk does not
+survive losing the disk. Until there is an automated off-site copy, sync the
+directory from another machine every day, for example:
+
+```bash
+rsync -a --delete server:/opt/easeit/backups/ /srv/easeit-backups/
+```
+
+Each backup is four files: the `.dump`, its `.sha256`, the `.manifest` it is
+checked against and a `.verified` record. Keep them together.
+
+### Recovering the database
+
+Nothing here ever writes into the live database. A restore goes into a new
+one, and switching is a separate, explicit step that keeps the old database.
+
+```bash
+# 1. Restore the newest verified backup (or name a file) into a NEW database.
+#    It is checked exactly like the nightly rehearsal; the live data is untouched.
+docker compose run --rm backup restore
+#    ... RESTORED_DATABASE=easeit_restored_20261117t013110z
+
+# 2. Stop everything that talks to the database. Activate refuses otherwise.
+docker compose stop api worker
+
+# 3. Swap: the restored database becomes `easeit`, the old one is kept as
+#    easeit_before_<time> (drop it by hand once you are sure).
+docker compose run --rm backup activate easeit_restored_20261117t013110z
+
+# 4. Start again. `migrate` re-grants the app role and applies any migration
+#    newer than the backup before the API starts.
+docker compose up -d
+```
+
+On a **new server**: set it up as in sections 2 and 3, copy the backup files
+into `BACKUP_DIR`, then run the four steps above.
+
+Everything written after the backup is lost: with one dump a day, up to 24
+hours. Point-in-time recovery (WAL archiving) is not set up yet.
+
+## 7. Day to day
 
 | Task                   | Command                                              |
 | ---------------------- | ---------------------------------------------------- |
@@ -127,6 +190,7 @@ backup before every upgrade until the scheduled backups are in place.
 | Outbox backlog         | `curl https://api.example.com/api/v1/health/outbox`  |
 | Database shell (owner) | `docker compose exec postgres psql -U easeit easeit` |
 | Restart one service    | `docker compose restart worker`                      |
+| Backups                | `docker compose run --rm backup list`                |
 
 The worker drains the outbox (booking confirmations, night audit runs) and runs
 each property's night-audit schedule; if it is down, bookings still work and
@@ -144,4 +208,6 @@ the emails go out when it returns.
 
 All five build from the repository's root `Dockerfile` (`--target <name>`);
 `deploy/smoke.sh` starts this stack from locally built images and checks it,
-which is what the publish workflow runs before pushing.
+including a backup, its restore rehearsal and the full recovery above; it is
+what the publish workflow runs before pushing. The `backup` service uses the
+stock `postgres:17` image with `backup.sh` mounted in.

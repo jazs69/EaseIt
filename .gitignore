@@ -57,3 +57,7 @@ desktop.ini
 
 # ui's
 https://shadcn-dashboard.kiranism.dev/
+
+# deployment backups and smoke-test scratch
+deploy/backups/
+deploy/.smoke-*/

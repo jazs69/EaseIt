@@ -12,7 +12,12 @@
 #   3. the worker is running and stays up;
 #   4. the three web apps answer;
 #   5. provisioning a property and an administrator works and prints a link,
-#      and the invitation endpoint behind the API accepts it.
+#      and the invitation endpoint behind the API accepts it;
+#   6. the backup service takes its first backup at start and that backup's
+#      restore rehearsal passes (the service turns healthy);
+#   7. disaster recovery as the README describes it: restore into a new
+#      database, activate refused while the API is connected, stop, activate,
+#      `up` again, and the API serves the restored data as the app role.
 #
 # Uses a throwaway compose project and volumes, removed at the end.
 set -euo pipefail
@@ -20,7 +25,15 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 project="easeit-smoke-$$"
 env_file="$(mktemp)"
-trap 'docker compose -p "$project" --env-file "$env_file" -f "$here/docker-compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true; rm -f "$env_file"' EXIT
+# A host directory, as on a server. `pwd -W` gives Docker Desktop a Windows path.
+backup_dir="$(cd "$here" && (pwd -W 2>/dev/null || pwd))/.smoke-backups-$$"
+cleanup() {
+  # The backup files belong to root inside the container; remove them from there.
+  docker compose -p "$project" --env-file "$env_file" -f "$here/docker-compose.yml" run --rm -T --no-deps     --entrypoint sh backup -c 'rm -rf /backups/* /backups/.partial-*' >/dev/null 2>&1 || true
+  docker compose -p "$project" --env-file "$env_file" -f "$here/docker-compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$here/.smoke-backups-$$" "$env_file"
+}
+trap cleanup EXIT
 
 cat > "$env_file" <<EOF
 EASEIT_REGISTRY=${EASEIT_REGISTRY:?}
@@ -41,6 +54,7 @@ SMTP_FROM=EaseIt <no-reply@smoke.invalid>
 # Never called here: lookups happen only when staff search a GSTIN.
 GST_PROVIDER=sandbox
 GST_API_KEY=smoke
+BACKUP_DIR=${backup_dir}
 EOF
 
 compose() { docker compose -p "$project" --env-file "$env_file" -f "$here/docker-compose.yml" "$@"; }
@@ -105,5 +119,34 @@ fetch('http://127.0.0.1:4000/api/v1/auth/invitations/accept', {
   body: JSON.stringify({ token: process.argv[1], newPassword: 'Smoke-Test-Password-2026!' }),
 }).then(async (r) => { console.log('   accept invitation:', r.status, await r.text()); process.exit(r.ok ? 0 : 1); },
         (e) => { console.error(e); process.exit(1); });" "$token"
+
+echo "== 6. backup"
+compose up -d backup
+wait_healthy backup
+compose run --rm -T --no-deps backup list
+
+echo "== 7. disaster recovery"
+out="$(compose run --rm -T --no-deps backup restore)"
+restored="$(echo "$out" | sed -n 's/^RESTORED_DATABASE=//p')"
+[ -n "$restored" ] || { echo "   restore printed no database" >&2; exit 1; }
+echo "   restored into $restored"
+if compose run --rm -T --no-deps backup activate "$restored" 2>/dev/null; then
+  echo "   activate was allowed while the API is connected" >&2; exit 1
+fi
+echo "   activate refused while the API is connected"
+compose stop api worker
+compose run --rm -T --no-deps backup activate "$restored"
+compose up -d postgres redis migrate api worker web-admin web-booking web-marketing backup
+wait_healthy api
+compose exec -T api node -e "
+fetch('http://127.0.0.1:4000/api/v1/health/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1));"
+facts="$(compose exec -T postgres psql -U easeit -d easeit -At -c "
+  select (select string_agg(code, ',') from property) || ' / ' ||
+         (select count(*) from auth_token where purpose = 'INVITATION' and \"consumedAt\" is not null) || ' accepted invitation / ' ||
+         (select count(*) from pg_database where datname like 'easeit_before_%') || ' kept previous database'")"
+echo "   after recovery: $facts"
+case "$facts" in "SMOKE1 / 1 accepted invitation / 1 kept previous database") ;; *) echo "   unexpected state after recovery" >&2; exit 1 ;; esac
+role="$(compose exec -T postgres psql -U easeit -d easeit -At -c "select string_agg(distinct usename, ' ') from pg_stat_activity where datname='easeit' and application_name <> 'psql'")"
+case " $role " in *" easeit_app "*) echo "   API reconnected as easeit_app" ;; *) echo "   the API is not connected as easeit_app after recovery ($role)" >&2; exit 1 ;; esac
 
 echo "== smoke test passed"

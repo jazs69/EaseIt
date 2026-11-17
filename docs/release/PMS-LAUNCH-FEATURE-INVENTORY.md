@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 69      | 33.7% |
-| `PI` PARTIALLY IMPLEMENTED | 96      | 46.8% |
-| `NI` NOT IMPLEMENTED       | 33      | 16.1% |
+| `CV` COMPLETE AND VERIFIED | 72      | 35.1% |
+| `PI` PARTIALLY IMPLEMENTED | 94      | 45.9% |
+| `NI` NOT IMPLEMENTED       | 32      | 15.6% |
 | `BU` BLOCKED / UNKNOWN     | 7       | 3.4%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -147,7 +147,7 @@ What exists is a **reservations-and-folio core with group reporting**, not yet a
 | Dead payment schema              | `PaymentGatewayConfig` model has **zero** references in `apps/api/src`                                                                                                       | FO-15    |
 | RBAC over-promises               | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND/SETTLE`, `NIGHT_AUDIT_*`, `HOUSEKEEPING_*` grantable and inert                                                                        | AU-13    |
 | Release CI will likely fail      | `release.yml:142` installs `postgresql-client-17`, absent from Ubuntu default repos; the `\|\|` fallback gives client 16, which refuses a PG 17 server                       | CI-12    |
-| No backup automation             | No script in the repository; two unexecuted CI references only                                                                                                               | BR-01    |
+| No off-site backup copy          | Nightly verified backups exist (2026-11-17) but stay on the server's disk until an operator syncs them elsewhere; no PITR, so up to 24 h of loss                              | BR-01/04 |
 | Reports precede closed books     | Occupancy/ADR/RevPAR computed from live aggregates, against CLAUDE.md §3.3                                                                                                   | RP-08    |
 
 ### Confidence and limitations
@@ -463,9 +463,9 @@ Parent status: **`NI`** — advertised in CLAUDE.md §1; only an enum and one mi
 
 | ID    | Subfeature                      | St   | Evidence                                                                                                   | U/A/L/D/I | Tests              | Acceptance criterion                                                                 | Dep   | Pri | Launch | Verified   | Method |
 | ----- | ------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------- | --------- | ------------------ | ------------------------------------------------------------------------------------ | ----- | --- | ------ | ---------- | ------ |
-| BR-01 | Backup automation               | `NI` | no script in the repository; `pg_dump`/`pg_restore`/`pg_dumpall`/`pg_basebackup` are available on the host | ✖/✖/✖/–/– | none               | Scheduled dump with retention and a restore rehearsal record                         | —     | 1   | M      | 2026-10-29 | SI     |
-| BR-02 | Restore into a separate target  | `PI` | `.github/workflows/release.yml:144-146` only                                                               | –/–/~/–/– | **never executed** | Restore always targets a fresh database; never the source or development             | BR-01 | 1   | M      | 2026-10-29 | NV     |
-| BR-03 | Four-layer restore verification | `PI` | `release.yml` DO block checks 4 guards, 0 oversold, 0 orphans                                              | –/–/~/–/– | **never executed** | Object inventory, constraints, per-table counts and business invariants all verified | BR-02 | 1   | M      | 2026-10-29 | NV     |
+| BR-01 | Backup automation               | `CV` | 2026-11-17: `deploy/backup.sh` in a `backup` compose service (stock `postgres:17`, so `pg_dump` matches the server). Daily at `BACKUP_TIME` UTC; custom-format dump + sha256 + a manifest (object inventory and per-table counts read in the dump's own exported snapshot); every dump restore-rehearsed before it counts and a `.verified` record written; retention by age with the newest N verified always kept; healthcheck unhealthy after 26 h without success. Runbook: `deploy/README.md` section 6 | ✔/–/✔/–/– | **Local, Docker 28.1.1, 2026-11-17:** `deploy/smoke.sh` exit 0 on the full stack: first backup at service start, rehearsal passed, service healthy. Scratch Postgres 17 with all migrations: backup during 20k committed inserts (live 2,489→5,170) verified with the manifest count (3,217) equal to the restored copy; retention pruned old files and kept the newest verified | Scheduled dump with retention and a restore rehearsal record                         | —     | 1   | M      | 2026-11-17 | TR local |
+| BR-02 | Restore into a separate target  | `CV` | `backup.sh restore` always `createdb`s a new `<db>_restored_<stamp>` (fails if the name exists), refuses the live name; `activate` takes only a `_restored_` name, refuses while anything is connected, renames the live database to `<db>_before_<stamp>` (kept) and the restored one into place; `migrate` re-grants the app role on the next `up`. The `release.yml` step (CI-12) is unchanged | ✔/–/✔/–/– | **Local, Docker 28.1.1, 2026-11-17:** `deploy/smoke.sh` exit 0 on the full stack: restore into a new database, activate refused while the API was connected, stop, activate, `up`; the API came back ready as `easeit_app` with the provisioned property and accepted invitation, previous database kept. Activate of a non-restore name refused | Restore always targets a fresh database; never the source or development             | BR-01 | 1   | M      | 2026-11-17 | TR local |
+| BR-03 | Four-layer restore verification | `CV` | Four layers on every restore and rehearsal (`backup.sh restore_and_check`): (1) object inventory = manifest; (2) the 4 double-booking guards present and no unvalidated constraint; (3) every table's row count = manifest; (4) no oversold/negative `inventory_day`, no orphan `reservation_room`, no unfinished migration. Checksum checked first | ✔/–/✔/–/– | Negative cases: one flipped byte refused at the checksum; a manifest claiming one extra row refused at layer 3 with the diff, and no `.verified` written. Positive: every smoke and scratch run | Object inventory, constraints, per-table counts and business invariants all verified | BR-02 | 1   | M      | 2026-11-17 | TR local |
 | BR-04 | Point-in-time recovery          | `NI` | WAL archiving not configured                                                                               | ✖/✖/✖/✖/– | none               | Documented RPO/RTO with a tested PITR to a timestamp                                 | BR-01 | 2   | A      | 2026-10-29 | SI     |
 
 ### 2.22 Background workers and the transactional outbox
@@ -571,7 +571,7 @@ workflow has ever run.
 - [ ] WK-12 — business handlers
 - [ ] CI-05 — domain unit tests (CI-14 done 2026-11-17)
 - [ ] OB-05, OB-06 — metrics/tracing, alerting
-- [ ] BR-01, BR-04 — backup automation, PITR
+- [ ] BR-04 — PITR (BR-01..03 done 2026-11-17)
 - [ ] RP-09, RP-10 — tax reports, revenue screen
 - [ ] BE-01 … BE-05, CM-01 … CM-05 — optional modules, advertised
 - [ ] GP-02, GP-07, MA-01, IE-01, IE-02, SE-05, AV-09, NO-06, PF-02, WK-13, MT-08, AD-03
@@ -796,6 +796,30 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-17 (thirty-fourth pass) - backups and restore (BR-01, BR-02, BR-03)
+
+**Status transitions.** BR-01 `NI`→`CV`; BR-02 `PI`→`CV`; BR-03 `PI`→`CV`; BR-04 stays `NI`. Counts: `CV` 69→72, `PI` 96→94, `NI` 33→32.
+
+**Implemented.** `deploy/backup.sh`, run by a `backup` service in the compose stack on the stock
+`postgres:17` image. A dump is taken inside an exported REPEATABLE READ snapshot, and the manifest
+(object inventory and every table's row count) is read in that same snapshot, so it describes
+exactly what the file holds. A backup counts only after it has been restored into a scratch
+database and passed the four layers (BR-03), and a `.verified` record is written; the scratch
+database is always dropped. Retention deletes by age but never the newest N verified. Recovery
+never writes into the live database: `restore` creates a new one and verifies it, and `activate`
+is a separate step that refuses while anything is connected and keeps the previous database.
+`migrate` on the next `up` re-grants the app role (dumps carry no owners or ACLs) and rolls
+forward any newer migration.
+
+**Verified.** See the BR rows: a dump under continuous committed inserts matched its manifest
+exactly; a corrupted byte and a falsified manifest were both refused; retention pruned correctly;
+and `deploy/smoke.sh`, which `publish.yml` runs before pushing images, now takes a backup and
+performs the whole README recovery on the real stack.
+
+**Not done.** No off-site copy (the README tells the operator to sync the directory daily; an
+automated destination needs a decision on where); no point-in-time recovery (BR-04), so up to 24
+hours of writes can be lost; no alert on a failed backup beyond the unhealthy container (#18).
 
 ### 2026-11-17 (thirty-third pass) - deployment configuration (CI-14)
 
