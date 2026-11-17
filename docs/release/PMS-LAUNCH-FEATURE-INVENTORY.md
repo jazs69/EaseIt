@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 89      | 43.4% |
+| `CV` COMPLETE AND VERIFIED | 90      | 43.9% |
 | `PI` PARTIALLY IMPLEMENTED | 89      | 43.4% |
-| `NI` NOT IMPLEMENTED       | 23      | 11.2% |
+| `NI` NOT IMPLEMENTED       | 22      | 10.7% |
 | `BU` BLOCKED / UNKNOWN     | 4       | 2.0%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -350,9 +350,9 @@ Parent status: **`NI`** — module named in CLAUDE.md §2, absent in every layer
 
 ### 2.11 Maintenance
 
-| ID    | Subfeature                | St   | Evidence           | U/A/L/D/I | Tests | Acceptance criterion                                                    | Dep   | Pri | Launch | Verified   | Method |
-| ----- | ------------------------- | ---- | ------------------ | --------- | ----- | ----------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| MA-01 | Maintenance / work orders | `NI` | no model or module | ✖/✖/✖/✖/– | none  | Work order takes a room out of order and restores it; inventory follows | RM-06 | 2   | A      | 2026-10-29 | SI     |
+| ID    | Subfeature                | St   | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                   | U/A/L/D/I | Tests                                                                                                                                                                                                                                                                                                 | Acceptance criterion                                                    | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| MA-01 | Maintenance / work orders | `CV` | 2026-11-17: `work_order` (RLS, CHECKs, same-property trigger) and `modules/maintenance`; out of order is a MAINTENANCE room block made by `RoomBlockService.createWithin` in the order's own transaction; resolve/cancel give the room back from the business date (`restoreFromWithin`, past nights kept); report = `housekeeping:read`, manage = new `maintenance:manage`, out of order also `room_blocks:manage`; `/maintenance` screen | ~/✔/✔/✔/– | `work-orders.test.mjs` 28/28 in `pnpm gate:integration` on `easeit_test` 2026-11-17 (33/33 suites, 1992 checks): blocked per date, occupied room refused, partial restore, 8-way resolve once, 8-way out-of-order one; room-blocks suite unchanged after the refactor. Screen not opened in a browser | Work order takes a room out of order and restores it; inventory follows | RM-06 | 2   | M      | 2026-11-17 | SI     |
 
 ### 2.12 Night audit and business date
 
@@ -796,6 +796,37 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-17 (forty-sixth pass) - maintenance work orders (MA-01)
+
+**Status transition.** MA-01 `NI`→`CV`. Counts: `CV` 89→90, `NI` 23→22.
+
+**Built.**
+
+- A work order is a fault on a room: OPEN → IN_PROGRESS → RESOLVED or CANCELLED.
+- **Permissions.** Reporting needs `housekeeping:read`. Assigning, starting, resolving and
+  cancelling need the new `maintenance:manage` (administrator templates). Taking the room out of
+  order also needs `room_blocks:manage`.
+- **Out of order** is a MAINTENANCE room block created through `RoomBlockService.createWithin`
+  inside the work order's own transaction. It therefore keeps every block rule: ascending
+  `inventory_day` locks, real unsold capacity, refusal of a room holding a stay. Lock order: work
+  order → block → inventory.
+- **Restoring.** Resolve/cancel give the room back from the business date
+  (`RoomBlockService.restoreFromWithin`). A block that began earlier is shortened, not released,
+  so the nights the room really was out of order stay recorded.
+- **Refactor.** `RoomBlockService` create/release were split into prepare and within-transaction
+  steps, with behaviour unchanged; the room-blocks suite still passes.
+
+**Verified.** Migration `20261117220000_work_orders` was applied to `easeit_test` and `easeit` with
+the owner's go-ahead. `pnpm gate:integration` 33/33 suites, 1992 checks. `work-orders.test.mjs` 28/28
+asserts `inventory_day.blocked` per date for out of order, resolve and partial restore (D−2/D−1
+kept, D/D+1 given back). It also covers 8 concurrent resolves (the counter moves once), 8 concurrent
+out-of-order reports (one 201, seven 409s), and an occupied room refused with nothing written.
+Plus 403/404 and the same-property trigger.
+
+**Not verified.** The `/maintenance` screen has not been opened in a browser. Room status is not
+changed on resolve, so a repaired room is not marked for cleaning. That is a policy choice left to
+the owner.
 
 ### 2026-11-17 (forty-fifth pass) - a real Razorpay payment, end to end (FO-16)
 

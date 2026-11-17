@@ -344,6 +344,9 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
   `razorpay_<payment id>` looked up under the lock with the unique index as backstop, so a webhook
   and "Check payment" racing post once (`payment-links.test.mjs`). The Razorpay call is never inside
   the transaction.
+  A work order (MA-01) that takes a room out of order locks the work order row, then the block row,
+  then `inventory_day` ascending, through `RoomBlockService.createWithin` / `restoreFromWithin`
+  in one transaction; nothing else locks a work order (`work-orders.test.mjs`).
 - **Create-reservation racing cancellation or a room move** on the same room type and dates.
 
 **Requirements for any future module writing these tables.** `nightaudit` now exists and follows them
