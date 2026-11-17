@@ -11,20 +11,19 @@
  * Plus `parallel-booking`, which belongs in this layer rather than Layer B
  * because it mutates shared inventory fixtures instead of suite-owned ones.
  *
- * Missing, and not pretended otherwise:
+ * Elsewhere, deliberately (2026-11-17):
  *
- *   * **Backup/restore has no suite.** `pg_dump`/`pg_restore` are available
- *     and the procedure is documented in TESTING.md, but it is a manual
- *     checklist, not an automated check. This is the largest remaining gap.
- *   * **The SIGTERM path is not exercised on Windows**, which has no
- *     deliverable SIGTERM — `Stop-Process` and `process.kill` are hard kills.
- *     The outbox suite drives what the handler *calls* (`onModuleDestroy` in
- *     Nest's order) and proves no row is left stuck, but graceful-versus-forced
- *     is only fully separable on Linux or in a container.
- *   * **No business handler exists.** `OutboxEventType` has exactly one value,
- *     `OUTBOX_SELF_TEST`, whose handler touches nothing outside the outbox
- *     tables, so "no duplicated business side effect" is unobservable today;
- *     only row-level idempotency is.
+ *   * **Backup/restore** is `deploy/backup.sh`, proven by `deploy/smoke.sh`
+ *     (a backup, its restore rehearsal and a full restore + activate).
+ *   * **The real SIGTERM path** needs Linux; Windows has no deliverable
+ *     SIGTERM. `deploy/smoke.sh` step 8 sends it to the worker container
+ *     mid-job. This suite still drives what the handler *calls*
+ *     (`onModuleDestroy` in Nest's order) on any platform.
+ *   * **Deadlock retry (40P01)** is induced for real in
+ *     `cancel-reservation.test.mjs` sections 7e/7f (Layer B).
+ *
+ * The self-test handler touches nothing outside the outbox tables; business
+ * handlers (booking confirmation, night audit) have their own suites.
  *
  * Why the Redis instance must not be 6379: `OutboxQueue` sets no BullMQ
  * `prefix`, so every process on one Redis shares `bull:outbox:*`, and the
@@ -333,5 +332,4 @@ if (failed !== null) {
 }
 
 console.log('\nResilience gate passed.');
-console.log('Still manual (see TESTING.md): PostgreSQL backup/restore verification.');
-console.log('Still untestable on Windows: the real SIGTERM graceful-shutdown path.');
+console.log('Backup/restore and the real SIGTERM path are proven by deploy/smoke.sh (Docker).');

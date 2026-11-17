@@ -71,7 +71,7 @@ if (!process.env.EASEIT_API_URL) {
   console.error(
     'EASEIT_API_URL is not set.\n' +
       'There is no default: :4000 is the shared development API, and assuming a\n' +
-      'port is assuming which stack receives this suite\'s requests. Run it\n' +
+      "port is assuming which stack receives this suite's requests. Run it\n" +
       'through `pnpm gate:integration`, or point it at an API running against\n' +
       'the SAME isolated database.',
   );
@@ -89,7 +89,8 @@ const prisma = createPrismaClient();
  * reachable directly through its own npm script, and run that way the gate's
  * preflight never executes. See `test/support/isolation-guard.mjs`.
  */
-const { assertIsolatedDatabase, assertApiSharesDatabase } = await import('../support/isolation-guard.mjs');
+const { assertIsolatedDatabase, assertApiSharesDatabase } =
+  await import('../support/isolation-guard.mjs');
 
 /** Everything this suite made, for teardown. */
 const created = [];
@@ -171,7 +172,13 @@ async function soldByDate(propertyId, roomTypeId, arrival, departure) {
         lt: new Date(`${departure}T00:00:00.000Z`),
       },
     },
-    select: { stayDate: true, sold: true, blocked: true, physical: true, overbookingAllowance: true },
+    select: {
+      stayDate: true,
+      sold: true,
+      blocked: true,
+      physical: true,
+      overbookingAllowance: true,
+    },
     orderBy: { stayDate: 'asc' },
   });
 
@@ -313,7 +320,11 @@ async function main() {
         if (probeRow === null) {
           return { ok: false, detail: 'no seeded reservation to probe with' };
         }
-        const probe = await call('GET', `/properties/${PROPERTY_CODE}/reservations/${probeRow.id}`, cookie);
+        const probe = await call(
+          'GET',
+          `/properties/${PROPERTY_CODE}/reservations/${probeRow.id}`,
+          cookie,
+        );
         return probe.status === 200
           ? { ok: true, detail: 'probe reservation visible' }
           : { ok: false, detail: `probe reservation returned HTTP ${String(probe.status)}` };
@@ -417,9 +428,7 @@ async function main() {
   check(
     'sold is back to its pre-booking value on every night',
     nights.every((date) => soldAfterCancel.get(date).sold === soldBefore.get(date).sold),
-    nights
-      .map((date) => `${date}:${String(soldAfterCancel.get(date).sold)}`)
-      .join(' '),
+    nights.map((date) => `${date}:${String(soldAfterCancel.get(date).sold)}`).join(' '),
   );
 
   const stayRow = await prisma.reservation.findUnique({
@@ -469,7 +478,11 @@ async function main() {
   );
   const soldAfterRepeat = await soldByDate(property.id, roomType.id, arrival, departure);
 
-  check('the repeat is accepted, not an error', repeat.status === 200, JSON.stringify(repeat.payload));
+  check(
+    'the repeat is accepted, not an error',
+    repeat.status === 200,
+    JSON.stringify(repeat.payload),
+  );
   check('it is reported as already cancelled', repeat.payload?.alreadyCancelled === true);
   check('it released no further nights', repeat.payload?.nightsReleased === 0);
   check(
@@ -499,12 +512,9 @@ async function main() {
   const PARALLEL = 8;
   const results = await Promise.all(
     Array.from({ length: PARALLEL }, () =>
-      call(
-        'POST',
-        `/properties/${PROPERTY_CODE}/reservations/${raceBooking.id}/cancel`,
-        cookie,
-        { reason: 'Integration suite: race' },
-      ),
+      call('POST', `/properties/${PROPERTY_CODE}/reservations/${raceBooking.id}/cancel`, cookie, {
+        reason: 'Integration suite: race',
+      }),
     ),
   );
   const ok = results.filter((result) => result.status === 200);
@@ -529,7 +539,11 @@ async function main() {
     ok.length === PARALLEL,
     results.map((result) => result.status).join(','),
   );
-  check('exactly one performed the cancellation', winners.length === 1, `${String(winners.length)} winner(s)`);
+  check(
+    'exactly one performed the cancellation',
+    winners.length === 1,
+    `${String(winners.length)} winner(s)`,
+  );
   check(`the other ${String(PARALLEL - 1)} were replays`, replays.length === PARALLEL - 1);
 
   const raceSoldAfter = await soldByDate(property.id, raceType.id, raceArrival, raceDeparture);
@@ -538,7 +552,10 @@ async function main() {
     'sold fell by exactly 1 on every night, never more',
     raceNights.every((date) => raceSoldAfter.get(date).sold === raceSoldBefore.get(date).sold - 1),
     raceNights
-      .map((date) => `${date}:${String(raceSoldBefore.get(date).sold)}->${String(raceSoldAfter.get(date).sold)}`)
+      .map(
+        (date) =>
+          `${date}:${String(raceSoldBefore.get(date).sold)}->${String(raceSoldAfter.get(date).sold)}`,
+      )
       .join(' '),
   );
 
@@ -581,7 +598,11 @@ async function main() {
   );
   const holdSoldAfter = await soldByDate(property.id, holdType.id, holdArrival, holdDeparture);
 
-  check('an ON_HOLD booking cancels', holdCancel.status === 200, JSON.stringify(holdCancel.payload));
+  check(
+    'an ON_HOLD booking cancels',
+    holdCancel.status === 200,
+    JSON.stringify(holdCancel.payload),
+  );
   check('it released no nights', holdCancel.payload?.nightsReleased === 0);
   check(
     'no counter moved',
@@ -730,7 +751,10 @@ async function main() {
       (date) => outSoldAfter.get(date).sold === outSoldBefore.get(date).sold,
     ),
     [...outSoldBefore.keys()]
-      .map((date) => `${date}:${String(outSoldBefore.get(date).sold)}->${String(outSoldAfter.get(date).sold)}`)
+      .map(
+        (date) =>
+          `${date}:${String(outSoldBefore.get(date).sold)}->${String(outSoldAfter.get(date).sold)}`,
+      )
       .join(' '),
   );
   check(
@@ -900,6 +924,273 @@ async function main() {
     afterLock.payload?.nightsReleased === lockSoldBefore.size,
     `nightsReleased=${String(afterLock.payload?.nightsReleased)} of ${String(lockSoldBefore.size)}`,
   );
+
+  /* ------------------------------------------------------------------- 7e */
+  console.log('\n7e. A real deadlock (40P01) is retried within budget (RS-18).');
+
+  /**
+   * A genuine lock cycle, not a simulated error.
+   *
+   * Cancellation locks the reservation row, then its inventory rows. A second
+   * transaction here takes the inventory rows first, waits until the API is
+   * blocked on them, then asks for the reservation row: each now waits for the
+   * other, and PostgreSQL's deadlock detector aborts one of them with 40P01.
+   *
+   * The API must be the one aborted, or the retry path is never exercised.
+   * The detector runs in whichever waiter's `deadlock_timeout` expires first;
+   * the API starts waiting first, and this transaction also raises its own
+   * timeout to 10s where it may (a superuser setting). That this transaction
+   * then commits is the proof: of the two, it survived, so the API's attempt
+   * was the one rolled back.
+   *
+   * Everything happens on this suite's own bookings.
+   */
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function deadlocksSoFar() {
+    const rows = await prisma.$queryRaw`
+      SELECT deadlocks::bigint AS n FROM pg_stat_database WHERE datname = current_database()`;
+    return Number(rows[0].n);
+  }
+
+  /** Statistics are flushed when a backend goes idle, so poll for the count. */
+  async function deadlocksSince(baseline, expected) {
+    let seen = 0;
+    for (let i = 0; i < 100; i += 1) {
+      await prisma.$executeRaw`SELECT pg_stat_clear_snapshot()`;
+      seen = (await deadlocksSoFar()) - baseline;
+      if (seen >= expected) break;
+      await sleep(50);
+    }
+    return seen;
+  }
+
+  /** True once some other backend is blocked on an inventory_day row lock. */
+  async function apiWaitsOnInventory(exceptPid) {
+    for (let i = 0; i < 320; i += 1) {
+      const rows = await prisma.$queryRaw`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> ${exceptPid}
+          AND wait_event_type = 'Lock'
+          AND query ILIKE '%inventory_day%'`;
+      if (rows[0].n > 0) return true;
+      await sleep(25);
+    }
+    return false;
+  }
+
+  /** The opening move of the cycle, shared by both scenarios. */
+  async function holdInventory(tx, roomTypeId, arrival, departure) {
+    const [{ pid }] = await tx.$queryRaw`SELECT pg_backend_pid() AS pid`;
+    await tx.$queryRaw`
+      SELECT CASE WHEN current_setting('is_superuser') = 'on'
+                  THEN set_config('deadlock_timeout', '10s', true) END`;
+    await tx.$queryRaw`
+      SELECT "stayDate" FROM inventory_day
+      WHERE "propertyId" = ${property.id}::uuid
+        AND "roomTypeId" = ${roomTypeId}::uuid
+        AND "stayDate" >= ${arrival}::date AND "stayDate" < ${departure}::date
+      ORDER BY "stayDate" ASC, "roomTypeId" ASC
+      FOR UPDATE`;
+    return pid;
+  }
+
+  // -- One deadlock, then the retry succeeds.
+  const dlArrival = shiftDays(businessDate, 41);
+  const dlDeparture = shiftDays(businessDate, 43);
+  const dlType = await findSellableRoomType(property.id, dlArrival, dlDeparture);
+  if (dlType === null) throw new Error('no category has room for the deadlock stay.');
+  const dlBooking = await createBooking(cookie, dlType, dlArrival, dlDeparture);
+  const dlSoldBefore = await soldByDate(property.id, dlType.id, dlArrival, dlDeparture);
+  const dlBaseline = await deadlocksSoFar();
+
+  let dlPid = null;
+  let dlApiWaited = false;
+  let dlBlockerCommitted = false;
+  let dlBlockerError = null;
+  let releaseCycle = () => {};
+  const cycleGate = new Promise((resolve) => {
+    releaseCycle = resolve;
+  });
+
+  const dlBlocker = prisma
+    .$transaction(
+      async (tx) => {
+        dlPid = await holdInventory(tx, dlType.id, dlArrival, dlDeparture);
+        await cycleGate;
+        // Close the cycle: the API holds this row and waits for ours.
+        await tx.$queryRaw`SELECT "id" FROM reservation WHERE "id" = ${dlBooking.id}::uuid FOR UPDATE`;
+      },
+      { timeout: 30_000, maxWait: 10_000 },
+    )
+    .then(
+      () => {
+        dlBlockerCommitted = true;
+      },
+      (error) => {
+        dlBlockerError = error;
+      },
+    );
+
+  for (let i = 0; i < 200 && dlPid === null; i += 1) await sleep(25);
+
+  const dlStarted = Date.now();
+  const dlRequest = call(
+    'POST',
+    `/properties/${PROPERTY_CODE}/reservations/${dlBooking.id}/cancel`,
+    cookie,
+    { reason: 'Integration suite: induced deadlock' },
+  );
+  try {
+    dlApiWaited = dlPid !== null && (await apiWaitsOnInventory(dlPid));
+  } finally {
+    releaseCycle();
+  }
+  const dlResult = await dlRequest;
+  const dlMs = Date.now() - dlStarted;
+  await dlBlocker;
+  if (dlResult.status === 200) releasedByCancel.add(dlBooking.id);
+  console.log(`  (the deadlocked request took ${String(dlMs)}ms)`);
+
+  check('the cancellation held the reservation row and waited on the inventory rows', dlApiWaited);
+  check(
+    'PostgreSQL detected exactly one deadlock',
+    (await deadlocksSince(dlBaseline, 1)) === 1,
+    `pg_stat_database.deadlocks +${String((await deadlocksSoFar()) - dlBaseline)}`,
+  );
+  check(
+    "the other transaction survived, so the API's attempt was the one aborted",
+    dlBlockerCommitted && dlBlockerError === null,
+    dlBlockerError === null ? '' : String(dlBlockerError.message).slice(0, 160),
+  );
+  check(
+    'and the retry succeeded: 200, not a 409 or a 500',
+    dlResult.status === 200 && dlResult.payload?.alreadyCancelled === false,
+    `status ${String(dlResult.status)} ${JSON.stringify(dlResult.payload)?.slice(0, 160)}`,
+  );
+  const dlSoldAfter = await soldByDate(property.id, dlType.id, dlArrival, dlDeparture);
+  check(
+    'every night was released exactly once, despite the aborted attempt',
+    [...dlSoldBefore.keys()].every(
+      (date) => dlSoldAfter.get(date).sold === dlSoldBefore.get(date).sold - 1,
+    ) && dlResult.payload?.nightsReleased === dlSoldBefore.size,
+  );
+  check(
+    'and exactly one cancellation audit row was written',
+    (await prisma.auditLog.count({
+      where: { entityId: dlBooking.id, event: 'RESERVATION_CANCELLED' },
+    })) === 1,
+  );
+
+  // -- A deadlock on every attempt: the budget runs out and the answer is a typed 409.
+  console.log('\n7f. Deadlocking every attempt exhausts the budget into a typed 409.');
+
+  /**
+   * The same cycle, re-armed after each abort.
+   *
+   * After the API's attempt is aborted this transaction holds both locks. It
+   * gives the reservation row back with ROLLBACK TO SAVEPOINT -- keeping the
+   * inventory rows -- so the retry takes the reservation row, blocks on
+   * inventory again, and the cycle closes again. Three attempts, three
+   * deadlocks, then the retry budget is spent.
+   */
+  const exArrival = shiftDays(businessDate, 45);
+  const exDeparture = shiftDays(businessDate, 47);
+  const exType = await findSellableRoomType(property.id, exArrival, exDeparture);
+  if (exType === null) throw new Error('no category has room for the exhaustion stay.');
+  const exBooking = await createBooking(cookie, exType, exArrival, exDeparture);
+  const exSoldBefore = await soldByDate(property.id, exType.id, exArrival, exDeparture);
+  const exBaseline = await deadlocksSoFar();
+
+  let exPid = null;
+  let exRounds = 0;
+  let exBlockerError = null;
+  let startRounds = () => {};
+  const roundsGate = new Promise((resolve) => {
+    startRounds = resolve;
+  });
+
+  const exBlocker = prisma
+    .$transaction(
+      async (tx) => {
+        exPid = await holdInventory(tx, exType.id, exArrival, exDeparture);
+        await roundsGate;
+        // One more round than the budget: a fourth attempt would also be caught.
+        for (let round = 1; round <= 4; round += 1) {
+          if (!(await apiWaitsOnInventory(exPid))) break;
+          await tx.$executeRawUnsafe('SAVEPOINT deadlock_round');
+          await tx.$queryRaw`SELECT "id" FROM reservation WHERE "id" = ${exBooking.id}::uuid FOR UPDATE`;
+          await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT deadlock_round');
+          exRounds = round;
+        }
+      },
+      { timeout: 60_000, maxWait: 10_000 },
+    )
+    .catch((error) => {
+      exBlockerError = error;
+    });
+
+  for (let i = 0; i < 200 && exPid === null; i += 1) await sleep(25);
+  const exStarted = Date.now();
+  const exRequest = call(
+    'POST',
+    `/properties/${PROPERTY_CODE}/reservations/${exBooking.id}/cancel`,
+    cookie,
+    { reason: 'Integration suite: deadlock on every attempt' },
+  );
+  startRounds();
+  const exResult = await exRequest;
+  const exMs = Date.now() - exStarted;
+  await exBlocker;
+  console.log(`  (${String(exRounds)} deadlocks, ${String(exMs)}ms)`);
+
+  check(
+    'the API retried until its budget of 3 attempts, each one deadlocked',
+    exRounds === 3 && exBlockerError === null,
+    `rounds=${String(exRounds)}${exBlockerError === null ? '' : ` blocker: ${String(exBlockerError.message).slice(0, 120)}`}`,
+  );
+  check(
+    'PostgreSQL detected three deadlocks',
+    (await deadlocksSince(exBaseline, 3)) === 3,
+    `pg_stat_database.deadlocks +${String((await deadlocksSoFar()) - exBaseline)}`,
+  );
+  check(
+    'then answered 409 with the typed CONFLICT code, not a 500',
+    exResult.status === 409 && exResult.payload?.code === 'CONFLICT',
+    `status ${String(exResult.status)} code ${String(exResult.payload?.code)}`,
+  );
+  check(
+    'leaking no SQLSTATE, Prisma code or SQL',
+    typeof exResult.payload?.message === 'string' &&
+      !/P\d{4}|SQLSTATE|40P01|deadlock|SELECT|prisma/i.test(exResult.payload.message),
+    JSON.stringify(exResult.payload?.message),
+  );
+  const exRow = await prisma.reservation.findUnique({
+    where: { id: exBooking.id },
+    select: { status: true },
+  });
+  const exSoldAfter = await soldByDate(property.id, exType.id, exArrival, exDeparture);
+  check(
+    'and nothing changed: still CONFIRMED, no night released, no audit row',
+    exRow.status === 'CONFIRMED' &&
+      [...exSoldBefore.keys()].every(
+        (date) => exSoldAfter.get(date).sold === exSoldBefore.get(date).sold,
+      ) &&
+      (await prisma.auditLog.count({
+        where: { entityId: exBooking.id, event: 'RESERVATION_CANCELLED' },
+      })) === 0,
+  );
+
+  // With the cycle gone, the same request succeeds: the 409 meant "try again".
+  const exAfter = await call(
+    'POST',
+    `/properties/${PROPERTY_CODE}/reservations/${exBooking.id}/cancel`,
+    cookie,
+    { reason: 'Integration suite: after the deadlocks' },
+  );
+  if (exAfter.status === 200) releasedByCancel.add(exBooking.id);
+  check('once the cycle is gone the same request succeeds', exAfter.status === 200);
 
   /* ------------------------------------------------------------------- 7d */
   console.log('\n7d. A stay holding stock with no room rows is refused, not released.');
@@ -1100,7 +1391,14 @@ async function main() {
   console.log('\n9. The audit row and the state change committed together.');
   const audit = await prisma.auditLog.findFirst({
     where: { entityId: booking.id, event: 'RESERVATION_CANCELLED' },
-    select: { actorUserId: true, propertyId: true, entityType: true, before: true, after: true, reason: true },
+    select: {
+      actorUserId: true,
+      propertyId: true,
+      entityType: true,
+      before: true,
+      after: true,
+      reason: true,
+    },
   });
   check('an audit row exists', audit !== null);
   check('it names the actor', audit?.actorUserId === user.id);
@@ -1307,16 +1605,22 @@ async function main() {
     usedRooms.add(room.id);
     restoreRooms.push({ id: room.id, status: room.status });
 
-    const stay = await createBooking(cookie, { id: room.roomTypeId }, raceInArrival, raceInDeparture, {
-      guests: [
-        {
-          firstName: 'Race',
-          lastName: 'Probe',
-          govtIdType: 'PASSPORT',
-          govtIdNumber: `CANCELRACE${String(round)}`,
-        },
-      ],
-    });
+    const stay = await createBooking(
+      cookie,
+      { id: room.roomTypeId },
+      raceInArrival,
+      raceInDeparture,
+      {
+        guests: [
+          {
+            firstName: 'Race',
+            lastName: 'Probe',
+            govtIdType: 'PASSPORT',
+            govtIdNumber: `CANCELRACE${String(round)}`,
+          },
+        ],
+      },
+    );
 
     const soldBefore = await soldByDate(
       property.id,
@@ -1329,12 +1633,9 @@ async function main() {
     // Both requests issued before either is awaited, which is what gives the
     // two transactions a chance to overlap at all.
     const [cancelled, checkedIn] = await Promise.all([
-      call(
-        'POST',
-        `/properties/${PROPERTY_CODE}/reservations/${stay.id}/cancel`,
-        cookie,
-        { reason: `Integration suite: check-in race ${String(round)}` },
-      ),
+      call('POST', `/properties/${PROPERTY_CODE}/reservations/${stay.id}/cancel`, cookie, {
+        reason: `Integration suite: check-in race ${String(round)}`,
+      }),
       call('POST', `/properties/${PROPERTY_CODE}/reservations/${stay.id}/check-in`, cookie, {
         roomId: room.id,
         primaryGuestIdType: 'PASSPORT',
@@ -1422,8 +1723,7 @@ async function main() {
     if (cancelWon) {
       check(
         `round ${String(round)}: the losing check-in is a typed 409, not a 500`,
-        checkedIn.status === 409 &&
-          checkedIn.payload?.code === 'INVALID_STATE_TRANSITION',
+        checkedIn.status === 409 && checkedIn.payload?.code === 'INVALID_STATE_TRANSITION',
         `status ${String(checkedIn.status)}, code ${String(checkedIn.payload?.code)}`,
       );
       check(
@@ -1452,10 +1752,7 @@ async function main() {
      * back reads perfectly in isolation.
      */
     const cancelledCoherently =
-      row.status === 'CANCELLED' &&
-      row.cancelledAt !== null &&
-      releasedEvery &&
-      audits === 1;
+      row.status === 'CANCELLED' && row.cancelledAt !== null && releasedEvery && audits === 1;
     const checkedInCoherently =
       row.status === 'CHECKED_IN' && row.cancelledAt === null && heldEvery && audits === 0;
     const untouched =
@@ -1503,7 +1800,10 @@ async function main() {
 
   console.log(
     `  NOTE  outcomes: ${outcomes
-      .map((o) => `#${String(o.round)} cancel ${String(o.cancel)}/check-in ${String(o.checkIn)} -> ${o.status}`)
+      .map(
+        (o) =>
+          `#${String(o.round)} cancel ${String(o.cancel)}/check-in ${String(o.checkIn)} -> ${o.status}`,
+      )
       .join('; ')}`,
   );
 
@@ -1705,7 +2005,8 @@ async function main() {
     where: { propertyId: property.id },
     select: { currency: true },
   });
-  if (currencySource === null) throw new Error('the property has no room type to copy currency from.');
+  if (currencySource === null)
+    throw new Error('the property has no room type to copy currency from.');
 
   const fixture = { typeA: null, typeB: null, rooms: [], stays: [] };
 
@@ -1998,7 +2299,11 @@ async function main() {
     const leftovers = await prisma.roomType.count({
       where: { propertyId: property.id, code: { in: ['ZZRCA', 'ZZRCB'] } },
     });
-    check('the fixture categories, rooms and inventory rows are gone', leftovers === 0, `${String(leftovers)} left`);
+    check(
+      'the fixture categories, rooms and inventory rows are gone',
+      leftovers === 0,
+      `${String(leftovers)} left`,
+    );
   }
 
   /* ------------------------------------------------------------------- 13 */
@@ -2426,8 +2731,18 @@ async function main() {
 
     await prisma.inventoryDay.createMany({
       data: [
-        { propertyId: property.id, roomTypeId: detFixture.typeA.id, stayDate: detNight, physical: 2 },
-        { propertyId: property.id, roomTypeId: detFixture.typeB.id, stayDate: detNight, physical: 2 },
+        {
+          propertyId: property.id,
+          roomTypeId: detFixture.typeA.id,
+          stayDate: detNight,
+          physical: 2,
+        },
+        {
+          propertyId: property.id,
+          roomTypeId: detFixture.typeB.id,
+          stayDate: detNight,
+          physical: 2,
+        },
       ],
     });
 
@@ -2557,7 +2872,11 @@ async function main() {
       },
     );
 
-    check('the suite held the stay row and the check-in stalled on it', staleResult.holding && staleResult.blocked, `holding ${String(staleResult.holding)}, blocked ${String(staleResult.blocked)}`);
+    check(
+      'the suite held the stay row and the check-in stalled on it',
+      staleResult.holding && staleResult.blocked,
+      `holding ${String(staleResult.holding)}, blocked ${String(staleResult.blocked)}`,
+    );
 
     const stale = staleResult.response;
     console.log(
@@ -2677,7 +2996,11 @@ async function main() {
       },
     );
 
-    check('the suite held the stay row and the move stalled on it', moveResult.holding && moveResult.blocked, `holding ${String(moveResult.holding)}, blocked ${String(moveResult.blocked)}`);
+    check(
+      'the suite held the stay row and the move stalled on it',
+      moveResult.holding && moveResult.blocked,
+      `holding ${String(moveResult.holding)}, blocked ${String(moveResult.blocked)}`,
+    );
 
     const staleMove = moveResult.response;
     console.log(
@@ -2741,8 +3064,7 @@ async function main() {
     ]) {
       const counters = await soldByDate(property.id, typeId, businessDate, detDeparture);
       const held = detRows.filter(
-        (r) =>
-          r.roomTypeId === typeId && r.arrivalDate <= detNight && r.departureDate > detNight,
+        (r) => r.roomTypeId === typeId && r.arrivalDate <= detNight && r.departureDate > detNight,
       ).length;
       const sold = counters.get(businessDate)?.sold ?? null;
       check(
@@ -3295,5 +3617,7 @@ try {
   await prisma.$disconnect().catch(() => null);
 }
 
-console.log(failures === 0 ? '\nAll cancellation checks passed.' : `\n${String(failures)} check(s) failed.`);
+console.log(
+  failures === 0 ? '\nAll cancellation checks passed.' : `\n${String(failures)} check(s) failed.`,
+);
 process.exit(failures === 0 ? 0 : 1);

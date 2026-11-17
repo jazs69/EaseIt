@@ -351,7 +351,7 @@ async function main() {
    */
   {
     const probeRow = await prisma.reservation.findFirst({
-      where: { propertyId: grant.property.id },
+      where: { propertyId: property.id },
       select: { id: true },
       orderBy: { createdAt: 'asc' },
     });

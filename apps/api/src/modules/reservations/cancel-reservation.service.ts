@@ -224,7 +224,8 @@ export class CancelReservationService {
         lastState = sqlState(error);
         this.logger.warn(
           `${operation} attempt ${String(attempt)} of ${String(CANCEL_MAX_ATTEMPTS)} for ` +
-            `reservation ${reservationId} hit SQLSTATE ${lastState ?? 'unknown'}; retrying.`,
+            `reservation ${reservationId} hit SQLSTATE ${lastState ?? 'unknown'}; ` +
+            (attempt < CANCEL_MAX_ATTEMPTS ? 'retrying.' : 'no attempts left.'),
         );
 
         if (attempt < CANCEL_MAX_ATTEMPTS) {
@@ -446,7 +447,11 @@ export class CancelReservationService {
           };
         }
         if (refusal !== null) {
-          throw new InvalidStateTransitionError('reservation', stay.status, ReservationStatus.NO_SHOW);
+          throw new InvalidStateTransitionError(
+            'reservation',
+            stay.status,
+            ReservationStatus.NO_SHOW,
+          );
         }
 
         /**
@@ -601,9 +606,7 @@ export class CancelReservationService {
        * categories at once. `sold` is read under the lock, so the
        * verification below cannot be stale.
        */
-      const locked = await tx.$queryRaw<
-        { stay_date: Date; room_type_id: string; sold: number }[]
-      >`
+      const locked = await tx.$queryRaw<{ stay_date: Date; room_type_id: string; sold: number }[]>`
         SELECT "stayDate" AS stay_date, "roomTypeId" AS room_type_id, "sold"
         FROM inventory_day
         WHERE "propertyId" = ${propertyId}::uuid

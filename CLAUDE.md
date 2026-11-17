@@ -315,9 +315,14 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
 
 **Explicitly NOT verified at runtime — do not claim otherwise:**
 
-- The **`40P01` and `40001` retry paths**. Both are classified by unit-level tests over the classifier,
-  but no deadlock or serialization failure has been _induced_ against the running system. The
-  lock-ordering audit found no two-party cycle among the five writers of these tables; that is an
+- The **`40001` retry path**, and **`40P01` on any path but cancellation**. Since 2026-11-17 a real
+  deadlock is induced against the running API on the cancellation path
+  (`cancel-reservation.test.mjs` 7e/7f): a test transaction takes the inventory rows, waits until
+  the cancellation blocks on them, then asks for the reservation row; Postgres aborts the API's
+  attempt with `40P01`, it is retried and succeeds, and a deadlock on every attempt exhausts the
+  budget of 3 into a typed 409 with nothing changed. Room move and no-show share the wrapper shape
+  but are not induced; no serialization failure has been induced anywhere. The lock-ordering audit
+  found no two-party cycle among the five writers of these tables on their own; that is an
   argument, not a proof.
 - **Three-way races** (any interleaving of three or more of cancel / check-in / move / book).
 - **Folio interleavings.** Since FO-12/FO-13, every `folios.service.ts` write locks the reservation

@@ -17,7 +17,10 @@
 #      restore rehearsal passes (the service turns healthy);
 #   7. disaster recovery as the README describes it: restore into a new
 #      database, activate refused while the API is connected, stop, activate,
-#      `up` again, and the API serves the restored data as the app role.
+#      `up` again, and the API serves the restored data as the app role;
+#   8. graceful shutdown (WK-03): SIGTERM to the worker while a job is inside
+#      its handler; the worker exits 0 on its own, and the job finishes rather
+#      than being left IN_FLIGHT. A restarted worker does not run it again.
 #
 # Uses a throwaway compose project and volumes, removed at the end.
 set -euo pipefail
@@ -148,5 +151,39 @@ echo "   after recovery: $facts"
 case "$facts" in "SMOKE1 / 1 accepted invitation / 1 kept previous database") ;; *) echo "   unexpected state after recovery" >&2; exit 1 ;; esac
 role="$(compose exec -T postgres psql -U easeit -d easeit -At -c "select string_agg(distinct usename, ' ') from pg_stat_activity where datname='easeit' and application_name <> 'psql'")"
 case " $role " in *" easeit_app "*) echo "   API reconnected as easeit_app" ;; *) echo "   the API is not connected as easeit_app after recovery ($role)" >&2; exit 1 ;; esac
+
+echo "== 8. graceful shutdown (SIGTERM mid-job)"
+psql_owner() { compose exec -T postgres psql -U easeit -d easeit -At -v ON_ERROR_STOP=1 -c "$1"; }
+job="$(psql_owner "insert into outbox_event (id, \"propertyId\", \"eventType\", payload, \"dedupeKey\", \"updatedAt\")
+  select gen_random_uuid(), id, 'OUTBOX_SELF_TEST', '{\"nonce\":\"smoke-sigterm\",\"delayMs\":6000}', 'smoke-sigterm-$$', now()
+  from property where code = 'SMOKE1' returning id" | head -1)"
+[ -n "$job" ] || { echo "   could not enqueue the self-test job" >&2; exit 1; }
+state=""
+for _ in $(seq 1 60); do
+  state="$(psql_owner "select status from outbox_event where id = '$job'")"
+  [ "$state" = "IN_FLIGHT" ] && break
+  sleep 0.5
+done
+[ "$state" = "IN_FLIGHT" ] || { echo "   the worker never picked the job up (status $state)" >&2; compose logs --tail 40 worker >&2; exit 1; }
+sleep 1.5 # inside the 6-second handler now
+worker_id="$(compose ps -q worker)"
+started=$(date +%s)
+compose stop -t 30 worker # SIGTERM, then SIGKILL only after 30 s
+waited=$(( $(date +%s) - started ))
+exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$worker_id")"
+after="$(psql_owner "select status || ' attempts=' || attempts || ' lease=' || coalesce(\"leaseExpiresAt\"::text, 'none') from outbox_event where id = '$job'")"
+echo "   stop took ${waited}s, exit code ${exit_code}; job: ${after}"
+docker logs "$worker_id" 2>&1 | grep -q 'Received SIGTERM; shutting down.' || { echo "   the worker did not log its SIGTERM handling" >&2; exit 1; }
+[ "$exit_code" = "0" ] || { echo "   the worker did not exit cleanly (137 means it had to be killed)" >&2; docker logs --tail 40 "$worker_id" >&2; exit 1; }
+case "$after" in
+  "SUCCEEDED attempts=1 lease=none") echo "   the in-flight job finished before the worker exited" ;;
+  PENDING*" lease=none") echo "   the in-flight job was handed back, not stranded" ;;
+  *) echo "   the job was left in a bad state: $after" >&2; exit 1 ;;
+esac
+compose start worker
+sleep 8
+final="$(psql_owner "select status || ' attempts=' || attempts from outbox_event where id = '$job'")"
+[ "$final" = "SUCCEEDED attempts=1" ] || { echo "   after restart the job is $final, expected SUCCEEDED attempts=1" >&2; exit 1; }
+echo "   restarted worker left it SUCCEEDED, run once"
 
 echo "== smoke test passed"
