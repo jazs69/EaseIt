@@ -32,6 +32,7 @@ import { AppModule } from './app.module.js';
 import { OutboxQueue } from './modules/platform/outbox/outbox.queue.js';
 import { OutboxRuntime } from './modules/platform/outbox/outbox.module.js';
 import { PrismaService } from './prisma/prisma.service.js';
+import { AlertMonitorService } from './modules/platform/alerting/alert-monitor.service.js';
 import { NightAuditScheduler } from './modules/nightaudit/night-audit.scheduler.js';
 
 async function bootstrap(): Promise<void> {
@@ -72,6 +73,9 @@ async function bootstrap(): Promise<void> {
   }
 
   app.get(OutboxRuntime).startProcessing();
+
+  // OB-06 / WK-11: dead letters and stuck leases reach a person, not just the log.
+  app.get(AlertMonitorService).start();
 
   // NA-03: per-property schedule; off unless enabled (see env.ts).
   app.get(NightAuditScheduler).start();

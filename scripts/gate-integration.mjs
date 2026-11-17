@@ -250,6 +250,16 @@ const suites = [
     script: 'test/integration/unavailable-permissions.test.mjs',
     why: 'custom roles cannot grant unbuilt features; no role or session reports them',
   },
+  {
+    name: 'alerting (OB-06, WK-11)',
+    script: 'test/integration/alerting.test.mjs',
+    why: 'a dead letter reaches a webhook/email and is stamped once; a sink outage or timeout loses nothing; stuck leases alert with a cooldown; production needs a sink',
+  },
+  {
+    name: 'audit log viewer (AD-03)',
+    script: 'test/integration/audit-log.test.mjs',
+    why: 'audit_log:read required; another property 404; actor/entity/event filters; hotel-local dates; paging exact at microsecond precision',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

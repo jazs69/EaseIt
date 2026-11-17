@@ -34,6 +34,11 @@ x-api-env: &api-env
   # legal name a lookup returns).
   GST_PROVIDER: ${GST_PROVIDER:?set GST_PROVIDER to sandbox or cashfree}
   GST_API_KEY: ${GST_API_KEY:?set GST_API_KEY}
+  # Required: a background job that fails permanently (a confirmation email, a
+  # night-audit step) is emailed here by the worker. The webhook is optional
+  # and receives the same alert as JSON (Slack, Teams or any HTTP receiver).
+  ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:?set ALERT_EMAIL_TO (where failed background jobs are reported)}
+  ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
 
 services:
   postgres:

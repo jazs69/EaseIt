@@ -21,6 +21,12 @@ const booleanFromEnv = z
  * cookie's `Max-Age` and the token's `exp` have to agree exactly — deriving
  * both from one integer is what guarantees that.
  */
+/**
+ * Compose passes an unset optional variable as an empty string
+ * (`${ALERT_WEBHOOK_URL:-}`); treat that as absent rather than as a value.
+ */
+const emptyAsUndefined = (value: unknown): unknown => (value === '' ? undefined : value);
+
 const durationSecondsFromEnv = z
   .string()
   .trim()
@@ -195,6 +201,40 @@ export const envSchema = z
     API_CORS_ORIGINS: z.string().default(''),
 
     SWAGGER_ENABLED: booleanFromEnv.default(true),
+
+    /* -- Operator alerting (OB-06, WK-11) --------------------------------- */
+
+    /**
+     * An incoming webhook that receives JSON `{ text, alert }` -- Slack,
+     * Teams, Mattermost or any HTTP receiver. Optional; see ALERT_EMAIL_TO.
+     */
+    ALERT_WEBHOOK_URL: z.preprocess(emptyAsUndefined, z.url({ protocol: /^https?$/ }).optional()),
+    /**
+     * Comma-separated addresses that receive alerts through the SMTP
+     * transport. Production requires this or ALERT_WEBHOOK_URL: a dead letter
+     * must reach a person, not only a log line.
+     */
+    ALERT_EMAIL_TO: z.preprocess(
+      emptyAsUndefined,
+      z
+        .string()
+        .transform((value) =>
+          value
+            .split(',')
+            .map((part) => part.trim())
+            .filter((part) => part !== ''),
+        )
+        .pipe(z.array(z.email()).min(1))
+        .optional(),
+    ),
+    /** How often the worker scans for unalerted dead letters and stuck leases. */
+    ALERT_CHECK_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(30_000),
+    /** A lease expired this long without being reaped is an alert, not a blip. */
+    ALERT_STALE_LEASE_GRACE_MS: z.coerce.number().int().min(0).max(86_400_000).default(120_000),
+    /** While a stale-lease incident persists, repeat its alert this often. */
+    ALERT_REPEAT_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(1_800_000),
+    /** Per-attempt bound on a webhook delivery. */
+    ALERT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(10_000),
   })
   .superRefine((env, ctx) => {
     // Applies in every environment: a transport configured with a username
@@ -255,6 +295,17 @@ export const envSchema = z
         message:
           'MAIL_CAPTURE_DIR is a test transport and is refused in production: ' +
           'reset and invitation links would be written to disk instead of sent.',
+      });
+    }
+
+    if (env.ALERT_WEBHOOK_URL === undefined && env.ALERT_EMAIL_TO === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ALERT_EMAIL_TO'],
+        message:
+          'Set ALERT_EMAIL_TO or ALERT_WEBHOOK_URL in production. A background ' +
+          'job that fails permanently (a confirmation email, a night-audit step) ' +
+          'must alert a person; without a sink it would only be a log line.',
       });
     }
 

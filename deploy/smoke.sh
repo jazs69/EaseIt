@@ -57,6 +57,7 @@ SMTP_FROM=EaseIt <no-reply@smoke.invalid>
 # Never called here: lookups happen only when staff search a GSTIN.
 GST_PROVIDER=sandbox
 GST_API_KEY=smoke
+ALERT_EMAIL_TO=ops@smoke.invalid
 BACKUP_DIR=${backup_dir}
 EOF
 

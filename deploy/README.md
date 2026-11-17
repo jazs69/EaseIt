@@ -196,6 +196,36 @@ The worker drains the outbox (booking confirmations, night audit runs) and runs
 each property's night-audit schedule; if it is down, bookings still work and
 the emails go out when it returns.
 
+### Alerts
+
+The worker reports two conditions to `ALERT_EMAIL_TO`, and to
+`ALERT_WEBHOOK_URL` if one is set:
+
+- **A background job failed for good** (it used up its retries, or its input can
+  never succeed). The alert names the job type, its id, the hotel code and the
+  recorded error. The job stays in `outbox_event` with status `DEAD`. Each one
+  is reported once. If no alert channel accepts it (mail server down, webhook
+  failing), it is retried every 30 seconds until one does. A burst is sent in
+  batches of 20.
+- **Work is stuck**: a job's worker lease ran out more than 2 minutes ago and
+  nothing reclaimed it. That means no worker is running, or all of them are
+  stuck. Repeated every 30 minutes while it lasts. If the worker itself is
+  down, it cannot send this, so also watch the API's `/api/v1/health/outbox`
+  (`staleLeases`, `oldestPendingAgeSeconds`) from an external uptime monitor.
+
+To find dead jobs:
+
+```sh
+docker compose exec postgres psql -U easeit easeit -c \
+  "SELECT id, \"eventType\", \"lastError\", \"completedAt\" FROM outbox_event WHERE status = 'DEAD' ORDER BY \"completedAt\" DESC LIMIT 20"
+```
+
+Tuning (optional): `ALERT_CHECK_MS` (30000), `ALERT_STALE_LEASE_GRACE_MS`
+(120000), `ALERT_REPEAT_MS` (1800000), `ALERT_TIMEOUT_MS` (10000).
+
+Staff see who changed what in the admin app under **Audit Log** (permission
+`audit_log:read`, held by property administrators).
+
 ## Images
 
 | Image                  | Runs                                               |

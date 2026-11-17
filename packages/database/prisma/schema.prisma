@@ -2674,6 +2674,8 @@ model AuditLog {
 
   @@index([propertyId, createdAt])
   @@index([propertyId, entityType, entityId])
+  /// The audit log viewer's "who did this" filter (AD-03).
+  @@index([propertyId, actorUserId, createdAt])
   @@map("audit_log")
 }
 
@@ -2862,6 +2864,12 @@ model OutboxEvent {
   lastErrorAt DateTime? @db.Timestamptz(6)
 
   completedAt DateTime? @db.Timestamptz(6)
+
+  /// When an operator alert for this dead letter was delivered (OB-06, WK-11).
+  /// Null on a DEAD row means nobody has been told yet: the worker's alert
+  /// monitor keeps retrying until a sink accepts it, so a dead letter cannot
+  /// vanish into a log line. Meaningless on any other status.
+  alertedAt DateTime? @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)

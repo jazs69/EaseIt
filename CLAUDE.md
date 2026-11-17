@@ -604,7 +604,10 @@ pnpm audit:dry-run -- --property=<slug> --date=YYYY-MM-DD   # night audit, no wr
   with backoff, and a circuit breaker. A failing OTA must degrade the sync layer, never the front desk.
 - BullMQ jobs are idempotent and keyed so a retry cannot double-post a charge or re-send a confirmation.
   Set `attempts`, backoff, and a dead-letter destination on every queue. A job that fails permanently
-  must alert, not vanish.
+  must alert, not vanish. **As implemented** (OB-06, WK-11): the worker's `AlertMonitorService`
+  sends `DEAD` outbox rows with a NULL `alertedAt` to `ALERT_EMAIL_TO` / `ALERT_WEBHOOK_URL`, and
+  stamps `alertedAt` only after a sink accepts. Never alert inline from a failure path. That alert
+  is lost if the sink is down at that moment.
 
 ### Channel sync specifics
 

@@ -316,9 +316,10 @@ export class OutboxWorker implements OnModuleDestroy {
       this.metrics.recordDead();
       /**
        * Dead-lettered work alerts. CLAUDE.md section 5: "A job that fails
-       * permanently must alert, not vanish." `error` is the loudest level this
-       * stack has; a real alerting hook belongs with the monitoring work, and
-       * is listed as a limitation rather than pretended at.
+       * permanently must alert, not vanish." The row is left DEAD with
+       * `alertedAt` NULL, and `AlertMonitorService` sends it to the operator
+       * sinks and stamps it once one accepts -- deliberately not from here,
+       * so a sink outage or a crash right now cannot lose the alert.
        */
       this.logger.error(
         `OUTBOX DEAD LETTER: ${row.eventType} ${row.id} after ${String(attempts)} attempt(s) ` +

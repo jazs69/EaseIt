@@ -154,6 +154,12 @@ export const Permission = {
   USERS_MANAGE: 'users:manage',
   ROLES_MANAGE: 'roles:manage',
   PROPERTY_SETTINGS: 'property:settings',
+  /**
+   * AD-03: read the property's audit log, including the before and after of
+   * every change. Kept apart from `USERS_READ` because the log carries folio
+   * amounts and guest-facing state, which a staff directory does not.
+   */
+  AUDIT_LOG_READ: 'audit_log:read',
 } as const;
 
 export type Permission = (typeof Permission)[keyof typeof Permission];
@@ -404,6 +410,13 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
     description: 'Timezone, currency, tax rules and audit cutoff.',
     category: C.ADMINISTRATION,
     sensitive: true,
+  },
+  {
+    key: P.AUDIT_LOG_READ,
+    label: 'View audit log',
+    description: 'Read who changed what at this property, with the values before and after.',
+    category: C.ADMINISTRATION,
+    sensitive: false,
   },
 ];
 

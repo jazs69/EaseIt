@@ -12,6 +12,7 @@ import {
   currentDateInTimeZone,
   enumerateStayDates,
   nightCount,
+  startOfDayInTimeZone,
   stayRangeSchema,
   type BusinessDate,
   type StayRange,
@@ -132,5 +133,43 @@ describe('currentDateInTimeZone: the property decides what day it is', () => {
     const at = new Date('2026-11-17T02:00:00Z');
     expect(currentDateInTimeZone('Asia/Kolkata', at)).toBe('2026-11-17');
     expect(currentDateInTimeZone('America/Los_Angeles', at)).toBe('2026-11-16');
+  });
+});
+
+describe('startOfDayInTimeZone: a hotel date as an instant (AD-03 date filters)', () => {
+  it('Kolkata midnight is 18:30 UTC the day before', () => {
+    expect(startOfDayInTimeZone(d('2026-11-17'), 'Asia/Kolkata').toISOString()).toBe(
+      '2026-11-16T18:30:00.000Z',
+    );
+  });
+
+  it('New York follows its own offset on either side of the DST change', () => {
+    // EDT (UTC-4) before 1 November 2026, EST (UTC-5) after.
+    expect(startOfDayInTimeZone(d('2026-10-31'), 'America/New_York').toISOString()).toBe(
+      '2026-10-31T04:00:00.000Z',
+    );
+    expect(startOfDayInTimeZone(d('2026-11-02'), 'America/New_York').toISOString()).toBe(
+      '2026-11-02T05:00:00.000Z',
+    );
+  });
+
+  it('a zone east of UTC by more than half a day lands on the previous UTC date', () => {
+    expect(startOfDayInTimeZone(d('2026-01-01'), 'Pacific/Auckland').toISOString()).toBe(
+      '2025-12-31T11:00:00.000Z',
+    );
+  });
+
+  it('UTC is plain midnight', () => {
+    expect(startOfDayInTimeZone(d('2026-02-28'), 'UTC').toISOString()).toBe(
+      '2026-02-28T00:00:00.000Z',
+    );
+  });
+
+  it('is the instant the zone itself calls that date, at 00:00', () => {
+    const start = startOfDayInTimeZone(d('2026-03-29'), 'Europe/London');
+    expect(currentDateInTimeZone('Europe/London', start)).toBe('2026-03-29');
+    expect(currentDateInTimeZone('Europe/London', new Date(start.getTime() - 1))).toBe(
+      '2026-03-28',
+    );
   });
 });

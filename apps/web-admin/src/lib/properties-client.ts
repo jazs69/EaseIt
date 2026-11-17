@@ -9,6 +9,10 @@
  */
 
 import {
+  auditLogFacetsSchema,
+  auditLogPageSchema,
+  type AuditLogFacets,
+  type AuditLogPage,
   cancelReservationResultSchema,
   frontDeskBoardSchema,
   type FrontDeskBoard,
@@ -1834,4 +1838,48 @@ export function actOnHousekeepingTask(
     housekeepingTaskViewSchema,
     { method: 'POST', body },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Audit log (AD-03)                                                         */
+/* -------------------------------------------------------------------------- */
+
+export interface AuditLogFilters {
+  /** A staff member's id, or `system` for changes with no human actor. */
+  actor?: string;
+  entityType?: string;
+  entityId?: string;
+  event?: string;
+  /** Property-local `YYYY-MM-DD`, inclusive. */
+  from?: string;
+  to?: string;
+}
+
+function auditLogPath(hotelId: string): string {
+  return `/properties/${encodeURIComponent(hotelId)}/audit-log`;
+}
+
+export function fetchAuditLog(
+  hotelId: string,
+  filters: AuditLogFilters,
+  options: { cursor?: string; cookieHeader?: string } = {},
+): Promise<AuditLogPage> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (typeof value === 'string' && value.trim() !== '') params.set(key, value.trim());
+  }
+  if (options.cursor !== undefined) params.set('cursor', options.cursor);
+  const query = params.size === 0 ? '' : `?${params.toString()}`;
+  return apiFetch(`${auditLogPath(hotelId)}${query}`, auditLogPageSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+export function fetchAuditLogFacets(
+  hotelId: string,
+  options: { cookieHeader?: string } = {},
+): Promise<AuditLogFacets> {
+  return apiFetch(`${auditLogPath(hotelId)}/facets`, auditLogFacetsSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
 }

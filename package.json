@@ -43,6 +43,8 @@
     "test:tenancy": "node test/integration/tenant-isolation.test.mjs",
     "test:accounts": "node test/integration/account-lifecycle.test.mjs",
     "test:housekeeping": "node test/integration/housekeeping.test.mjs",
+    "test:alerting": "node test/integration/alerting.test.mjs",
+    "test:audit-log": "node test/integration/audit-log.test.mjs",
     "db:app-role": "node scripts/db-app-role.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",

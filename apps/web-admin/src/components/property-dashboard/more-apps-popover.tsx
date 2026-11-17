@@ -44,6 +44,7 @@ import {
   FileText,
   Lock,
   Moon,
+  ScrollText,
   Settings,
   ShoppingBag,
   Wallet,
@@ -80,6 +81,13 @@ const APPS: readonly AppItem[] = [
     // renaming it there is then a compile error here rather than a tile that
     // silently stops gating.
     requiredPermission: Permission.NIGHT_AUDIT_READ,
+  },
+  {
+    id: 'audit-log',
+    name: 'Audit Log',
+    icon: ScrollText,
+    href: '/audit-log',
+    requiredPermission: Permission.AUDIT_LOG_READ,
   },
   {
     id: 'property-config',

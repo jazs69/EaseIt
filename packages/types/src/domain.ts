@@ -125,6 +125,55 @@ export function currentDateInTimeZone(timeZone: string, now: Date): BusinessDate
   return parts as BusinessDate;
 }
 
+/**
+ * The offset of a timezone at an instant, in milliseconds (local minus UTC).
+ *
+ * Built on `Intl` rather than a date library: one piece of arithmetic is not
+ * worth a runtime dependency (CLAUDE.md section 6.4).
+ */
+export function timeZoneOffsetMs(instant: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(instant);
+
+  const read = (type: Intl.DateTimeFormatPartTypes): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? '0');
+
+  const asIfUtc = Date.UTC(
+    read('year'),
+    read('month') - 1,
+    read('day'),
+    // `hour12: false` can render midnight as 24, which Date.UTC would roll
+    // into the next day.
+    read('hour') % 24,
+    read('minute'),
+    read('second'),
+  );
+
+  return asIfUtc - Math.floor(instant.getTime() / 1000) * 1000;
+}
+
+/**
+ * The instant a property-local calendar date begins.
+ *
+ * Guess UTC midnight, measure the zone's offset there, and correct. One
+ * iteration is enough for every real zone: the correction only lands in a
+ * different offset when a DST transition falls inside the offset itself.
+ * This is how a calendar-date filter over `timestamptz` rows is turned into
+ * instants -- never by reading the server's or the browser's own zone.
+ */
+export function startOfDayInTimeZone(date: BusinessDate, timeZone: string): Date {
+  const guess = new Date(`${date}T00:00:00Z`);
+  return new Date(guess.getTime() - timeZoneOffsetMs(guess, timeZone));
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Operational enums                                                         */
 /* -------------------------------------------------------------------------- */

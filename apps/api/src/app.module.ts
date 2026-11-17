@@ -21,6 +21,8 @@ import { InventoryModule } from './modules/inventory/inventory.module.js';
 import { RatesModule } from './modules/rates/rates.module.js';
 import { RbacModule } from './modules/rbac/rbac.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
+import { AlertingModule } from './modules/platform/alerting/alerting.module.js';
+import { AuditLogModule } from './modules/audit-log/audit-log.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 /**
@@ -61,6 +63,8 @@ import { PrismaModule } from './prisma/prisma.module.js';
     NightAuditModule,
     HousekeepingModule,
     FrontDeskModule,
+    AlertingModule,
+    AuditLogModule,
   ],
 })
 export class AppModule {}
