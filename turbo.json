@@ -1,15 +1,8 @@
 {
   "$schema": "https://turborepo.com/schema.json",
   "ui": "tui",
-  "globalDependencies": [
-    "**/.env.*local",
-    "packages/config/tsconfig/*.json",
-    ".prettierrc"
-  ],
-  "globalEnv": [
-    "NODE_ENV",
-    "CI"
-  ],
+  "globalDependencies": ["**/.env.*local", "packages/config/tsconfig/*.json", ".prettierrc"],
+  "globalEnv": ["NODE_ENV", "CI"],
   "globalPassThroughEnv": [
     "DATABASE_URL",
     "DIRECT_URL",
@@ -18,63 +11,38 @@
     "JWT_SECRET",
     "JWT_EXPIRES_IN",
     "API_CORS_ORIGINS",
-    "SWAGGER_ENABLED"
+    "SWAGGER_ENABLED",
+    "API_INTERNAL_URL"
   ],
   "tasks": {
     "build": {
-      "dependsOn": [
-        "^build"
-      ],
-      "env": [
-        "NEXT_PUBLIC_*",
-        "DATABASE_URL",
-        "NODE_ENV",
-        "NEXT_OUTPUT"
-      ],
-      "outputs": [
-        ".next/**",
-        "!.next/cache/**",
-        "dist/**"
-      ]
+      "dependsOn": ["^build"],
+      "env": ["NEXT_PUBLIC_*", "DATABASE_URL", "NODE_ENV", "NEXT_OUTPUT"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "dev": {
-      "dependsOn": [
-        "^build"
-      ],
+      "dependsOn": ["^build"],
       "cache": false,
       "persistent": true
     },
     "lint": {
-      "dependsOn": [
-        "^build"
-      ],
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "lint:fix": {
-      "dependsOn": [
-        "^build"
-      ],
+      "dependsOn": ["^build"],
       "cache": false
     },
     "typecheck": {
-      "dependsOn": [
-        "^build"
-      ],
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "test": {
-      "dependsOn": [
-        "^build"
-      ],
-      "outputs": [
-        "coverage/**"
-      ]
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
     },
     "db:generate": {
-      "inputs": [
-        "prisma/schema.prisma",
-        "prisma.config.ts"
-      ],
+      "inputs": ["prisma/schema.prisma", "prisma.config.ts"],
       "cache": false
     },
     "db:migrate": {

@@ -84,10 +84,24 @@ import { quoteStay, nightsBetween, stayDates, type QuoteInput } from './reservat
 const MAX_ATTEMPTS = 3;
 const TRANSACTION_TIMEOUT_MS = 10_000;
 
-
 function toUtcMidnight(date: string): Date {
   return new Date(`${date}T00:00:00.000Z`);
 }
+
+/** How a booking transaction is run: staff by default, the booking engine with hooks. */
+export type CommitOptions = {
+  /** Staff may sell into a room type's overbooking allowance; the public may not. */
+  allowOverbooking: boolean;
+  /** Runs first inside the transaction, before any inventory lock. */
+  before?: (tx: Prisma.TransactionClient) => Promise<void>;
+  /** Runs after the reservation row exists, in the same transaction. */
+  after?: (
+    tx: Prisma.TransactionClient,
+    reservation: { id: string; bookingCode: string },
+  ) => Promise<void>;
+};
+
+const STAFF_COMMIT: CommitOptions = { allowOverbooking: true };
 
 @Injectable()
 export class CreateReservationService {
@@ -242,11 +256,7 @@ export class CreateReservationService {
     hotelId: string,
     request: ReservationQuoteRequest,
   ): Promise<ReservationQuote> {
-    const property = await this.resolveProperty(
-      userId,
-      hotelId,
-      Permission.RESERVATIONS_CREATE,
-    );
+    const property = await this.resolveProperty(userId, hotelId, Permission.RESERVATIONS_CREATE);
     const roomType = await this.loadRoomType(property.id, request.roomTypeId);
 
     this.assertStayWindow(request.arrivalDate, request.departureDate);
@@ -273,11 +283,7 @@ export class CreateReservationService {
     hotelId: string,
     command: CreateReservationCommand,
   ): Promise<CreatedReservation> {
-    const property = await this.resolveProperty(
-      userId,
-      hotelId,
-      Permission.RESERVATIONS_CREATE,
-    );
+    const property = await this.resolveProperty(userId, hotelId, Permission.RESERVATIONS_CREATE);
     const roomType = await this.loadRoomType(property.id, command.roomTypeId);
 
     this.assertStayWindow(command.arrivalDate, command.departureDate);
@@ -348,11 +354,91 @@ export class CreateReservationService {
   }
 
   /* -------------------------------------------------------------------- */
+  /*  Guest bookings (BE-03): no staff user, property resolved by the caller */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Prices a stay for the public booking engine: the same pricing as `quote`,
+   * for a property the booking engine resolved from its slug, with no staff
+   * grant involved. Advisory, like every quote.
+   */
+  async quoteForProperty(
+    propertyId: string,
+    request: ReservationQuoteRequest,
+  ): Promise<ReservationQuote> {
+    const property = await this.loadProperty(propertyId);
+    const roomType = await this.loadRoomType(property.id, request.roomTypeId);
+    this.assertStayWindow(request.arrivalDate, request.departureDate);
+    return quoteStay({
+      arrivalDate: request.arrivalDate,
+      departureDate: request.departureDate,
+      baseNightlyRateMinor: roomType.baseRateMinor,
+      plan: await this.planFor(property, roomType, request),
+      overrideNightlyRateMinor: undefined,
+      targetTotalMinor: undefined,
+      isTaxExempt: false,
+      currency: roomType.currency,
+      taxSlabs: await this.slabsFor(property),
+    });
+  }
+
+  /**
+   * Books a stay for a guest at the price they were quoted.
+   *
+   * The quote was signed by the booking engine and is honoured as written:
+   * that is the "hold the price" promise. Everything else is the staff
+   * transaction unchanged — the ascending `inventory_day` lock, the oversell
+   * CHECK, the retry budget — except that the overbooking allowance is NOT
+   * sellable to the public: it is a revenue manager's lever, not stock.
+   */
+  async createForGuest(
+    propertyId: string,
+    command: CreateReservationCommand,
+    heldQuote: ReservationQuote,
+    hooks: Pick<CommitOptions, 'before' | 'after'>,
+  ): Promise<CreatedReservation> {
+    if (
+      command.isInstantCheckIn ||
+      command.payment !== null ||
+      command.roomId !== null ||
+      command.companyId !== null
+    ) {
+      throw new ValidationFailedError({
+        request: 'A guest booking cannot check in, pay at the desk, pick a room or bill a company.',
+      });
+    }
+    const property = await this.loadProperty(propertyId);
+    const roomType = await this.loadRoomType(property.id, command.roomTypeId);
+    this.assertStayWindow(command.arrivalDate, command.departureDate);
+    return this.withRetry(() =>
+      this.commit(null, property, roomType, command, heldQuote, {
+        allowOverbooking: false,
+        ...hooks,
+      }),
+    );
+  }
+
+  private async loadProperty(propertyId: string): Promise<{
+    id: string;
+    code: string;
+    currency: string;
+    businessDate: Date;
+    taxRatePercent: Prisma.Decimal | null;
+  }> {
+    const property = await this.prisma.client.property.findFirst({
+      where: { id: propertyId },
+      select: { id: true, code: true, currency: true, businessDate: true, taxRatePercent: true },
+    });
+    if (property === null) throw new TenantScopeViolationError('Property');
+    return property;
+  }
+
+  /* -------------------------------------------------------------------- */
   /*  The transaction                                                     */
   /* -------------------------------------------------------------------- */
 
   private async commit(
-    userId: string,
+    userId: string | null,
     property: {
       id: string;
       code: string;
@@ -363,7 +449,14 @@ export class CreateReservationService {
     roomType: { id: string; name: string; baseRateMinor: number; currency: string },
     command: CreateReservationCommand,
     quote: ReservationQuote,
+    options: CommitOptions = STAFF_COMMIT,
   ): Promise<CreatedReservation> {
+    // A guest booking (no staff user) can neither check in nor post a payment
+    // at the desk; `createForGuest` refuses both before reaching here.
+    const staff = (): string => {
+      if (userId === null) throw new Error('A staff-only step was reached without a staff user.');
+      return userId;
+    };
     const dates = stayDates(command.arrivalDate, command.departureDate);
     const bookingCode = this.generateBookingCode(property.code);
 
@@ -406,6 +499,10 @@ export class CreateReservationService {
         // and forgets (section 3.2).
         await tx.$executeRaw`SELECT set_config('app.current_property_id', ${property.id}, true)`;
 
+        // A caller's own first step (the booking engine's per-quote lock and
+        // duplicate check), before any inventory lock is taken.
+        if (options.before !== undefined) await options.before(tx);
+
         /**
          * Lock every stay date's inventory row, ascending.
          *
@@ -420,7 +517,8 @@ export class CreateReservationService {
          */
         const locked = await tx.$queryRaw<{ stay_date: Date; sellable: number }[]>`
           SELECT "stayDate" AS stay_date,
-                 ("physical" + "overbookingAllowance" - "sold" - "blocked") AS sellable
+                 ("physical" + ${options.allowOverbooking ? Prisma.sql`"overbookingAllowance"` : Prisma.sql`0`}
+                  - "sold" - "blocked") AS sellable
           FROM inventory_day
           WHERE "propertyId" = ${property.id}::uuid
             AND "roomTypeId" = ${roomType.id}::uuid
@@ -638,8 +736,7 @@ export class CreateReservationService {
             postalCode: guest.postalCode,
             countryCode: guest.countryCode,
             gender: guest.gender,
-            dateOfBirth:
-              guest.dateOfBirth === null ? null : toUtcMidnight(guest.dateOfBirth),
+            dateOfBirth: guest.dateOfBirth === null ? null : toUtcMidnight(guest.dateOfBirth),
             nationality: guest.nationality,
             occupation: guest.occupation,
             govtIdType: guest.govtIdType,
@@ -693,18 +790,20 @@ export class CreateReservationService {
           // The arrival night as priced, not an average: nights can differ (F9).
           const arrivalNight = quote.nightly[0];
           if (arrivalNight === undefined) {
-            throw new ValidationFailedError({ departureDate: 'A stay must cover at least one night.' });
+            throw new ValidationFailedError({
+              departureDate: 'A stay must cover at least one night.',
+            });
           }
 
           await tx.reservation.update({
             where: { id: reservation.id },
-            data: { checkedInBy: userId },
+            data: { checkedInBy: staff() },
           });
 
           await postCheckIn(tx, {
             propertyId: property.id,
             reservationId: reservation.id,
-            staffUserId: userId,
+            staffUserId: staff(),
             // The property's business date, never `now()` (section 3.3).
             businessDate,
             // The arrival night, which is what the charge is for.
@@ -727,9 +826,7 @@ export class CreateReservationService {
             previousRoomId: null,
             keyCardsIssued: 0,
             roomNotCleanAcknowledged:
-              room !== null &&
-              room.status !== 'VACANT_CLEAN' &&
-              room.status !== 'INSPECTED',
+              room !== null && room.status !== 'VACANT_CLEAN' && room.status !== 'INSPECTED',
           });
         } else if (command.payment !== null) {
           /**
@@ -782,7 +879,7 @@ export class CreateReservationService {
               chargeDate: toUtcMidnight(businessDate),
               paymentMethod: command.payment.method,
               remark: command.payment.remark,
-              postedById: userId,
+              postedById: staff(),
             },
           });
 
@@ -790,7 +887,7 @@ export class CreateReservationService {
           await tx.auditLog.create({
             data: {
               propertyId: property.id,
-              actorUserId: userId,
+              actorUserId: staff(),
               event: 'FOLIO_ADVANCE_POSTED',
               entityType: 'folio',
               entityId: reservation.id,
@@ -814,7 +911,15 @@ export class CreateReservationService {
          * a second row for this booking, and a rolled-back attempt takes
          * its row with it.
          */
-        if (status === ReservationStatus.CONFIRMED && booker.email !== null && booker.email !== '') {
+        if (options.after !== undefined) {
+          await options.after(tx, { id: reservation.id, bookingCode });
+        }
+
+        if (
+          status === ReservationStatus.CONFIRMED &&
+          booker.email !== null &&
+          booker.email !== ''
+        ) {
           await this.outbox.enqueue(tx, {
             propertyId: property.id,
             eventType: 'RESERVATION_CONFIRMATION_EMAIL',

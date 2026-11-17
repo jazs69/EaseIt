@@ -52,3 +52,4 @@ export * from './dto/timeline.dto.js';
 export * from './dto/property.dto.js';
 export * from './dto/property-config.dto.js';
 export * from './dto/data-exchange.dto.js';
+export * from './dto/booking-engine.dto.js';

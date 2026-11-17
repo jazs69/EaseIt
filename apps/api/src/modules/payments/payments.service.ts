@@ -295,6 +295,141 @@ export class PaymentsService {
       });
     }
 
+    return this.issue(
+      client,
+      property,
+      folio,
+      command.amountMinor,
+      command.idempotencyKey,
+      userId,
+      {
+        sms: command.notifySms,
+        email: command.notifyEmail,
+      },
+    );
+  }
+
+  /**
+   * BE-04: a payment link a GUEST asks for, from the booking engine.
+   *
+   * No staff user: the booking engine has already resolved the property from
+   * its slug and proven the guest holds the booking's signed access token.
+   * Only a CONFIRMED stay (not yet arrived) may be prepaid online; the amount
+   * is the whole balance — the stay total less what the folio already holds
+   * in payments — so a guest can never be asked for more than they owe. One
+   * key per (reservation, amount, attempt): a double click returns the same
+   * link; a link that failed or expired is replaced by a fresh one.
+   */
+  /** BE-04: whether the booking engine may offer "Pay now" at this property. */
+  async canTakeOnlinePayments(propertyId: string): Promise<boolean> {
+    return (await this.gatewayState(propertyId)).canSendLinks;
+  }
+
+  async sendGuestLink(propertyId: string, reservationId: string): Promise<PaymentLink | null> {
+    const state = await this.gatewayState(propertyId);
+    const client = this.client;
+    if (!state.canSendLinks || client === null) return null;
+
+    const reservation = await this.prisma.client.reservation.findFirst({
+      where: { id: reservationId, propertyId },
+      select: {
+        id: true,
+        status: true,
+        totalAmountMinor: true,
+        currency: true,
+        confirmationCode: true,
+        guestFirstName: true,
+        guestLastName: true,
+        guestEmail: true,
+        guestPhone: true,
+        property: { select: { name: true } },
+        folio: { select: { id: true, status: true, lines: { select: { amountMinor: true } } } },
+      },
+    });
+    if (reservation === null) throw new TenantScopeViolationError('Reservation');
+    if (reservation.status !== 'CONFIRMED') {
+      throw new ValidationFailedError({ booking: 'Only an upcoming booking can be paid online.' });
+    }
+    // A pay-at-hotel booking has no folio until check-in. Opened here for a
+    // guest who decides to pay ahead, tolerating a concurrent opener (the
+    // one-folio-per-reservation index): the loser uses the winner's folio.
+    let folioRow = reservation.folio;
+    if (folioRow === null) {
+      try {
+        await this.prisma.client.folio.create({
+          data: {
+            propertyId,
+            reservationId: reservation.id,
+            currency: reservation.currency,
+            status: 'OPEN',
+          },
+          select: { id: true },
+        });
+      } catch (cause) {
+        if (!(cause instanceof Prisma.PrismaClientKnownRequestError && cause.code === 'P2002'))
+          throw cause;
+      }
+      folioRow = await this.prisma.client.folio.findFirst({
+        where: { reservationId: reservation.id, propertyId },
+        select: { id: true, status: true, lines: { select: { amountMinor: true } } },
+      });
+      if (folioRow === null) throw new TenantScopeViolationError('Folio');
+    }
+    if (folioRow.status !== 'OPEN') throw new FolioAlreadyClosedError(folioRow.id);
+    // Before arrival a folio holds only payments (negative) and refunds.
+    const held = folioRow.lines.reduce((sum, line) => sum + line.amountMinor, 0);
+    const amountMinor = reservation.totalAmountMinor + held;
+    if (amountMinor <= 0) return null;
+
+    const existing = await this.prisma.client.paymentLink.findMany({
+      where: { propertyId, folioId: folioRow.id },
+      select: LINK_SELECT,
+      orderBy: { createdAt: 'desc' },
+    });
+    const live = existing.find((row) => row.status === 'ACTIVE' && row.amountMinor === amountMinor);
+    if (live !== undefined) return toLink(live);
+
+    return this.issue(
+      client,
+      { id: propertyId, name: reservation.property.name },
+      {
+        id: folioRow.id,
+        currency: reservation.currency,
+        reservationId: reservation.id,
+        reservation,
+      },
+      amountMinor,
+      `online-${reservation.id}-${String(amountMinor)}-${String(existing.length)}`,
+      null,
+      { sms: false, email: false },
+    );
+  }
+
+  /**
+   * Creates the link row (CREATING, audited) and asks Razorpay for it, outside
+   * any transaction. Shared by the staff panel and the booking engine, which
+   * differ only in who is asking and how the amount was capped.
+   */
+  private async issue(
+    client: RazorpayClient,
+    property: { id: string; name: string },
+    folio: {
+      id: string;
+      currency: string;
+      reservationId: string;
+      reservation: {
+        confirmationCode: string;
+        guestFirstName: string;
+        guestLastName: string;
+        guestEmail: string | null;
+        guestPhone: string | null;
+      };
+    },
+    amountMinor: number,
+    idempotencyKey: string,
+    actorUserId: string | null,
+    notify: { sms: boolean; email: boolean },
+  ): Promise<PaymentLink> {
     const expiresAt = new Date(this.clock.now().getTime() + this.expiryDays * 86_400_000);
     let link: LinkRow;
     try {
@@ -305,26 +440,26 @@ export class PaymentsService {
             folioId: folio.id,
             reservationId: folio.reservationId,
             provider: 'RAZORPAY',
-            amountMinor: command.amountMinor,
+            amountMinor,
             currency: folio.currency,
             status: 'CREATING',
             expiresAt,
-            idempotencyKey: command.idempotencyKey,
-            createdById: userId,
+            idempotencyKey,
+            createdById: actorUserId,
           },
           select: LINK_SELECT,
         });
-        await this.audit(tx, property.id, userId, created.id, 'PAYMENT_LINK_CREATED', {
+        await this.audit(tx, property.id, actorUserId, created.id, 'PAYMENT_LINK_CREATED', {
           folioId: folio.id,
-          amountMinor: command.amountMinor,
+          amountMinor,
         });
         return created;
       });
     } catch (cause) {
       // The same click raced in: return what it created.
       if (cause instanceof Prisma.PrismaClientKnownRequestError && cause.code === 'P2002') {
-        const raced = await this.findByKey(property.id, command.idempotencyKey);
-        if (raced !== null) return this.assertSameLink(raced, folioId, command.amountMinor);
+        const raced = await this.findByKey(property.id, idempotencyKey);
+        if (raced !== null) return this.assertSameLink(raced, folio.id, amountMinor);
       }
       throw cause;
     }
@@ -334,7 +469,7 @@ export class PaymentsService {
     try {
       const remote = await client.createLink({
         referenceId: link.id,
-        amountMinor: command.amountMinor,
+        amountMinor,
         currency: folio.currency,
         description: `${property.name} - booking ${booker.confirmationCode}`,
         expireBySeconds: Math.floor(expiresAt.getTime() / 1_000),
@@ -343,8 +478,8 @@ export class PaymentsService {
           email: booker.guestEmail,
           contact: normalisePhone(booker.guestPhone),
         },
-        notifySms: command.notifySms,
-        notifyEmail: command.notifyEmail,
+        notifySms: notify.sms,
+        notifyEmail: notify.email,
         notes: { property_id: property.id, link_id: link.id, booking: booker.confirmationCode },
       });
       link = await this.prisma.client.paymentLink.update({

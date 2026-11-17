@@ -219,6 +219,16 @@ No-show (RS-13, `CancelReservationService.markNoShow`) runs the cancellation tra
 precisely because it has no existing reservation row to contend for — it creates one. Do not
 introduce a second path that takes inventory before the reservation row.
 
+The public booking engine (BE-03, `modules/booking-engine`) is **not** a second path: it books
+through `CreateReservationService.createForGuest`, the same transaction, with two differences.
+Its `before` hook takes `pg_advisory_xact_lock` on the quote id (one booking per signed quote)
+**before** any `inventory_day` lock, and nothing else takes that lock, so it adds no cycle. And it
+passes `allowOverbooking: false`: the locked sellable check excludes `overbookingAllowance`, so the
+public never sells the allowance (stricter than the CHECK, never looser). Its `after` hook writes
+`online_booking`, the audit row and, for pay-now, the folio in the same transaction. The Razorpay
+link is requested after commit. Raced in `booking-engine.test.mjs` (8 guests, last room) and
+`pnpm test:concurrency` (passing 2026-11-18).
+
 - The lock is **always scoped by `propertyId` in the same predicate as the id**, so another
   property's stay is _not found_ rather than forbidden (§3.2). A row lock taken on id alone is a
   tenancy bug even when the subsequent read is scoped.

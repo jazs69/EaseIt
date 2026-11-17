@@ -371,6 +371,7 @@ model Property {
   gatewayConfigs    PaymentGatewayConfig[]
   paymentLinks      PaymentLink[]
   workOrders        WorkOrder[]
+  onlineBookings    OnlineBooking[]
   companies         Company[]
   folios            Folio[]
   invoices          Invoice[]
@@ -1892,6 +1893,7 @@ model Reservation {
   internalNotes ReservationNote[]
   companyLedger CompanyLedgerEntry[]
   paymentLinks  PaymentLink[]
+  onlineBooking OnlineBooking[]
   /// What each night was sold for. Written once at booking; never repriced.
   pricedNights  ReservationNight[]
 
@@ -3378,4 +3380,33 @@ model WorkOrder {
   @@index([propertyId, status, createdAt])
   @@index([propertyId, roomId, status])
   @@map("work_order")
+}
+
+/// BE-03: a booking made on the public booking engine.
+///
+/// Ties the signed quote the guest booked from (`quoteId`) to the stay it
+/// produced, so a double-submitted booking finds the first one instead of
+/// selling a second room, and records how the guest chose to pay. The stay
+/// itself is an ordinary `reservation` (source DIRECT_WEB) written by the same
+/// transaction as staff bookings.
+model OnlineBooking {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  /// The signed quote's id: one booking per quote.
+  quoteId String @db.Uuid
+
+  /// PAY_AT_HOTEL or PAY_NOW (CHECK in the migration).
+  paymentChoice String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, quoteId], name: "online_booking_one_per_quote")
+  @@unique([propertyId, reservationId], name: "online_booking_one_per_reservation")
+  @@map("online_booking")
 }

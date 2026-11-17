@@ -17,5 +17,6 @@ import { RazorpayWebhookController } from './razorpay-webhook.controller.js';
   imports: [FoliosModule],
   controllers: [PaymentsController, RazorpayWebhookController],
   providers: [PaymentsService, TokenService, SessionAuthGuard],
+  exports: [PaymentsService],
 })
 export class PaymentsModule {}

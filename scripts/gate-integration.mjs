@@ -290,6 +290,11 @@ const suites = [
     script: 'test/integration/data-exchange.test.mjs',
     why: 'dry run writes nothing; commit needs the dry-run digest and lands all or nothing with audit rows; rate nights per date; 11 refusal kinds; re-import UNCHANGED; 6-way commit creates once; import racing the rooms screen leaves one room; export audited, formula-safe, windowed, round-trips; 403/404',
   },
+  {
+    name: 'public booking engine (BE-01..BE-05, AV-08, AV-09)',
+    script: 'test/integration/booking-engine.test.mjs',
+    why: 'slug resolved server-side (unknown/inactive 404, spoofed header ignored); search offers only sellable categories on public plans; cached search vs live quote; the held price survives a rate change; tampered/expired/cross-property quotes refused with nothing written; 6 parallel submits of one quote book once; 8 guests racing for the last room: exactly one wins, sold = live rows per date and category; overbooking allowance never sold publicly; pay-now link, captured once under 3 webhooks; access token or 404; throttled; Razorpay stand-in on 4993',
+  },
 ];
 
 console.log('════ release gate (integration) ════');
