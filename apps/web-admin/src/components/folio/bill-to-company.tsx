@@ -101,56 +101,70 @@ export function BillToCompany({
         Bill to company
       </button>
       {panel === null ? null : (
-        <div
-          role="dialog"
-          aria-label="Bill to company"
-          className="absolute top-full right-0 z-30 mt-2 flex w-80 flex-col gap-3 rounded-xl border border-white/10 bg-zinc-950 p-4 text-xs text-zinc-300 shadow-xl"
-        >
-          <p>
-            Moves the amount onto <span className="font-medium text-white">{company.name}</span>
-            &apos;s account. The folio is settled by it; the company owes it and is invoiced.
-            Balance due: {formatMoney(balance, currency)}.
-          </p>
-          <label className="flex flex-col gap-1">
-            Amount ({currency})
-            <input
-              inputMode="decimal"
-              value={panel.amount}
-              onChange={(event) => setPanel({ ...panel, amount: event.target.value })}
-              className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-white focus:border-white/25 focus:outline-none"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            Remark (optional)
-            <input
-              value={panel.remark}
-              maxLength={200}
-              onChange={(event) => setPanel({ ...panel, remark: event.target.value })}
-              className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-white focus:border-white/25 focus:outline-none"
-            />
-          </label>
-          {error === null ? null : (
-            <p role="alert" className="text-rose-300">
-              {error}
+        // A centred dialog over the page, not a dropdown: the folio's action
+        // row scrolls horizontally, and a scrolling row clips anything that
+        // pops out of it, which made this panel invisible.
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-24">
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => {
+              setPanel(null);
+            }}
+            className="absolute inset-0 cursor-default bg-black/60"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Bill to company"
+            className="relative flex w-full max-w-80 flex-col gap-3 rounded-xl border border-white/10 bg-zinc-950 p-4 text-xs text-zinc-300 shadow-xl"
+          >
+            <p>
+              Moves the amount onto <span className="font-medium text-white">{company.name}</span>
+              &apos;s account. The folio is settled by it; the company owes it and is invoiced.
+              Balance due: {formatMoney(balance, currency)}.
             </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setPanel(null)}
-              className="rounded-lg border border-white/10 px-3 py-1.5 text-zinc-300 hover:border-white/25"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void submit()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500 disabled:opacity-60"
-            >
-              {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null}
-              Bill to company
-            </button>
+            <label className="flex flex-col gap-1">
+              Amount ({currency})
+              <input
+                inputMode="decimal"
+                value={panel.amount}
+                onChange={(event) => setPanel({ ...panel, amount: event.target.value })}
+                className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-white focus:border-white/25 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              Remark (optional)
+              <input
+                value={panel.remark}
+                maxLength={200}
+                onChange={(event) => setPanel({ ...panel, remark: event.target.value })}
+                className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-white focus:border-white/25 focus:outline-none"
+              />
+            </label>
+            {error === null ? null : (
+              <p role="alert" className="text-rose-300">
+                {error}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPanel(null)}
+                className="rounded-lg border border-white/10 px-3 py-1.5 text-zinc-300 hover:border-white/25"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void submit()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500 disabled:opacity-60"
+              >
+                {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null}
+                Bill to company
+              </button>
+            </div>
           </div>
         </div>
       )}
