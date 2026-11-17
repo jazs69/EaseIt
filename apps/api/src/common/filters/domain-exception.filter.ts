@@ -15,6 +15,9 @@ import { ErrorCode, type ApiError } from '@repo/types';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import { DomainError } from '../errors/domain-error.js';
+import type { ErrorReporter } from '../observability/error-reporter.service.js';
+import type { TraceContext } from '../observability/trace.js';
+import { TRACE_KEY } from '../observability/trace.interceptor.js';
 
 function codeForStatus(status: number): ErrorCode {
   switch (status) {
@@ -39,6 +42,9 @@ function codeForStatus(status: number): ErrorCode {
 export class DomainExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(DomainExceptionFilter.name);
 
+  /** Unexpected server errors go to the error reporter (OB-05); null in tests. */
+  constructor(private readonly reporter: ErrorReporter | null = null) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
     const reply = http.getResponse<FastifyReply>();
@@ -50,6 +56,20 @@ export class DomainExceptionFilter implements ExceptionFilter {
     // every level it passed through. Server faults carry the stack; client
     // faults do not, or a scanner fills the logs with noise.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      // A typed DomainError at 5xx is a known failure mode; anything else is
+      // a bug and is reported (OB-05).
+      if (!(exception instanceof DomainError)) {
+        const trace = (request as unknown as Record<string, unknown>)[TRACE_KEY] as
+          TraceContext | undefined;
+        this.reporter?.report({
+          name: exception instanceof Error ? exception.name : 'NonError',
+          message: exception instanceof Error ? exception.message : String(exception),
+          method: request.method,
+          route: request.routeOptions.url ?? 'unmatched',
+          requestId: request.id,
+          traceId: trace?.traceId ?? null,
+        });
+      }
       this.logger.error(
         `${request.method} ${request.url} -> ${body.code} [${request.id}]`,
         exception instanceof Error ? exception.stack : String(exception),

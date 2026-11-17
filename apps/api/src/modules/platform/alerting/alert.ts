@@ -21,7 +21,7 @@
  * ===========================================================================
  */
 
-export type AlertKind = 'OUTBOX_DEAD_LETTER' | 'OUTBOX_STALE_LEASE';
+export type AlertKind = 'OUTBOX_DEAD_LETTER' | 'OUTBOX_STALE_LEASE' | 'API_ERRORS';
 
 export interface Alert {
   kind: AlertKind;

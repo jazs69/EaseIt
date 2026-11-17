@@ -12,6 +12,11 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module.js';
 import { DomainExceptionFilter } from './common/filters/domain-exception.filter.js';
+import { RedactingLogger } from './common/logging/redacting-logger.js';
+import { ErrorReporter } from './common/observability/error-reporter.service.js';
+import { MetricsService } from './common/observability/metrics.service.js';
+import { formatTraceparent, traceForRequest } from './common/observability/trace.js';
+import { TRACE_KEY, TraceInterceptor } from './common/observability/trace.interceptor.js';
 import { UuidParamPipe } from './common/pipes/uuid-param.pipe.js';
 import { TenantScopeInterceptor } from './common/tenancy/tenant-scope.interceptor.js';
 
@@ -36,6 +41,10 @@ async function bootstrap(): Promise<void> {
     // received (FO-15), so they are kept beside the parsed JSON.
     { bufferLogs: true, rawBody: true },
   );
+  // Every log line is redacted of personal data and carries the trace id
+  // (SE-02, OB-05). Installed before anything logs; buffered boot lines
+  // flush through it too.
+  app.useLogger(new RedactingLogger());
 
   const config = app.get(ConfigService);
 
@@ -74,9 +83,32 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  app.useGlobalFilters(new DomainExceptionFilter());
-  // Every handler runs inside the tenant scope its guards verified (MT-02).
-  app.useGlobalInterceptors(new TenantScopeInterceptor());
+  /**
+   * Trace context and request metrics (OB-05), as Fastify hooks so they cover
+   * every request, including ones a guard refuses and ones no route matches.
+   * The trace id continues an incoming W3C `traceparent` or starts a new one;
+   * both ids go back in the response. Metrics are labelled by the route
+   * TEMPLATE, never the URL.
+   */
+  const metrics = app.get(MetricsService);
+  const fastify = app.getHttpAdapter().getInstance();
+  fastify.addHook('onRequest', (request, reply, done) => {
+    const trace = traceForRequest(request.headers.traceparent, request.id);
+    (request as unknown as Record<string, unknown>)[TRACE_KEY] = trace;
+    void reply.header('traceparent', formatTraceparent(trace.traceId, trace.spanId, trace.sampled));
+    void reply.header('x-request-id', request.id);
+    done();
+  });
+  fastify.addHook('onResponse', (request, reply, done) => {
+    const route = request.routeOptions.url ?? 'unmatched';
+    metrics.recordHttp(request.method, route, reply.statusCode, reply.elapsedTime / 1_000);
+    done();
+  });
+
+  app.useGlobalFilters(new DomainExceptionFilter(app.get(ErrorReporter)));
+  // The trace binds first, so the tenant scope (MT-02) and the handler both
+  // run inside it.
+  app.useGlobalInterceptors(new TraceInterceptor(), new TenantScopeInterceptor());
 
   // Lets onModuleDestroy run so Prisma closes its pool on SIGTERM.
   app.enableShutdownHooks();

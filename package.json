@@ -51,6 +51,8 @@
     "test:payment-links": "node test/integration/payment-links.test.mjs",
     "razorpay:smoke": "node scripts/razorpay-smoke.mjs",
     "test:work-orders": "node test/integration/work-orders.test.mjs",
+    "test:observability": "node test/integration/observability.test.mjs",
+    "check:log-pii": "node scripts/check-log-pii.mjs",
     "db:app-role": "node scripts/db-app-role.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",

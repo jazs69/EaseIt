@@ -29,7 +29,7 @@
  * ===========================================================================
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   addDays,
@@ -56,6 +56,8 @@ import {
   ValidationFailedError,
 } from '../../common/errors/domain-error.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
+import { MetricsService } from '../../common/observability/metrics.service.js';
+import { tracedFetch } from '../../common/observability/traced-fetch.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { FoliosService } from '../folios/folios.service.js';
 import { ClockService } from '../platform/clock.service.js';
@@ -148,13 +150,15 @@ export class PaymentsService {
     private readonly folios: FoliosService,
     private readonly clock: ClockService,
     config: ConfigService,
+    @Optional() metrics: MetricsService | null = null,
   ) {
     const keyId = config.get<string>('RAZORPAY_KEY_ID');
     const keySecret = config.get<string>('RAZORPAY_KEY_SECRET');
     this.webhookSecret = config.get<string>('RAZORPAY_WEBHOOK_SECRET');
     this.expiryDays = config.get<number>('PAYMENT_LINK_EXPIRY_DAYS', 7);
     if (keyId !== undefined && keySecret !== undefined) {
-      const fetchImpl: FetchLike = (input, init) => fetch(input, init);
+      // Child traceparent and call metrics on every Razorpay request (OB-05).
+      const fetchImpl: FetchLike = tracedFetch('razorpay', metrics);
       this.client = new RazorpayClient(
         fetchImpl,
         config.get<string>('RAZORPAY_BASE_URL') ?? 'https://api.razorpay.com',

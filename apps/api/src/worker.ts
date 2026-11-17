@@ -29,6 +29,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from './app.module.js';
+import { RedactingLogger } from './common/logging/redacting-logger.js';
 import { OutboxQueue } from './modules/platform/outbox/outbox.queue.js';
 import { OutboxRuntime } from './modules/platform/outbox/outbox.module.js';
 import { PrismaService } from './prisma/prisma.service.js';
@@ -43,6 +44,9 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.createApplicationContext(AppModule, {
     bufferLogs: false,
   });
+  // Same redaction as the API (SE-02): job failures can carry a mail
+  // relay's or Prisma's text, with an address or a guest name inside.
+  app.useLogger(new RedactingLogger());
 
   // Ordered shutdown, so in-flight jobs finish or release their leases.
   app.enableShutdownHooks();

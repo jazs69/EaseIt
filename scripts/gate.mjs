@@ -67,6 +67,15 @@ const checks = [
     why: 'ESLint errors',
   },
   {
+    name: 'no personal data in log calls',
+    // SE-02: parses every log call under apps/api/src and fails on a field
+    // that holds personal data. Runtime redaction is the backstop; this is
+    // the mechanical half of the review in docs/release/PII-LOGGING-REVIEW.md.
+    command: process.execPath,
+    args: ['scripts/check-log-pii.mjs'],
+    why: 'a log call references personal data',
+  },
+  {
     name: 'domain unit tests (vitest)',
     // CI-05: money rounding and allocation, business-date math, GST bands,
     // stay pricing, rate/occupancy/promotion policies, the reservation state
@@ -133,6 +142,8 @@ const checks = [
     'invoice-document',
     // NO-04: confirmation email wording, dates, money and HTML escaping.
     'booking-confirmation-email',
+    // SE-02: the log scanner catches what it should.
+    'log-pii-check',
   ].map((suite) => ({
     name: `unit tests (${suite})`,
     command: process.execPath,

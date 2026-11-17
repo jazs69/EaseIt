@@ -447,6 +447,8 @@ async function main() {
     // Required in production since GP-04 (2026-11-17).
     GST_API_SECRET: 's',
     GST_ENVIRONMENT: 'live',
+    // Required in production since OB-05 (2026-11-17).
+    METRICS_TOKEN: 'm'.repeat(32),
     AUTH_COOKIE_DOMAIN: '.alerts.invalid',
     WEB_ADMIN_URL: 'https://admin.alerts.invalid',
   };

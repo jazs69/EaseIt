@@ -33,6 +33,6 @@ const sinksProvider: Provider = {
 
 @Module({
   providers: [sinksProvider, AlertMonitorService],
-  exports: [AlertMonitorService],
+  exports: [AlertMonitorService, ALERT_SINKS],
 })
 export class AlertingModule {}

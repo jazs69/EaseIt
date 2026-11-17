@@ -215,6 +215,14 @@ export const envSchema = z
     RAZORPAY_BASE_URL: z.url().optional(),
     RAZORPAY_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(30_000).default(8_000),
     PAYMENT_LINK_EXPIRY_DAYS: z.coerce.number().int().min(1).max(90).default(7),
+
+    /**
+     * OB-05. Bearer token for `GET /api/v1/metrics`. Required in production;
+     * unset elsewhere leaves the endpoint open for local inspection.
+     */
+    METRICS_TOKEN: z.preprocess(emptyAsUndefined, z.string().min(24).optional()),
+    /** How often the unexpected-error digest is sent through the alert sinks. */
+    ERROR_REPORT_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
     /** Seconds before a provider lookup is abandoned. */
     GST_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(4_000),
 
@@ -367,6 +375,16 @@ export const envSchema = z
         message:
           'GST_ENVIRONMENT must be "live" in production: the provider test host ' +
           'returns canned taxpayers, which must never reach a tax invoice.',
+      });
+    }
+
+    if (env.METRICS_TOKEN === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['METRICS_TOKEN'],
+        message:
+          'METRICS_TOKEN is required in production: /api/v1/metrics exposes route and ' +
+          'error counts and must not be public. Generate one with `openssl rand -hex 32`.',
       });
     }
 

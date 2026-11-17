@@ -36,10 +36,12 @@
  * ===========================================================================
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { GstinLookup } from '@repo/types';
 
+import { MetricsService } from '../../common/observability/metrics.service.js';
+import { tracedFetch } from '../../common/observability/traced-fetch.js';
 import { ClockService } from '../platform/clock.service.js';
 import { CashfreeGstProvider } from './gst/cashfree.provider.js';
 import type { FetchLike, GstProvider, Taxpayer } from './gst/provider.js';
@@ -82,7 +84,11 @@ export class GstService {
   private readonly environment: GstEnvironment;
   private readonly live: ResilientGstLookup | null;
 
-  constructor(config: ConfigService, clock: ClockService) {
+  constructor(
+    config: ConfigService,
+    clock: ClockService,
+    @Optional() private readonly metrics: MetricsService | null = null,
+  ) {
     this.provider = config.get<Provider>('GST_PROVIDER', 'mock');
     this.environment = config.get<GstEnvironment>('GST_ENVIRONMENT', 'test');
     this.live =
@@ -214,7 +220,8 @@ export class GstService {
     const secret = config.get<string>('GST_API_SECRET') ?? '';
     const name = this.provider === 'cashfree' ? 'cashfree' : 'sandbox';
     const baseUrl = config.get<string>('GST_BASE_URL') ?? HOSTS[name][this.environment];
-    const fetchImpl: FetchLike = (input, init) => fetch(input, init);
+    // Child traceparent and call metrics on every provider request (OB-05).
+    const fetchImpl: FetchLike = tracedFetch(`gst_${name}`, this.metrics);
     this.logger.log(`GST lookups via ${name} (${this.environment}) at ${new URL(baseUrl).host}.`);
     return name === 'cashfree'
       ? new CashfreeGstProvider(fetchImpl, baseUrl, key, secret)

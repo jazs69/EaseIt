@@ -99,6 +99,8 @@ jobs:
             printf 'RAZORPAY_KEY_SECRET=suite-secret\n'
             printf 'RAZORPAY_WEBHOOK_SECRET=suite-webhook-secret\n'
             printf 'RAZORPAY_BASE_URL=http://127.0.0.1:4993\n'
+            # /metrics token for observability.test.mjs (a fixed test value).
+            printf 'METRICS_TOKEN=suite-metrics-token-0123456789\n'
           } > apps/api/.env
 
       - name: Build

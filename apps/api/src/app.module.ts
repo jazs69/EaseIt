@@ -22,6 +22,7 @@ import { RatesModule } from './modules/rates/rates.module.js';
 import { RbacModule } from './modules/rbac/rbac.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 import { AlertingModule } from './modules/platform/alerting/alerting.module.js';
+import { ObservabilityModule } from './common/observability/observability.module.js';
 import { AuditLogModule } from './modules/audit-log/audit-log.module.js';
 import { DirectBillingModule } from './modules/direct-billing/direct-billing.module.js';
 import { GuestsModule } from './modules/guests/guests.module.js';
@@ -68,6 +69,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     HousekeepingModule,
     FrontDeskModule,
     AlertingModule,
+    ObservabilityModule,
     AuditLogModule,
     DirectBillingModule,
     GuestsModule,

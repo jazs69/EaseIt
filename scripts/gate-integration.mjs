@@ -280,6 +280,11 @@ const suites = [
     script: 'test/integration/work-orders.test.mjs',
     why: 'out of order raises inventory_day.blocked per date via a MAINTENANCE block in one transaction; occupied room refused; resolve gives back from the business date (past nights kept); 8-way resolve moves the counter once; 8-way out-of-order gives one; 403/404; same-property trigger',
   },
+  {
+    name: 'observability (OB-05)',
+    script: 'test/integration/observability.test.mjs',
+    why: 'traceparent and x-request-id on every response, an incoming trace continued and a forged one replaced; /metrics refuses without METRICS_TOKEN and labels requests by route template, never ids',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

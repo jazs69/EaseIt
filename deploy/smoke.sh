@@ -59,6 +59,7 @@ GST_PROVIDER=sandbox
 GST_API_KEY=smoke
 GST_API_SECRET=smoke
 GST_ENVIRONMENT=live
+METRICS_TOKEN=$(openssl rand -hex 32)
 ALERT_EMAIL_TO=ops@smoke.invalid
 BACKUP_DIR=${backup_dir}
 EOF
