@@ -75,6 +75,6 @@ import { RoomTypeService } from './room-type.service.js';
     TokenService,
     SessionAuthGuard,
   ],
-  exports: [InventoryHorizonService],
+  exports: [InventoryHorizonService, RoomBlockService],
 })
 export class InventoryModule {}

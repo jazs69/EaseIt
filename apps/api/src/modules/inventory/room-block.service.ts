@@ -66,7 +66,17 @@ import {
   toInclusiveEnd,
   type BlockShape,
 } from './room-block.policy.js';
-import { RoomBlockRepository, type RoomBlockRow } from './room-block.repository.js';
+import { RoomBlockRepository, type BlockTx, type RoomBlockRow } from './room-block.repository.js';
+
+export type { BlockTx, RoomBlockRow };
+
+/** What `prepareCreate` checked, for `createWithin`. */
+export interface PreparedBlock {
+  nights: string[];
+  shape: BlockShape;
+  contribution: number;
+  throughExclusive: string;
+}
 
 const MAX_ATTEMPTS = 3;
 
@@ -127,7 +137,23 @@ export class RoomBlockService {
     request: CreateRoomBlockRequest,
   ): Promise<RoomBlockView> {
     const property = await this.authorise(userId, codeOrId, Permission.ROOM_BLOCKS_MANAGE);
+    const prepared = await this.prepareCreate(property.id, request);
+    const row = await this.inBlockTransaction(property.id, 'room block', (tx) =>
+      this.createWithin(tx, property.id, userId, request, prepared),
+    );
+    this.logger.log(
+      `Room block ${row.id} created for property ${property.id}: ` +
+        `${String(prepared.contribution)} unit(s) x ${String(prepared.nights.length)} night(s)`,
+    );
+    return toView(row);
+  }
 
+  /**
+   * Everything a block creation checks before any transaction: the range, the
+   * room type, and that a named room belongs to it. Public so a work order
+   * (MA-01) can create its block inside its own transaction.
+   */
+  async prepareCreate(propertyId: string, request: CreateRoomBlockRequest): Promise<PreparedBlock> {
     const range = evaluateRange(request.fromDate, request.throughDate);
     if (!range.ok) {
       const refusal = range.refusal;
@@ -145,13 +171,13 @@ export class RoomBlockService {
     }
     const nights = range.nights;
 
-    if (!(await this.repository.roomTypeExists(property.id, request.roomTypeId))) {
+    if (!(await this.repository.roomTypeExists(propertyId, request.roomTypeId))) {
       throw new TenantScopeViolationError('Room type');
     }
 
     let shape: BlockShape;
     if (request.roomId !== undefined) {
-      const room = await this.repository.findRoom(property.id, request.roomId);
+      const room = await this.repository.findRoom(propertyId, request.roomId);
       if (room === null) throw new TenantScopeViolationError('Room');
       if (room.roomTypeId !== request.roomTypeId) {
         throw new ValidationFailedError({
@@ -163,126 +189,130 @@ export class RoomBlockService {
       shape = { kind: 'CATEGORY', rooms: request.rooms ?? 1 };
     }
 
-    const contribution = contributionPerNight(shape);
-    const throughExclusive = toExclusiveEnd(request.throughDate);
+    return {
+      nights,
+      shape,
+      contribution: contributionPerNight(shape),
+      throughExclusive: toExclusiveEnd(request.throughDate),
+    };
+  }
 
-    const row = await this.withRetry('room block', () =>
-      this.repository.inTransaction(property.id, async (tx) => {
-        const locked = await this.repository.lockNights(
-          tx,
-          property.id,
-          request.roomTypeId,
-          nights,
-        );
+  /**
+   * The block itself, inside the caller's transaction: inventory rows locked
+   * in ascending order, real unsold capacity checked, a named room refused if
+   * already blocked or holding a stay, the counter raised, the row and its
+   * audit written.
+   */
+  async createWithin(
+    tx: BlockTx,
+    propertyId: string,
+    userId: string,
+    request: CreateRoomBlockRequest,
+    prepared: PreparedBlock,
+  ): Promise<RoomBlockRow> {
+    const { nights, shape, contribution, throughExclusive } = prepared;
+    const locked = await this.repository.lockNights(tx, propertyId, request.roomTypeId, nights);
 
-        if (locked.length !== nights.length) {
-          throw new InventoryNotConfiguredError({
-            nightsRequested: nights.length,
-            nightsConfigured: locked.length,
-            firstNight: nights[0],
-            lastNight: nights.at(-1),
-          });
-        }
+    if (locked.length !== nights.length) {
+      throw new InventoryNotConfiguredError({
+        nightsRequested: nights.length,
+        nightsConfigured: locked.length,
+        firstNight: nights[0],
+        lastNight: nights.at(-1),
+      });
+    }
 
-        // Real rooms only: overbooking allowance is deliberately excluded.
-        const short = locked.find(
-          (night) => night.physical - night.sold - night.blocked < contribution,
-        );
-        if (short !== undefined) {
-          throw new RoomUnavailableError({
-            reason: 'Not enough unsold rooms of that type to block on this night.',
-            stayDate: short.stayDate,
-            unsoldRooms: Math.max(0, short.physical - short.sold - short.blocked),
-            requested: contribution,
-          });
-        }
-
-        if (shape.kind === 'SPECIFIC_ROOM') {
-          const alreadyBlocked = await this.repository.findOverlappingRoomBlocks(
-            tx,
-            property.id,
-            shape.roomId,
-            request.fromDate,
-            throughExclusive,
-          );
-          if (alreadyBlocked > 0) {
-            throw new RoomUnavailableError({
-              reason: 'That room is already blocked on one of these nights.',
-            });
-          }
-
-          const stays = await this.repository.findOverlappingStays(
-            tx,
-            property.id,
-            shape.roomId,
-            request.fromDate,
-            throughExclusive,
-          );
-          const first = stays[0];
-          if (first !== undefined) {
-            throw new RoomUnavailableError({
-              reason:
-                'That room has a stay on these nights. Move the guest to another room ' +
-                'before blocking it.',
-              conflictsWith: first.confirmationCode,
-            });
-          }
-        }
-
-        const touched = await this.repository.adjustBlocked(
-          tx,
-          property.id,
-          request.roomTypeId,
-          nights,
-          contribution,
-        );
-        if (touched !== nights.length) {
-          // Impossible under the lock; refusing keeps the counters honest.
-          throw new ValidationFailedError({
-            inventory: `Expected to update ${String(nights.length)} night(s), updated ${String(touched)}.`,
-          });
-        }
-
-        const created = await this.repository.insertBlock(tx, {
-          propertyId: property.id,
-          roomTypeId: request.roomTypeId,
-          roomId: shape.kind === 'SPECIFIC_ROOM' ? shape.roomId : null,
-          rooms: contribution,
-          fromDate: request.fromDate,
-          throughExclusive,
-          reason: request.reason,
-          note: request.note ?? null,
-          createdByUserId: userId,
-        });
-
-        // Same transaction as the counter it moved (section 3.4).
-        await this.repository.audit(tx, {
-          propertyId: property.id,
-          actorUserId: userId,
-          event: 'ROOM_BLOCK_CREATED',
-          blockId: created.id,
-          before: null,
-          after: {
-            roomTypeId: created.roomTypeId,
-            roomId: created.roomId,
-            rooms: created.rooms,
-            fromDate: created.fromDate,
-            throughDate: request.throughDate,
-            nightCount: nights.length,
-            reason: created.reason,
-            blockedDelta: contribution,
-          },
-        });
-
-        return created;
-      }),
+    // Real rooms only: overbooking allowance is deliberately excluded.
+    const short = locked.find(
+      (night) => night.physical - night.sold - night.blocked < contribution,
     );
+    if (short !== undefined) {
+      throw new RoomUnavailableError({
+        reason: 'Not enough unsold rooms of that type to block on this night.',
+        stayDate: short.stayDate,
+        unsoldRooms: Math.max(0, short.physical - short.sold - short.blocked),
+        requested: contribution,
+      });
+    }
 
-    this.logger.log(
-      `Room block ${row.id} created for property ${property.id}: ` +
-        `${String(contribution)} unit(s) x ${String(nights.length)} night(s)`,
+    if (shape.kind === 'SPECIFIC_ROOM') {
+      const alreadyBlocked = await this.repository.findOverlappingRoomBlocks(
+        tx,
+        propertyId,
+        shape.roomId,
+        request.fromDate,
+        throughExclusive,
+      );
+      if (alreadyBlocked > 0) {
+        throw new RoomUnavailableError({
+          reason: 'That room is already blocked on one of these nights.',
+        });
+      }
+
+      const stays = await this.repository.findOverlappingStays(
+        tx,
+        propertyId,
+        shape.roomId,
+        request.fromDate,
+        throughExclusive,
+      );
+      const first = stays[0];
+      if (first !== undefined) {
+        throw new RoomUnavailableError({
+          reason:
+            'That room has a stay on these nights. Move the guest to another room ' +
+            'before blocking it.',
+          conflictsWith: first.confirmationCode,
+        });
+      }
+    }
+
+    const touched = await this.repository.adjustBlocked(
+      tx,
+      propertyId,
+      request.roomTypeId,
+      nights,
+      contribution,
     );
-    return toView(row);
+    if (touched !== nights.length) {
+      // Impossible under the lock; refusing keeps the counters honest.
+      throw new ValidationFailedError({
+        inventory: `Expected to update ${String(nights.length)} night(s), updated ${String(touched)}.`,
+      });
+    }
+
+    const created = await this.repository.insertBlock(tx, {
+      propertyId,
+      roomTypeId: request.roomTypeId,
+      roomId: shape.kind === 'SPECIFIC_ROOM' ? shape.roomId : null,
+      rooms: contribution,
+      fromDate: request.fromDate,
+      throughExclusive,
+      reason: request.reason,
+      note: request.note ?? null,
+      createdByUserId: userId,
+    });
+
+    // Same transaction as the counter it moved (section 3.4).
+    await this.repository.audit(tx, {
+      propertyId,
+      actorUserId: userId,
+      event: 'ROOM_BLOCK_CREATED',
+      blockId: created.id,
+      before: null,
+      after: {
+        roomTypeId: created.roomTypeId,
+        roomId: created.roomId,
+        rooms: created.rooms,
+        fromDate: created.fromDate,
+        throughDate: request.throughDate,
+        nightCount: nights.length,
+        reason: created.reason,
+        blockedDelta: contribution,
+      },
+    });
+
+    return created;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -297,83 +327,165 @@ export class RoomBlockService {
     const property = await this.authorise(userId, codeOrId, Permission.ROOM_BLOCKS_MANAGE);
     if (!UUID.test(blockId)) throw new TenantScopeViolationError('Room block');
 
-    const outcome = await this.withRetry('room block release', () =>
-      this.repository.inTransaction(property.id, async (tx) => {
-        // Block row FIRST, then inventory (section 3.1.1).
-        const lockedBlock = await this.repository.lockBlock(tx, property.id, blockId);
-        if (lockedBlock === null) throw new TenantScopeViolationError('Room block');
-
-        const block = await this.repository.readLockedBlock(tx, property.id, blockId);
-        if (lockedBlock.status === 'RELEASED') {
-          return { row: block, released: false };
-        }
-
-        const nights = enumerateNights(block.fromDate, toInclusiveEnd(block.throughDateExclusive));
-        const locked = await this.repository.lockNights(tx, property.id, block.roomTypeId, nights);
-
-        if (locked.length !== nights.length) {
-          throw new ValidationFailedError({
-            inventory:
-              'Inventory is missing for some nights of this block, so it cannot be released. ' +
-              `Expected ${String(nights.length)} row(s), found ${String(locked.length)}.`,
-          });
-        }
-
-        const short = locked.find((night) => night.blocked < block.rooms);
-        if (short !== undefined) {
-          throw new ValidationFailedError({
-            inventory:
-              `The blocked counter for ${short.stayDate} is ${String(short.blocked)}, ` +
-              `less than the ${String(block.rooms)} unit(s) this block holds. The counters ` +
-              'and the blocks disagree and need reconciling before this block can be released.',
-          });
-        }
-
-        const touched = await this.repository.adjustBlocked(
-          tx,
-          property.id,
-          block.roomTypeId,
-          nights,
-          -block.rooms,
-        );
-        if (touched !== nights.length) {
-          throw new ValidationFailedError({
-            inventory: `Expected to update ${String(nights.length)} night(s), updated ${String(touched)}.`,
-          });
-        }
-
-        const released = await this.repository.markReleased(
-          tx,
-          property.id,
-          blockId,
-          userId,
-          this.clock.now(),
-        );
-
-        await this.repository.audit(tx, {
-          propertyId: property.id,
-          actorUserId: userId,
-          event: 'ROOM_BLOCK_RELEASED',
-          blockId,
-          before: { status: 'ACTIVE' },
-          after: {
-            status: 'RELEASED',
-            roomTypeId: block.roomTypeId,
-            roomId: block.roomId,
-            fromDate: block.fromDate,
-            nightCount: nights.length,
-            blockedDelta: -block.rooms,
-          },
-        });
-
-        return { row: released, released: true };
-      }),
+    const outcome = await this.inBlockTransaction(property.id, 'room block release', (tx) =>
+      this.releaseWithin(tx, property.id, userId, blockId),
     );
 
     if (outcome.released) {
       this.logger.log(`Room block ${blockId} released for property ${property.id}`);
     }
     return toView(outcome.row);
+  }
+
+  /** The whole release inside the caller's transaction; block row first, then inventory. */
+  async releaseWithin(
+    tx: BlockTx,
+    propertyId: string,
+    userId: string,
+    blockId: string,
+  ): Promise<{ row: RoomBlockRow; released: boolean }> {
+    // Block row FIRST, then inventory (section 3.1.1).
+    const lockedBlock = await this.repository.lockBlock(tx, propertyId, blockId);
+    if (lockedBlock === null) throw new TenantScopeViolationError('Room block');
+
+    const block = await this.repository.readLockedBlock(tx, propertyId, blockId);
+    if (lockedBlock.status === 'RELEASED') {
+      return { row: block, released: false };
+    }
+
+    const nights = enumerateNights(block.fromDate, toInclusiveEnd(block.throughDateExclusive));
+    await this.giveBack(tx, propertyId, block, nights);
+
+    const released = await this.repository.markReleased(
+      tx,
+      propertyId,
+      blockId,
+      userId,
+      this.clock.now(),
+    );
+
+    await this.repository.audit(tx, {
+      propertyId,
+      actorUserId: userId,
+      event: 'ROOM_BLOCK_RELEASED',
+      blockId,
+      before: { status: 'ACTIVE' },
+      after: {
+        status: 'RELEASED',
+        roomTypeId: block.roomTypeId,
+        roomId: block.roomId,
+        fromDate: block.fromDate,
+        nightCount: nights.length,
+        blockedDelta: -block.rooms,
+      },
+    });
+
+    return { row: released, released: true };
+  }
+
+  /**
+   * Gives back the nights from `fromDate` onward and keeps the earlier ones
+   * (MA-01: a repaired room is sellable again from the business date, while
+   * the nights it really was out of order stay blocked, so occupancy history
+   * is not rewritten).
+   *
+   * - `fromDate` on or before the block's first night: the whole block is
+   *   released, exactly as `releaseWithin`.
+   * - `fromDate` after its last night, or a block already released: nothing
+   *   moves.
+   * - Otherwise the block is shortened to end at `fromDate` and only the
+   *   nights it no longer covers are given back, under the same checks as a
+   *   release (block row first, then inventory in ascending order; refused
+   *   whole if any counter disagrees).
+   */
+  async restoreFromWithin(
+    tx: BlockTx,
+    propertyId: string,
+    userId: string,
+    blockId: string,
+    fromDate: string,
+  ): Promise<{ row: RoomBlockRow; nightsReleased: number }> {
+    const lockedBlock = await this.repository.lockBlock(tx, propertyId, blockId);
+    if (lockedBlock === null) throw new TenantScopeViolationError('Room block');
+    const block = await this.repository.readLockedBlock(tx, propertyId, blockId);
+    if (lockedBlock.status === 'RELEASED') return { row: block, nightsReleased: 0 };
+
+    if (fromDate <= block.fromDate) {
+      const whole = await this.releaseWithin(tx, propertyId, userId, blockId);
+      const nights = enumerateNights(block.fromDate, toInclusiveEnd(block.throughDateExclusive));
+      return { row: whole.row, nightsReleased: nights.length };
+    }
+    if (fromDate >= block.throughDateExclusive) return { row: block, nightsReleased: 0 };
+
+    const nights = enumerateNights(fromDate, toInclusiveEnd(block.throughDateExclusive));
+    await this.giveBack(tx, propertyId, block, nights);
+    const shortened = await this.repository.shortenBlock(tx, propertyId, blockId, fromDate);
+
+    await this.repository.audit(tx, {
+      propertyId,
+      actorUserId: userId,
+      event: 'ROOM_BLOCK_SHORTENED',
+      blockId,
+      before: { throughDate: toInclusiveEnd(block.throughDateExclusive) },
+      after: {
+        throughDate: toInclusiveEnd(fromDate),
+        roomTypeId: block.roomTypeId,
+        roomId: block.roomId,
+        nightsReleased: nights.length,
+        blockedDelta: -block.rooms,
+      },
+    });
+    return { row: shortened, nightsReleased: nights.length };
+  }
+
+  /** The block-specific transaction: tenant setting, bounded lock wait, bounded retry. */
+  inBlockTransaction<T>(
+    propertyId: string,
+    operation: string,
+    work: (tx: BlockTx) => Promise<T>,
+  ): Promise<T> {
+    return this.withRetry(operation, () => this.repository.inTransaction(propertyId, work));
+  }
+
+  /** Decrements `blocked` by the block's units on `nights`, refusing whole on any mismatch. */
+  private async giveBack(
+    tx: BlockTx,
+    propertyId: string,
+    block: RoomBlockRow,
+    nights: string[],
+  ): Promise<void> {
+    const locked = await this.repository.lockNights(tx, propertyId, block.roomTypeId, nights);
+
+    if (locked.length !== nights.length) {
+      throw new ValidationFailedError({
+        inventory:
+          'Inventory is missing for some nights of this block, so it cannot be released. ' +
+          `Expected ${String(nights.length)} row(s), found ${String(locked.length)}.`,
+      });
+    }
+
+    const short = locked.find((night) => night.blocked < block.rooms);
+    if (short !== undefined) {
+      throw new ValidationFailedError({
+        inventory:
+          `The blocked counter for ${short.stayDate} is ${String(short.blocked)}, ` +
+          `less than the ${String(block.rooms)} unit(s) this block holds. The counters ` +
+          'and the blocks disagree and need reconciling before this block can be released.',
+      });
+    }
+
+    const touched = await this.repository.adjustBlocked(
+      tx,
+      propertyId,
+      block.roomTypeId,
+      nights,
+      -block.rooms,
+    );
+    if (touched !== nights.length) {
+      throw new ValidationFailedError({
+        inventory: `Expected to update ${String(nights.length)} night(s), updated ${String(touched)}.`,
+      });
+    }
   }
 
   /* ---------------------------------------------------------------------- */
@@ -436,7 +548,7 @@ export class RoomBlockService {
 }
 
 /** Persistence row to wire shape: inclusive end date, no `propertyId`. */
-function toView(row: RoomBlockRow): RoomBlockView {
+export function toView(row: RoomBlockRow): RoomBlockView {
   const throughInclusive = toInclusiveEnd(row.throughDateExclusive);
   return {
     id: row.id,

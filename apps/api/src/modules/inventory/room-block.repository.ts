@@ -30,6 +30,9 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 
 type Tx = Prisma.TransactionClient;
 
+/** The transaction a block operation runs in, for callers composing one (MA-01). */
+export type BlockTx = Tx;
+
 /** Generous for at most 730 rows; the lock wait itself is bounded separately. */
 const TRANSACTION_TIMEOUT_MS = 10_000;
 const TRANSACTION_MAX_WAIT_MS = 5_000;
@@ -384,6 +387,26 @@ export class RoomBlockRepository {
       select: ROW_SELECT,
     });
     return toRow(row);
+  }
+
+  /**
+   * Ends an active block at `throughExclusive` (earlier than its current end,
+   * later than its start). Only under the block's row lock.
+   */
+  async shortenBlock(
+    tx: Tx,
+    propertyId: string,
+    blockId: string,
+    throughExclusive: string,
+  ): Promise<RoomBlockRow> {
+    const result = await tx.roomBlock.updateMany({
+      where: { id: blockId, propertyId, status: 'ACTIVE' },
+      data: { throughDate: utcMidnight(throughExclusive) },
+    });
+    if (result.count !== 1) {
+      throw new Error('Room block changed under its own row lock.');
+    }
+    return this.readLockedBlock(tx, propertyId, blockId);
   }
 
   async markReleased(

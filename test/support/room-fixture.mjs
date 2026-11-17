@@ -72,7 +72,14 @@ export function requireEnvironment(suiteName) {
 }
 
 /** The role templates a suite may ask for, by `RoleKey`. */
-const ROLE_KEYS = ['PROPERTY_ADMIN', 'FRONT_DESK', 'HOUSEKEEPING', 'REVENUE_MANAGER', 'NIGHT_AUDITOR', 'POS_STAFF'];
+const ROLE_KEYS = [
+  'PROPERTY_ADMIN',
+  'FRONT_DESK',
+  'HOUSEKEEPING',
+  'REVENUE_MANAGER',
+  'NIGHT_AUDITOR',
+  'POS_STAFF',
+];
 
 export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, prisma }) {
   if (!prefix || !slugPrefix || !emailDomain) {
@@ -284,6 +291,8 @@ export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, pris
         await tx.reservationRoom.deleteMany({ where: scope });
         await tx.reservation.deleteMany({ where: scope });
         // Blocks reference rooms and room types with RESTRICT, so they go first.
+        // Work orders reference rooms (RESTRICT) and their blocks (MA-01).
+        await tx.workOrder.deleteMany({ where: scope });
         await tx.roomBlock.deleteMany({ where: scope });
         // Promotions and rate plans reference room types (and each other) with
         // RESTRICT; plans cascade to their assignments, days, rules and prices.

@@ -9,6 +9,13 @@
  */
 
 import {
+  workOrderListSchema,
+  workOrderSchema,
+  type AssignWorkOrderCommand,
+  type CreateWorkOrderCommand,
+  type OutOfOrderRange,
+  type WorkOrder,
+  type WorkOrderList,
   paymentGatewayStateSchema,
   paymentLinkListSchema,
   paymentLinkSchema,
@@ -2179,3 +2186,50 @@ export function cancelPaymentLink(hotelId: string, linkId: string): Promise<Paym
     { method: 'POST' },
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Maintenance work orders (MA-01)                                           */
+/* -------------------------------------------------------------------------- */
+
+export function fetchWorkOrders(
+  hotelId: string,
+  status: string = 'active',
+  options: { cookieHeader?: string } = {},
+): Promise<WorkOrderList> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/work-orders?status=${encodeURIComponent(status)}`,
+    workOrderListSchema,
+    { ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }) },
+  );
+}
+
+export function createWorkOrder(hotelId: string, body: CreateWorkOrderCommand): Promise<WorkOrder> {
+  return apiFetch(`${propertyPath(hotelId)}/work-orders`, workOrderSchema, {
+    method: 'POST',
+    body,
+  });
+}
+
+function workOrderAction(
+  hotelId: string,
+  orderId: string,
+  action: 'out-of-order' | 'assign' | 'start' | 'resolve' | 'cancel',
+  body: unknown = {},
+): Promise<WorkOrder> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/work-orders/${encodeURIComponent(orderId)}/${action}`,
+    workOrderSchema,
+    { method: 'POST', body },
+  );
+}
+
+export const takeRoomOutOfOrder = (hotelId: string, orderId: string, range: OutOfOrderRange) =>
+  workOrderAction(hotelId, orderId, 'out-of-order', range);
+export const assignWorkOrder = (hotelId: string, orderId: string, body: AssignWorkOrderCommand) =>
+  workOrderAction(hotelId, orderId, 'assign', body);
+export const startWorkOrder = (hotelId: string, orderId: string) =>
+  workOrderAction(hotelId, orderId, 'start');
+export const resolveWorkOrder = (hotelId: string, orderId: string, note: string | null) =>
+  workOrderAction(hotelId, orderId, 'resolve', { note });
+export const cancelWorkOrder = (hotelId: string, orderId: string, note: string | null) =>
+  workOrderAction(hotelId, orderId, 'cancel', { note });

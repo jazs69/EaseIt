@@ -45,6 +45,7 @@ import {
   ShoppingBag,
   UsersRound,
   Wallet,
+  Wrench,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
@@ -65,6 +66,13 @@ interface AppItem {
 const APPS: readonly AppItem[] = [
   { id: 'reports', name: 'Reports', icon: FileText, href: '/reports/property-reports' },
   { id: 'shops', name: 'Shops', icon: ShoppingBag, isLocked: true },
+  {
+    id: 'maintenance',
+    name: 'Maintenance',
+    icon: Wrench,
+    href: '/maintenance',
+    requiredPermission: Permission.HOUSEKEEPING_READ,
+  },
   {
     id: 'guests',
     name: 'Guest profiles',

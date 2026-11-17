@@ -370,6 +370,7 @@ model Property {
   pricedNights      ReservationNight[]
   gatewayConfigs    PaymentGatewayConfig[]
   paymentLinks      PaymentLink[]
+  workOrders        WorkOrder[]
   companies         Company[]
   folios            Folio[]
   invoices          Invoice[]
@@ -745,6 +746,8 @@ model Room {
   roomBlocks        RoomBlock[]
   housekeepingTasks HousekeepingTask[]
 
+  workOrders WorkOrder[]
+
   @@unique([propertyId, number], name: "room_unique_number_per_property")
   @@index([propertyId, roomTypeId])
   @@index([propertyId, status])
@@ -864,6 +867,9 @@ model RoomBlock {
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  /// The work order that took the room out of order (MA-01), if any.
+  workOrders WorkOrder[]
 
   @@index([propertyId, fromDate])
   @@index([propertyId, roomId, fromDate])
@@ -3298,4 +3304,66 @@ model PaymentLink {
   @@index([propertyId, createdAt])
   @@index([propertyId, folioId])
   @@map("payment_link")
+}
+
+enum WorkOrderPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum WorkOrderStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+/// A maintenance work order on one room (MA-01).
+///
+/// ===========================================================================
+/// A fault report with a lifecycle (OPEN, IN_PROGRESS, then RESOLVED or
+/// CANCELLED). It may take the room out of order: that is a `room_block`
+/// (reason MAINTENANCE) created in the SAME transaction as the order and
+/// linked here, so inventory follows through the block code's own counter
+/// rules (`inventory_day.blocked`, the oversell CHECK, the refusal to block a
+/// room holding a stay). Resolving or cancelling gives the room back from the
+/// business date: the nights it really was out of order stay blocked, so
+/// occupancy history is not rewritten.
+///
+/// Lock order on every write: work order row, then block row, then inventory.
+/// ===========================================================================
+model WorkOrder {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  roomId String @db.Uuid
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  title       String
+  description String?
+  priority    WorkOrderPriority @default(NORMAL)
+  status      WorkOrderStatus   @default(OPEN)
+
+  reportedById String  @db.Uuid
+  assignedToId String? @db.Uuid
+
+  /// The block that holds the room out of order, while one does.
+  roomBlockId String?    @db.Uuid
+  roomBlock   RoomBlock? @relation(fields: [roomBlockId], references: [id], onDelete: SetNull)
+
+  resolutionNote String?
+  closedById     String?   @db.Uuid
+  closedAt       DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, roomBlockId], name: "work_order_unique_block")
+  @@index([propertyId, status, createdAt])
+  @@index([propertyId, roomId, status])
+  @@map("work_order")
 }

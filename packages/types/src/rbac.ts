@@ -104,6 +104,12 @@ export const Permission = {
   HOUSEKEEPING_UPDATE_STATUS: 'housekeeping:update_status',
   /** HK-03/HK-04: create, assign and cancel tasks, record inspections, mark a room INSPECTED. */
   HOUSEKEEPING_MANAGE: 'housekeeping:manage',
+  /**
+   * MA-01: assign, start, resolve and cancel work orders. Reporting a fault
+   * needs only `housekeeping:read`; taking the room out of order also needs
+   * `room_blocks:manage`, because it withholds inventory.
+   */
+  MAINTENANCE_MANAGE: 'maintenance:manage',
 
   /* -- Inventory configuration -------------------------------------------- */
   /**
@@ -277,6 +283,15 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
     key: P.HOUSEKEEPING_MANAGE,
     label: 'Supervise housekeeping',
     description: 'Create and assign tasks, record inspections and mark rooms inspected.',
+    category: C.HOUSEKEEPING,
+    sensitive: false,
+  },
+
+  {
+    key: P.MAINTENANCE_MANAGE,
+    label: 'Manage maintenance',
+    description:
+      'Assign, start, resolve and cancel work orders, and take a room out of order for one.',
     category: C.HOUSEKEEPING,
     sensitive: false,
   },

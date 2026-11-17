@@ -275,6 +275,11 @@ const suites = [
     script: 'test/integration/payment-links.test.mjs',
     why: 'Razorpay stand-in: per-property switch, one link per key, signed webhook only, a captured payment posted once under repeated webhooks and 6 racing checks, captured-after-close flagged not posted, cancel, ledger, 403/404, cross-property webhook refused; API needs the RAZORPAY_* test values',
   },
+  {
+    name: 'work orders (MA-01)',
+    script: 'test/integration/work-orders.test.mjs',
+    why: 'out of order raises inventory_day.blocked per date via a MAINTENANCE block in one transaction; occupied room refused; resolve gives back from the business date (past nights kept); 8-way resolve moves the counter once; 8-way out-of-order gives one; 403/404; same-property trigger',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

@@ -176,14 +176,7 @@ export type CheckInPreflight = z.infer<typeof checkInPreflightSchema>;
 
 export const folioLineSchema = z.object({
   id: z.uuid(),
-  kind: z.enum([
-    'ROOM_CHARGE',
-    'TAX',
-    'SERVICE_CHARGE',
-    'PAYMENT',
-    'REFUND',
-    'ADJUSTMENT',
-  ]),
+  kind: z.enum(['ROOM_CHARGE', 'TAX', 'SERVICE_CHARGE', 'PAYMENT', 'REFUND', 'ADJUSTMENT']),
   description: z.string(),
   /** Signed minor units: charges positive, payments negative. */
   amountMinor: z.number().int(),

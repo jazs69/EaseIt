@@ -157,7 +157,9 @@ export const forgotPasswordResultSchema = z.object({ accepted: z.literal(true) }
 export type ForgotPasswordResult = z.infer<typeof forgotPasswordResultSchema>;
 
 /** The emailed token: 43 URL-safe characters (32 random bytes). */
-export const accountTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'This link is not valid.');
+export const accountTokenSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{43}$/, 'This link is not valid.');
 
 /** Set a new password with a reset link, or a first password with an invitation link. */
 export const setPasswordWithTokenSchema = z.object({

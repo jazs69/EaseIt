@@ -26,6 +26,7 @@ import { AuditLogModule } from './modules/audit-log/audit-log.module.js';
 import { DirectBillingModule } from './modules/direct-billing/direct-billing.module.js';
 import { GuestsModule } from './modules/guests/guests.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 /**
@@ -71,6 +72,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     DirectBillingModule,
     GuestsModule,
     PaymentsModule,
+    MaintenanceModule,
   ],
 })
 export class AppModule {}
