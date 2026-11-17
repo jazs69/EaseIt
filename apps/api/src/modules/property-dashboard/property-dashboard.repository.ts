@@ -14,6 +14,7 @@ import { ReservationStatus, type MealPlan } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
+import { findClosedDays, type SnapshotRow } from '../../common/reporting/daily-snapshots.js';
 
 /** Statuses that count as "currently in the hotel". */
 const IN_HOUSE_STATUSES = [ReservationStatus.CHECKED_IN] as const;
@@ -168,30 +169,32 @@ export class PropertyDashboardRepository {
       onHoldCount,
       noShowsCount,
       magicLinkCount,
-    ] = await client.$transaction(async (tx) => Promise.all([
-      tx.reservation.count({
-        where: { propertyId, createdAt: { gte: dayStart, lt: dayEnd } },
-      }),
-      tx.reservation.count({
-        where: { propertyId, status: { in: [...IN_HOUSE_STATUSES] } },
-      }),
-      tx.reservation.count({
-        where: { propertyId, arrivalDate: targetDate, status: { in: [...LIVE_STATUSES] } },
-      }),
-      tx.reservation.count({
-        where: { propertyId, departureDate: targetDate, status: { in: [...LIVE_STATUSES] } },
-      }),
-      tx.reservation.count({
-        where: { propertyId, status: ReservationStatus.CANCELLED },
-      }),
-      tx.reservation.count({
-        where: { propertyId, status: ReservationStatus.ON_HOLD },
-      }),
-      tx.reservation.count({
-        where: { propertyId, status: ReservationStatus.NO_SHOW },
-      }),
-      tx.reservation.count({ where: { propertyId, isMagicLinkActive: true } }),
-    ]));
+    ] = await client.$transaction(async (tx) =>
+      Promise.all([
+        tx.reservation.count({
+          where: { propertyId, createdAt: { gte: dayStart, lt: dayEnd } },
+        }),
+        tx.reservation.count({
+          where: { propertyId, status: { in: [...IN_HOUSE_STATUSES] } },
+        }),
+        tx.reservation.count({
+          where: { propertyId, arrivalDate: targetDate, status: { in: [...LIVE_STATUSES] } },
+        }),
+        tx.reservation.count({
+          where: { propertyId, departureDate: targetDate, status: { in: [...LIVE_STATUSES] } },
+        }),
+        tx.reservation.count({
+          where: { propertyId, status: ReservationStatus.CANCELLED },
+        }),
+        tx.reservation.count({
+          where: { propertyId, status: ReservationStatus.ON_HOLD },
+        }),
+        tx.reservation.count({
+          where: { propertyId, status: ReservationStatus.NO_SHOW },
+        }),
+        tx.reservation.count({ where: { propertyId, isMagicLinkActive: true } }),
+      ]),
+    );
 
     return {
       newBookingsCount,
@@ -311,5 +314,11 @@ export class PropertyDashboardRepository {
       where: { propertyId },
       select: { provider: true, status: true, onboardingDueDate: true },
     });
+  }
+
+  /** The night audit's snapshot of one business date, or null (GR-02). */
+  async findClosedDay(propertyId: string, businessDate: Date): Promise<SnapshotRow | null> {
+    const rows = await findClosedDays(this.prisma.client, [propertyId], businessDate, businessDate);
+    return rows[0] ?? null;
   }
 }

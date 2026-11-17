@@ -21,14 +21,13 @@
  */
 
 import { cn } from '@repo/ui';
-import {
-  DASHBOARD_METRIC_LABELS,
-  type DashboardMetric,
-  type PropertyDashboard,
-} from '@repo/types';
+import { DASHBOARD_METRIC_LABELS, type DashboardMetric, type PropertyDashboard } from '@repo/types';
 import { CalendarDays, Download, Funnel, Loader2, Search } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMemo, useState, useTransition } from 'react';
+
+import { formatMoney } from '@/lib/money';
 
 import { ReservationCard } from './reservation-card';
 
@@ -228,6 +227,53 @@ export function PropertyDashboardView({ dashboard, localHour }: PropertyDashboar
           </span>
         </div>
       </header>
+
+      {/* The last closed day, as the night audit froze it (GR-02). Present
+          only for a caller who may read financial reports, and only when the
+          audit closed that day. */}
+      {dashboard.lastClosedDay === null ? null : (
+        <section
+          aria-label="Last closed day"
+          className="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-xl border border-white/10 bg-zinc-900/40 px-4 py-2.5 text-xs text-zinc-400"
+        >
+          <span className="font-medium text-zinc-300">
+            Closed {formatLongDate(dashboard.lastClosedDay.businessDate)}
+          </span>
+          <span className="tabular">
+            Occupancy{' '}
+            <span className="text-white">
+              {(dashboard.lastClosedDay.occupancyBp / 100).toFixed(1)}%
+            </span>{' '}
+            ({dashboard.lastClosedDay.roomsSold}/{dashboard.lastClosedDay.roomsAvailable})
+          </span>
+          <span className="tabular">
+            ADR{' '}
+            <span className="text-white">
+              {dashboard.lastClosedDay.adrMinor === null
+                ? '—'
+                : formatMoney(dashboard.lastClosedDay.adrMinor, dashboard.property.currency)}
+            </span>
+          </span>
+          <span className="tabular">
+            RevPAR{' '}
+            <span className="text-white">
+              {formatMoney(dashboard.lastClosedDay.revparMinor, dashboard.property.currency)}
+            </span>
+          </span>
+          <span className="tabular">
+            Room revenue{' '}
+            <span className="text-white">
+              {formatMoney(dashboard.lastClosedDay.roomRevenueMinor, dashboard.property.currency)}
+            </span>
+          </span>
+          <Link
+            href={`/revenue?hotelId=${encodeURIComponent(dashboard.property.code)}`}
+            className="ml-auto text-blue-300 hover:text-blue-200"
+          >
+            Revenue →
+          </Link>
+        </section>
+      )}
 
       {/* KPI tabs */}
       <div

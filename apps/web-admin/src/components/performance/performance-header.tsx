@@ -283,12 +283,23 @@ export function PerformanceHeader({ performance, allProperties }: PerformanceHea
         <p className="flex items-start gap-2 rounded-lg border border-amber-400/25 bg-amber-500/[0.07] px-3 py-2 text-xs text-amber-200/90">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
           <span>
-            These properties do not share one currency. Revenue, ADR and RevPAR below are
-            added as raw amounts and labelled {performance.currency} — they are not
-            converted. Filter to a single currency for a figure you can trust.
+            These properties do not share one currency. Revenue, ADR and RevPAR below are added as
+            raw amounts and labelled {performance.currency} — they are not converted. Filter to a
+            single currency for a figure you can trust.
           </span>
         </p>
       ) : null}
+
+      {/* Where the period's figures came from (RP-08): closed property-days
+          are the night audit's snapshots; the rest are live and can change. */}
+      <p className="text-[11px] text-zinc-500">
+        {performance.basis.closedPropertyDays} property-day(s) read from closed night-audit
+        snapshots
+        {performance.basis.livePropertyDays === 0
+          ? '.'
+          : `; ${String(performance.basis.livePropertyDays)} not yet closed, computed live from the booking calendar and subject to change.`}{' '}
+        Channel mix is always live.
+      </p>
     </header>
   );
 }

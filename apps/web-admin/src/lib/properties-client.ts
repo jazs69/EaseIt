@@ -9,6 +9,8 @@
  */
 
 import {
+  revenueOverviewSchema,
+  type RevenueOverview,
   rateRestrictionsResponseSchema,
   type RateRestrictionsResponse,
   type SetRateRestrictionsRequest,
@@ -1938,4 +1940,28 @@ export function setRateRestrictions(
     method: 'PUT',
     body,
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Revenue (RP-10)                                                           */
+/* -------------------------------------------------------------------------- */
+
+/** Closed days of one property, read from the night-audit snapshots. */
+export function fetchRevenue(
+  hotelId: string,
+  window: { from?: string; to?: string } = {},
+  options: { cookieHeader?: string; signal?: AbortSignal } = {},
+): Promise<RevenueOverview> {
+  const params = new URLSearchParams();
+  if (window.from !== undefined && window.from !== '') params.set('from', window.from);
+  if (window.to !== undefined && window.to !== '') params.set('to', window.to);
+  const query = params.size === 0 ? '' : `?${params.toString()}`;
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/revenue${query}`,
+    revenueOverviewSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
 }

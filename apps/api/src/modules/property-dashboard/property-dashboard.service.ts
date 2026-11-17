@@ -11,6 +11,7 @@ import { Injectable } from '@nestjs/common';
 import {
   Permission,
   ReservationStatus,
+  addDays,
   currentDateInTimeZone,
   type AvailabilityBreakdown,
   type BusinessDate,
@@ -25,7 +26,9 @@ import {
 } from '@repo/types';
 
 import { TenantScopeViolationError } from '../../common/errors/domain-error.js';
+import { grantsCarryPermission } from '../../common/property-scope/permission-policy.js';
 import { requirePermissionFromGrants } from '../../common/property-scope/require-permission.js';
+import { toClosedDay } from '../../common/reporting/daily-snapshots.js';
 import { ClockService } from '../platform/clock.service.js';
 import {
   PropertyDashboardRepository,
@@ -44,10 +47,7 @@ function toUtcMidnight(date: string): Date {
 }
 
 function nightsBetween(arrival: Date, departure: Date): number {
-  return Math.max(
-    1,
-    Math.round((departure.getTime() - arrival.getTime()) / 86_400_000),
-  );
+  return Math.max(1, Math.round((departure.getTime() - arrival.getTime()) / 86_400_000));
 }
 
 @Injectable()
@@ -108,11 +108,23 @@ export class PropertyDashboardService {
     const targetDate = query.date ?? propertyToday;
     const targetDateValue = toUtcMidnight(targetDate);
 
-    const [counts, reservationRows, inventoryRows, gateways] = await Promise.all([
+    /**
+     * The last closed day, from its immutable snapshot (GR-02): the business
+     * date minus one, the newest day whose books the night audit closed. Only
+     * for a caller who may read financial reports; a front-desk grant sees
+     * the operational board without the revenue figures.
+     */
+    const businessDate = toBusinessDate(property.businessDate);
+    const showClosedDay = grantsCarryPermission(granted.grants, Permission.FINANCIAL_REPORTS_READ);
+
+    const [counts, reservationRows, inventoryRows, gateways, closedDay] = await Promise.all([
       this.repository.countMetrics(property.id, targetDateValue),
       this.repository.findReservationsForMetric(property.id, query.metric, targetDateValue),
       this.repository.findInventoryForDate(property.id, targetDateValue),
       this.repository.findGatewayConfigs(property.id),
+      showClosedDay
+        ? this.repository.findClosedDay(property.id, toUtcMidnight(addDays(businessDate, -1)))
+        : Promise.resolve(null),
     ]);
 
     const mapped = reservationRows.map((row) =>
@@ -145,7 +157,7 @@ export class PropertyDashboardService {
         timezone: property.timezone,
         currency: property.currency,
         today: propertyToday,
-        businessDate: toBusinessDate(property.businessDate),
+        businessDate,
         checkInTime: property.checkInTime,
         checkOutTime: property.checkOutTime,
       },
@@ -156,6 +168,7 @@ export class PropertyDashboardService {
       resultCount: reservations.length,
       availability: this.toAvailability(inventoryRows),
       alerts: this.toAlerts(gateways, targetDate),
+      lastClosedDay: closedDay === null ? null : toClosedDay(closedDay),
     };
   }
 
@@ -220,10 +233,7 @@ export class PropertyDashboardService {
       // Floored at zero for display only. A negative value would mean the
       // oversell CHECK had been bypassed, which it cannot be — but showing
       // "-1 available" to a clerk helps nobody either way.
-      availableCount: Math.max(
-        0,
-        row.physical + row.overbookingAllowance - row.sold - row.blocked,
-      ),
+      availableCount: Math.max(0, row.physical + row.overbookingAllowance - row.sold - row.blocked),
       baseRateMinor: row.roomType.baseRateMinor,
       currency: row.roomType.currency,
     }));
@@ -255,8 +265,7 @@ export class PropertyDashboardService {
         gateway.onboardingDueDate !== null &&
         toBusinessDate(gateway.onboardingDueDate) < targetDate;
 
-      const providerLabel =
-        gateway.provider.charAt(0) + gateway.provider.slice(1).toLowerCase();
+      const providerLabel = gateway.provider.charAt(0) + gateway.provider.slice(1).toLowerCase();
 
       alerts.push({
         id: `gateway-${gateway.provider.toLowerCase()}`,

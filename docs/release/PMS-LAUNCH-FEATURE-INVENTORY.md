@@ -79,8 +79,8 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
 | `CV` COMPLETE AND VERIFIED | 79      | 38.5% |
-| `PI` PARTIALLY IMPLEMENTED | 93      | 45.4% |
-| `NI` NOT IMPLEMENTED       | 29      | 14.1% |
+| `PI` PARTIALLY IMPLEMENTED | 95      | 46.3% |
+| `NI` NOT IMPLEMENTED       | 27      | 13.2% |
 | `BU` BLOCKED / UNKNOWN     | 4       | 2.0%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -148,7 +148,7 @@ What exists is a **reservations-and-folio core with group reporting**, not yet a
 | RBAC over-promises                        | `RESERVATIONS_CHECKOUT`, `FOLIO_REFUND/SETTLE`, `NIGHT_AUDIT_*`, `HOUSEKEEPING_*` grantable and inert                                                                        | AU-13    |
 | Release CI will likely fail               | `release.yml:142` installs `postgresql-client-17`, absent from Ubuntu default repos; the `\|\|` fallback gives client 16, which refuses a PG 17 server                       | CI-12    |
 | No off-site backup copy                   | Nightly verified backups exist (2026-11-17) but stay on the server's disk until an operator syncs them elsewhere; no PITR, so up to 24 h of loss                             | BR-01/04 |
-| Reports precede closed books              | Occupancy/ADR/RevPAR computed from live aggregates, against CLAUDE.md §3.3                                                                                                   | RP-08    |
+| Reports precede closed books              | Mitigated 2026-11-17: closed days now read from `daily_snapshot`; open days remain live and are labelled. Days from before the night audit existed have no snapshot          | RP-08    |
 
 ### Confidence and limitations
 
@@ -373,18 +373,18 @@ Parent status: **`NI`** — CLAUDE.md §3.3 is entirely unimplemented.
 
 Parent status: **`PI`** — five report types exist; none is tested, and all precede closed books.
 
-| ID    | Subfeature                  | St   | Evidence                                                                                          | U/A/L/D/I          | Tests | Acceptance criterion                                                | Dep   | Pri | Launch | Verified   | Method |
-| ----- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------- | ------------------ | ----- | ------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| RP-01 | Master report               | `PI` | `reports.controller.ts:63`; `master-report.service.ts`                                            | ✔/✔/✔/✔/–          | none  | Figures reconcile to persisted reservations and folio lines         | —     | 2   | M      | 2026-10-29 | SI     |
-| RP-02 | Configurable report columns | `PI` | `packages/types/src/dto/master-report-columns.ts`; migration `20261019140000`                     | ✔/✔/✔/✔/–          | none  | Column selection persists per user and is applied to export         | RP-01 | 3   | A      | 2026-10-29 | SI     |
-| RP-03 | Room-inventory report       | `PI` | `reports.service.ts:127`                                                                          | ✔/✔/✔/✔/–          | none  | Matches `inventory_day` for the period                              | AV-01 | 3   | M      | 2026-10-29 | SI     |
-| RP-04 | Sales report                | `PI` | `reports.service.ts:129`                                                                          | ✔/✔/✔/✔/–          | none  | Reconciles to folio lines                                           | FO-11 | 2   | M      | 2026-10-29 | SI     |
-| RP-05 | Flash manager report        | `PI` | `reports.service.ts:131`                                                                          | ✔/✔/✔/✔/–          | none  | Matches the business date's snapshot                                | NA-06 | 2   | M      | 2026-10-29 | SI     |
-| RP-06 | BAR pricing report          | `PI` | `reports.service.ts:135`                                                                          | ✔/✔/⚠/✔/–          | none  | Derives from real rate plans                                        | AV-05 | 3   | A      | 2026-10-29 | SI     |
-| RP-07 | CSV export                  | `PI` | `apps/api/src/modules/reports/report-csv.ts`                                                      | ✔/✔/✔/–/–          | none  | Export matches the on-screen rows exactly                           | RP-01 | 3   | M      | 2026-10-29 | SI     |
-| RP-08 | Occupancy / ADR / RevPAR    | `PI` | `performance.controller.ts:44`; `performance.repository.ts`                                       | ✔/✔/⚠/✔/–          | none  | Read from immutable snapshots, not live aggregates (CLAUDE.md §3.3) | NA-06 | 2   | M      | 2026-10-29 | SI     |
-| RP-09 | Tax reports                 | `NI` | none                                                                                              | ✖/✖/✖/–/–          | none  | Period tax report reconciles exactly to folio tax lines             | FO-10 | 2   | M      | 2026-10-29 | SI     |
-| RP-10 | Revenue screen              | `NI` | `apps/web-admin/src/app/(property)/revenue/page.tsx` — 44 lines, 0 API calls, `PlaceholderScreen` | ✖ labelled/✖/✖/–/– | none  | Screen renders real revenue data                                    | RP-04 | 2   | A      | 2026-10-29 | SI     |
+| ID    | Subfeature                  | St   | Evidence                                                                                                                                                                                                                                                                                                                                    | U/A/L/D/I | Tests                                                                                                                                                                                            | Acceptance criterion                                                | Dep   | Pri | Launch | Verified   | Method |
+| ----- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| RP-01 | Master report               | `PI` | `reports.controller.ts:63`; `master-report.service.ts`                                                                                                                                                                                                                                                                                      | ✔/✔/✔/✔/– | none                                                                                                                                                                                             | Figures reconcile to persisted reservations and folio lines         | —     | 2   | M      | 2026-10-29 | SI     |
+| RP-02 | Configurable report columns | `PI` | `packages/types/src/dto/master-report-columns.ts`; migration `20261019140000`                                                                                                                                                                                                                                                               | ✔/✔/✔/✔/– | none                                                                                                                                                                                             | Column selection persists per user and is applied to export         | RP-01 | 3   | A      | 2026-10-29 | SI     |
+| RP-03 | Room-inventory report       | `PI` | `reports.service.ts:127`                                                                                                                                                                                                                                                                                                                    | ✔/✔/✔/✔/– | none                                                                                                                                                                                             | Matches `inventory_day` for the period                              | AV-01 | 3   | M      | 2026-10-29 | SI     |
+| RP-04 | Sales report                | `PI` | `reports.service.ts:129`                                                                                                                                                                                                                                                                                                                    | ✔/✔/✔/✔/– | none                                                                                                                                                                                             | Reconciles to folio lines                                           | FO-11 | 2   | M      | 2026-10-29 | SI     |
+| RP-05 | Flash manager report        | `PI` | 2026-11-17: `reports.service.ts` `flashManager` reads `daily_snapshot` only, against the last closed day by default; days without a snapshot counted in a note and in a "Closed days" column; adds service revenue, tax, payments, refunds                                                                                                  | ✔/✔/✔/✔/– | vitest `snapshot-reports.test.ts` (fake repository); integration suite `snapshot-reports.test.mjs` written and gated but **not yet run** (PostgreSQL down after a low-memory stop)               | Matches the business date's snapshot                                | NA-06 | 2   | M      | 2026-11-17 | SI     |
+| RP-06 | BAR pricing report          | `PI` | `reports.service.ts:135`                                                                                                                                                                                                                                                                                                                    | ✔/✔/⚠/✔/– | none                                                                                                                                                                                             | Derives from real rate plans                                        | AV-05 | 3   | A      | 2026-10-29 | SI     |
+| RP-07 | CSV export                  | `PI` | `apps/api/src/modules/reports/report-csv.ts`                                                                                                                                                                                                                                                                                                | ✔/✔/✔/–/– | none                                                                                                                                                                                             | Export matches the on-screen rows exactly                           | RP-01 | 3   | M      | 2026-10-29 | SI     |
+| RP-08 | Occupancy / ADR / RevPAR    | `PI` | 2026-11-17: group performance (`performance.service.ts`) and the sales report take every closed property-day from `daily_snapshot` and only open/future days live (labelled; `basis` counts both); sellable = physical − blocked throughout; channel mix stays live (no source in a snapshot)                                               | ✔/✔/✔/✔/– | vitest `performance.service.test.ts`, `snapshot-reports.test.ts`; integration suite `snapshot-reports.test.mjs` written and gated but **not yet run** (PostgreSQL down after a low-memory stop)  | Read from immutable snapshots, not live aggregates (CLAUDE.md §3.3) | NA-06 | 2   | M      | 2026-11-17 | SI     |
+| RP-09 | Tax reports                 | `PI` | 2026-11-17: report type `tax` (`reports.service.ts` `tax`, `ReportsRepository.findTaxByDate`): per charge date, room/service taxable value and tax, unattributed "other tax", total = every TAX line + flagged tax adjustment; closed-day snapshot tax printed beside it and disagreements named. CGST/SGST not split (not stored per line) | ✔/✔/✔/✔/– | vitest `snapshot-reports.test.ts`; integration suite `snapshot-reports.test.mjs` written and gated but **not yet run** (PostgreSQL down after a low-memory stop)                                 | Period tax report reconciles exactly to folio tax lines             | FO-10 | 2   | M      | 2026-11-17 | SI     |
+| RP-10 | Revenue screen              | `PI` | 2026-11-17: `GET /properties/:hotelId/revenue` (`revenue.service.ts`) returns closed days from `daily_snapshot` with totals, missing closed dates and open-day count; screen `components/revenue/revenue-screen.tsx` replaces the placeholder; tile gated on `financial_reports:read`                                                       | ~/✔/✔/✔/– | vitest `snapshot-reports.test.ts`; integration suite `snapshot-reports.test.mjs` written and gated but **not yet run** (PostgreSQL down after a low-memory stop); screen not opened in a browser | Screen renders real revenue data                                    | RP-04 | 2   | A      | 2026-11-17 | SI     |
 
 ### 2.14 Notifications
 
@@ -535,11 +535,11 @@ workflow has ever run.
 
 ### 2.26 Group and property dashboards (product-specific)
 
-| ID    | Subfeature         | St   | Evidence                                                                         | U/A/L/D/I | Tests | Acceptance criterion                                  | Dep   | Pri | Launch | Verified   | Method |
-| ----- | ------------------ | ---- | -------------------------------------------------------------------------------- | --------- | ----- | ----------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| GR-01 | Group dashboard    | `PI` | `properties.controller.ts:60` `my-group`; `(dashboard)/group-dashboard/page.tsx` | ✔/✔/✔/✔/– | none  | Portfolio figures reconcile to per-property data      | —     | 2   | A      | 2026-10-29 | SI     |
-| GR-02 | Property dashboard | `PI` | `property-dashboard.controller.ts:56`; migration `20261016160000`                | ✔/✔/✔/✔/– | none  | Summary matches persisted state for the business date | NA-06 | 2   | M      | 2026-10-29 | SI     |
-| GR-03 | Omnibar search     | `PI` | `components/property-dashboard/omnibar-search.tsx`                               | ✔/✔/✔/✔/– | none  | Finds reservations and guests within tenant scope     | RS-10 | 3   | A      | 2026-10-29 | SI     |
+| ID    | Subfeature         | St   | Evidence                                                                                                                                                                                            | U/A/L/D/I | Tests                                                                                                                         | Acceptance criterion                                  | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ------------------ | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| GR-01 | Group dashboard    | `PI` | `properties.controller.ts:60` `my-group`; `(dashboard)/group-dashboard/page.tsx`                                                                                                                    | ✔/✔/✔/✔/– | none                                                                                                                          | Portfolio figures reconcile to per-property data      | —     | 2   | A      | 2026-10-29 | SI     |
+| GR-02 | Property dashboard | `PI` | `property-dashboard.controller.ts:56`; migration `20261016160000`. 2026-11-17: `lastClosedDay` from `daily_snapshot` (business date − 1), only for `financial_reports:read`; strip on the dashboard | ✔/✔/✔/✔/– | integration suite `snapshot-reports.test.mjs` written and gated but **not yet run** (PostgreSQL down after a low-memory stop) | Summary matches persisted state for the business date | NA-06 | 2   | M      | 2026-11-17 | SI     |
+| GR-03 | Omnibar search     | `PI` | `components/property-dashboard/omnibar-search.tsx`                                                                                                                                                  | ✔/✔/✔/✔/– | none                                                                                                                          | Finds reservations and guests within tenant scope     | RS-10 | 3   | A      | 2026-10-29 | SI     |
 
 ---
 
@@ -575,7 +575,7 @@ workflow has ever run.
 - [x] OB-06 — alerting (2026-11-17)
 - [ ] OB-05 — metrics/tracing
 - [ ] BR-04 — PITR (BR-01..03 done 2026-11-17)
-- [ ] RP-09, RP-10 — tax reports, revenue screen
+- [x] RP-09, RP-10 — tax reports, revenue screen (built 2026-11-17; integration run pending)
 - [ ] BE-01 … BE-05, CM-01 … CM-05 — optional modules, advertised
 - [ ] GP-02, GP-07, MA-01, IE-01, IE-02, SE-05, AV-09, NO-06, PF-02, WK-13, MT-08 (AD-03 done 2026-11-17)
 
@@ -688,8 +688,8 @@ GDPR tooling (SE-05) · `withoutTenantScope()` (MT-08).
 Already honestly labelled — `PlaceholderScreen` states "Not built yet" and names its blocker, and
 shows **no invented data**. Keep this pattern:
 
-- [x] NA-07 night audit · AV-10 rates & inventory · FO-16 payments · GP-07 direct billing ·
-      RP-10 revenue
+- [x] NA-07 night audit · AV-10 rates & inventory · FO-16 payments · GP-07 direct billing
+      (RP-10 revenue was here; it is a real screen since 2026-11-17)
 
 Still to address:
 
@@ -701,8 +701,8 @@ Still to address:
 - [ ] **GP-04** — GSTIN lookup returns synthetic company names under the default `mock` provider;
       label "unverified demo data" or disable outside development
 - [ ] **RP-06** — BAR pricing report depends on a rates domain that does not exist
-- [ ] **RP-08 / GR-02** — occupancy, ADR and RevPAR are computed from live aggregates with no closed
-      books; label "provisional, pre-night-audit"
+- [x] **RP-08 / GR-02** — closed days read from snapshots (2026-11-17); open days are labelled
+      "On the books" in the sales report and counted in group performance's `basis`
 - [ ] **FO-15** — do not surface any payment-gateway settings; the model is unwired
 - [ ] **CLAUDE.md §4** promises `pnpm test:integration`, `test:e2e`, `queue:ui` and `audit:dry-run`;
       none exists in `package.json`
@@ -796,6 +796,49 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-17 (thirty-ninth pass) - reports read the night-audit snapshots; tax report; revenue screen (RP-05, RP-08, RP-09, RP-10, GR-02)
+
+**Status transitions.** RP-09 `NI`→`PI`, RP-10 `NI`→`PI`; RP-05, RP-08, GR-02 stay `PI` with new
+evidence. Counts: `PI` 93→95, `NI` 29→27, `CV` unchanged at 79. Nothing moves to `CV` because the
+integration suite has not run against PostgreSQL yet (see below).
+
+**Built.**
+
+- One shared reader, `common/reporting/daily-snapshots.ts`, used by every screen below, so a closed
+  day is read the same way everywhere and never recomputed.
+- Flash report (RP-05): snapshots only, measured against the last closed day by default; a
+  "Closed days" column and a note say how much of each period has a snapshot.
+- Sales report and group performance (RP-08): a closed property-day is its snapshot; an open or
+  future day is live, labelled "On the books" in the report and counted in the group view's new
+  `basis`. Sellable rooms are physical minus blocked on both sides, the snapshot's definition
+  (live figures previously used physical).
+- Tax report (RP-09): new report type `tax`, from `folio_line` by charge date, using the night
+  audit's own classification. Total tax is every tax line, so it reconciles to the ledger by
+  construction. Room and service tax trace to their charges, "other tax" exposes anything that
+  does not, and each closed day's snapshot tax is printed beside it with disagreements named.
+  CGST/SGST are not split: a tax line does not record its slab.
+- Revenue screen (RP-10): `GET /properties/:hotelId/revenue` plus a real screen replacing the
+  placeholder. It shows closed days only, totals derived from sums, closed days without a snapshot
+  listed, and open days counted. It needs `financial_reports:read` (403 otherwise, 404 for another
+  property), and its tile is now gated on it.
+- Dashboard (GR-02): `lastClosedDay`, the snapshot of the business date minus one, shown as a
+  strip, only for callers with `financial_reports:read`.
+
+**Verified.** `pnpm typecheck`, `pnpm lint`, `pnpm gate` (fast) exit 0. New vitest suites with fake
+repositories, whose snapshots deliberately disagree with the live counters: `performance.service.test.ts`
+4/4, `snapshot-reports.test.ts` 8/8, `daily-snapshot.test.ts` 4/4.
+
+**Not verified.**
+
+- `test/integration/snapshot-reports.test.mjs` is written and added to `gate:integration`. It runs
+  against Postgres and the running API: snapshots vs live counters, tax reconciled to the database's
+  tax lines, 403 and 404. It has **not been run**: PostgreSQL was left down after a low-memory stop.
+- The revenue screen and dashboard strip have not been opened in a browser.
+
+**Known limits.** Days from before the night audit existed have no snapshot, so the flash and
+revenue screens show them as missing and do not invent them. The channel mix in the group view
+stays live, because a snapshot carries no source.
 
 ### 2026-11-17 (thirty-eighth pass) - stay restrictions screen (AV-07)
 

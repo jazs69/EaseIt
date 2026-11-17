@@ -32,11 +32,7 @@
  */
 
 import { cn } from '@repo/ui';
-import {
-  Permission,
-  permissionsForRoles,
-  type Role,
-} from '@repo/types';
+import { Permission, permissionsForRoles, type Role } from '@repo/types';
 import {
   Activity,
   Boxes,
@@ -70,7 +66,13 @@ const APPS: readonly AppItem[] = [
   { id: 'shops', name: 'Shops', icon: ShoppingBag, isLocked: true },
   { id: 'direct-billing', name: 'Direct billing', icon: Wallet, href: '/direct-billing' },
   { id: 'payments', name: 'Payment', icon: CreditCard, href: '/payments' },
-  { id: 'revenue', name: 'Revenue', icon: Activity, href: '/revenue' },
+  {
+    id: 'revenue',
+    name: 'Revenue',
+    icon: Activity,
+    href: '/revenue',
+    requiredPermission: Permission.FINANCIAL_REPORTS_READ,
+  },
   { id: 'stock', name: 'Stock', icon: Boxes, isLocked: true },
   {
     id: 'night-audit',
@@ -166,8 +168,7 @@ export function MoreAppsPopover({ isOpen, onClose, hotelId, roles }: MoreAppsPop
             const Icon = app.icon;
 
             const restricted =
-              app.requiredPermission !== undefined &&
-              !granted.includes(app.requiredPermission);
+              app.requiredPermission !== undefined && !granted.includes(app.requiredPermission);
             // A property-scoped destination with no property is as unusable as
             // one that is locked, and silently linking nowhere is worse.
             const unavailable = app.href === undefined || hotelId === null;
@@ -210,13 +211,14 @@ export function MoreAppsPopover({ isOpen, onClose, hotelId, roles }: MoreAppsPop
 
             // Why it cannot be opened, said plainly on hover. The three
             // reasons get three different sentences.
-            const reason = app.isLocked === true
-              ? `${app.name} is an add-on module. Talk to your account manager to enable it.`
-              : restricted
-                ? `${app.name} needs night audit access. Ask a property admin to grant it.`
-                : unavailable
-                  ? `${app.name} needs a property in context.`
-                  : app.name;
+            const reason =
+              app.isLocked === true
+                ? `${app.name} is an add-on module. Talk to your account manager to enable it.`
+                : restricted
+                  ? `${app.name} needs night audit access. Ask a property admin to grant it.`
+                  : unavailable
+                    ? `${app.name} needs a property in context.`
+                    : app.name;
 
             if (disabled) {
               return (

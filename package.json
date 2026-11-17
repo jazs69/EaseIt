@@ -45,6 +45,7 @@
     "test:housekeeping": "node test/integration/housekeeping.test.mjs",
     "test:alerting": "node test/integration/alerting.test.mjs",
     "test:audit-log": "node test/integration/audit-log.test.mjs",
+    "test:snapshot-reports": "node test/integration/snapshot-reports.test.mjs",
     "db:app-role": "node scripts/db-app-role.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",

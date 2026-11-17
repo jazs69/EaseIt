@@ -14,9 +14,19 @@
  * `RevPAR = ADR × occupancy` hold by construction — and `assertRevParIdentity`
  * checks it in development rather than trusting the arithmetic.
  *
- * Every figure here is derived per request. None is stored, because all four
- * are functions of (window, inventory, bookings) and a cached copy would be a
- * number that can disagree with the rows it came from.
+ * A closed day is read, not derived (RP-08, CLAUDE.md section 3.3). For every
+ * property-day the night audit closed, rooms sold, rooms available and room
+ * revenue come from that day's immutable `daily_snapshot`, so this view agrees
+ * with the flash report and the books. Every other property-day (the open
+ * business date, the future, days from before the audit existed) is derived
+ * live from `inventory_day` and reservation totals, as before. The response's
+ * `basis` says how many of each the period holds.
+ *
+ * Available means sellable: physical rooms minus blocked ones, the snapshot's
+ * own definition, so a closed day and a live day measure the same thing.
+ *
+ * The booking-source breakdown stays live throughout: a snapshot carries no
+ * channel, so its bars may not sum to the closed-day revenue above them.
  * ===========================================================================
  */
 
@@ -40,12 +50,26 @@ import {
   type YearComparison,
 } from '@repo/types';
 
+import type { SnapshotRow } from '../../common/reporting/daily-snapshots.js';
 import { ClockService } from '../platform/clock.service.js';
 import {
   PerformanceRepository,
   type PerformanceInventoryRow,
   type PerformanceStayRow,
 } from './performance.repository.js';
+
+/** Closed days by property, then by `YYYY-MM-DD`. */
+type ClosedIndex = ReadonlyMap<string, ReadonlyMap<string, SnapshotRow>>;
+
+function indexClosed(rows: readonly SnapshotRow[]): ClosedIndex {
+  const index = new Map<string, Map<string, SnapshotRow>>();
+  for (const row of rows) {
+    const days = index.get(row.propertyId) ?? new Map<string, SnapshotRow>();
+    days.set(toBusinessDate(row.businessDate), row);
+    index.set(row.propertyId, days);
+  }
+  return index;
+}
 
 const DAY_MS = 86_400_000;
 const MONTHS = [
@@ -75,6 +99,11 @@ function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * DAY_MS);
 }
 
+/** Calendar days from `start` to `end`, both included. */
+function daysInclusive(start: BusinessDate, end: BusinessDate): number {
+  return Math.round((toUtcMidnight(end).getTime() - toUtcMidnight(start).getTime()) / DAY_MS) + 1;
+}
+
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -95,7 +124,16 @@ interface PeriodTotals {
   revenueMinor: number;
   roomNightsSold: number;
   roomNightsAvailable: number;
+  /** Property-days in the period read from a snapshot. */
+  closedDays: number;
 }
+
+const NO_TOTALS: PeriodTotals = {
+  revenueMinor: 0,
+  roomNightsSold: 0,
+  roomNightsAvailable: 0,
+  closedDays: 0,
+};
 
 @Injectable()
 export class PerformanceService {
@@ -106,10 +144,7 @@ export class PerformanceService {
     private readonly clock: ClockService,
   ) {}
 
-  async groupPerformance(
-    userId: string,
-    query: GroupPerformanceQuery,
-  ): Promise<GroupPerformance> {
+  async groupPerformance(userId: string, query: GroupPerformanceQuery): Promise<GroupPerformance> {
     const requestedIds =
       query.propertyIds
         ?.split(',')
@@ -132,30 +167,21 @@ export class PerformanceService {
 
     const period = this.resolvePeriod(query.timeframe, targetDate);
 
-    const [inventory, stays, roomCounts] = await Promise.all([
-      this.repository.findInventory(
-        propertyIds,
-        toUtcMidnight(period.start),
-        toUtcMidnight(period.end),
-      ),
-      this.repository.findEarningStays(
-        propertyIds,
-        toUtcMidnight(period.start),
-        addDays(toUtcMidnight(period.end), 1),
-      ),
+    const [{ inventory, stays, closed }, roomCounts] = await Promise.all([
+      this.loadPeriod(propertyIds, period),
       this.repository.countRoomsByProperty(propertyIds),
     ]);
 
     /* -- Portfolio totals ------------------------------------------------ */
 
-    const portfolio = this.totalsFor(inventory, stays, period, null);
+    const portfolio = this.totalsFor(inventory, stays, closed, period, null);
     const metrics = this.toMetrics(portfolio);
 
     /* -- Per property ---------------------------------------------------- */
 
     const perProperty = new Map<string, PeriodTotals>();
     for (const property of properties) {
-      perProperty.set(property.id, this.totalsFor(inventory, stays, period, property.id));
+      perProperty.set(property.id, this.totalsFor(inventory, stays, closed, period, property.id));
     }
 
     /* -- Last year ------------------------------------------------------- */
@@ -171,11 +197,7 @@ export class PerformanceService {
     /* -- Rankings and breakdown ------------------------------------------ */
 
     const ranks: PerformanceRank[] = properties.map((property) => {
-      const totals = perProperty.get(property.id) ?? {
-        revenueMinor: 0,
-        roomNightsSold: 0,
-        roomNightsAvailable: 0,
-      };
+      const totals = perProperty.get(property.id) ?? NO_TOTALS;
       const own = this.toMetrics(totals);
       return {
         propertyId: property.id as PropertyId,
@@ -197,14 +219,13 @@ export class PerformanceService {
     const topPerforming = byRevenue[0] ?? null;
     const lowPerforming = byRevenue[byRevenue.length - 1] ?? null;
 
-    const yoyByProperty = comparison === null ? new Map<string, number | null>() : await this.perPropertyYoy(propertyIds, query.timeframe, targetDate, perProperty);
+    const yoyByProperty =
+      comparison === null
+        ? new Map<string, number | null>()
+        : await this.perPropertyYoy(propertyIds, query.timeframe, targetDate, perProperty);
 
     const propertyBreakdown: PropertyPerformanceRow[] = ranks.map((rank) => {
-      const totals = perProperty.get(rank.propertyId) ?? {
-        revenueMinor: 0,
-        roomNightsSold: 0,
-        roomNightsAvailable: 0,
-      };
+      const totals = perProperty.get(rank.propertyId) ?? NO_TOTALS;
       return {
         ...rank,
         rooms: roomCounts.get(rank.propertyId) ?? 0,
@@ -246,7 +267,33 @@ export class PerformanceService {
       propertiesCount: properties.length,
       propertiesWithDataCount: ranks.filter((rank) => rank.revenueMinor > 0).length,
       reference: { timezone: referenceTimezone, businessDate: targetDate },
+      basis: {
+        closedPropertyDays: portfolio.closedDays,
+        livePropertyDays: Math.max(
+          0,
+          properties.length * daysInclusive(period.start, period.end) - portfolio.closedDays,
+        ),
+      },
     };
+  }
+
+  /** Inventory, earning stays and closed days for one window, in parallel. */
+  private async loadPeriod(
+    propertyIds: readonly string[],
+    period: { start: BusinessDate; end: BusinessDate },
+  ): Promise<{
+    inventory: PerformanceInventoryRow[];
+    stays: PerformanceStayRow[];
+    closed: ClosedIndex;
+  }> {
+    const start = toUtcMidnight(period.start);
+    const end = toUtcMidnight(period.end);
+    const [inventory, stays, closed] = await Promise.all([
+      this.repository.findInventory(propertyIds, start, end),
+      this.repository.findEarningStays(propertyIds, start, addDays(end, 1)),
+      this.repository.findClosedDays(propertyIds, start, end),
+    ]);
+    return { inventory, stays, closed: indexClosed(closed) };
   }
 
   /* ---------------------------------------------------------------------- */
@@ -283,65 +330,104 @@ export class PerformanceService {
   /* ---------------------------------------------------------------------- */
 
   /**
-   * Reduces inventory and stays to the three totals every measure derives from.
+   * Reduces a window to the totals every measure derives from.
+   *
+   * A property-day with a snapshot contributes the snapshot's rooms sold,
+   * rooms available and room revenue, and nothing live. Every other
+   * property-day contributes its inventory counters (sellable = physical
+   * minus blocked) and its share of live stay revenue. No day is counted
+   * twice and none is dropped.
    *
    * `propertyId` null means the whole portfolio.
    */
   private totalsFor(
     inventory: readonly PerformanceInventoryRow[],
     stays: readonly PerformanceStayRow[],
+    closed: ClosedIndex,
     period: { start: BusinessDate; end: BusinessDate },
     propertyId: string | null,
   ): PeriodTotals {
     let roomNightsSold = 0;
     let roomNightsAvailable = 0;
+    let closedRevenue = 0;
+    let closedDays = 0;
 
     for (const row of inventory) {
       if (propertyId !== null && row.propertyId !== propertyId) continue;
+      const date = toBusinessDate(row.stayDate);
+      if (date < period.start || date > period.end) continue;
+      if (closed.get(row.propertyId)?.has(date) === true) continue;
       roomNightsSold += row.sold;
-      roomNightsAvailable += row.physical;
+      roomNightsAvailable += Math.max(0, row.physical - row.blocked);
     }
 
-    const periodStart = toUtcMidnight(period.start).getTime();
-    const periodEndExclusive = addDays(toUtcMidnight(period.end), 1).getTime();
+    for (const [owner, days] of closed) {
+      if (propertyId !== null && owner !== propertyId) continue;
+      for (const [date, snapshot] of days) {
+        if (date < period.start || date > period.end) continue;
+        roomNightsSold += snapshot.roomsSold;
+        roomNightsAvailable += snapshot.roomsAvailable;
+        closedRevenue += snapshot.roomRevenueMinor;
+        closedDays += 1;
+      }
+    }
 
-    const revenueMinor = this.revenueInWindow(
+    const live = this.liveRevenueInWindow(
       stays.filter((stay) => propertyId === null || stay.propertyId === propertyId),
-      periodStart,
-      periodEndExclusive,
+      toUtcMidnight(period.start).getTime(),
+      addDays(toUtcMidnight(period.end), 1).getTime(),
+      closed,
     );
 
-    return { revenueMinor, roomNightsSold, roomNightsAvailable };
+    // Live revenue is fractional until here and rounded once; closed revenue
+    // is already integer minor units (CLAUDE.md section 3.4).
+    return {
+      revenueMinor: Math.round(live) + closedRevenue,
+      roomNightsSold,
+      roomNightsAvailable,
+      closedDays,
+    };
   }
 
   /**
-   * Revenue attributable to nights inside the window.
+   * Live revenue attributable to the window's nights that are not closed.
    *
    * A stay's total covers its whole duration, which may begin before the
    * window and end after it. The total is spread evenly across the stay's own
-   * nights and only the nights inside the window are counted — so a booking
+   * nights and only the nights inside the window count, so a booking
    * straddling a month boundary contributes to both months and to neither
-   * twice.
+   * twice. A night its property has closed is skipped: that night's revenue
+   * is the snapshot's, read in `totalsFor`.
    *
-   * That assumes a flat nightly rate. It is the best available until the
-   * `rates` module can say what each individual night was sold for, at which
-   * point this reads per-night prices and the approximation disappears.
-   * Rounded once at the end, so the error does not accumulate across a
-   * year-to-date window (CLAUDE.md section 3.4).
+   * The even spread assumes a flat nightly rate; it applies only to days the
+   * night audit has not closed. Returned fractional; the caller rounds once.
    */
-  private revenueInWindow(
+  private liveRevenueInWindow(
     stays: readonly PerformanceStayRow[],
     windowStartMs: number,
     windowEndExclusiveMs: number,
+    closed: ClosedIndex,
   ): number {
     let revenue = 0;
 
     for (const stay of stays) {
       const slice = this.sliceInWindow(stay, windowStartMs, windowEndExclusiveMs);
-      revenue += slice.nightlyMinor * slice.nights;
+      if (slice.nights === 0) continue;
+
+      const closedDays = closed.get(stay.propertyId);
+      if (closedDays === undefined || closedDays.size === 0) {
+        revenue += slice.nightlyMinor * slice.nights;
+        continue;
+      }
+      const first = Math.max(stay.arrivalDate.getTime(), windowStartMs);
+      let openNights = 0;
+      for (let night = 0; night < slice.nights; night += 1) {
+        if (!closedDays.has(toBusinessDate(new Date(first + night * DAY_MS)))) openNights += 1;
+      }
+      revenue += slice.nightlyMinor * openNights;
     }
 
-    return Math.round(revenue);
+    return revenue;
   }
 
   /**
@@ -460,8 +546,7 @@ export class PerformanceService {
       // which is a different and much worse claim than "nothing was sold".
       adrMinor: roomNightsSold === 0 ? null : Math.round(revenueMinor / roomNightsSold),
       // Zero is correct here — real capacity that earned nothing is 0 RevPAR.
-      revParMinor:
-        roomNightsAvailable === 0 ? 0 : Math.round(revenueMinor / roomNightsAvailable),
+      revParMinor: roomNightsAvailable === 0 ? 0 : Math.round(revenueMinor / roomNightsAvailable),
       roomNightsSold,
       roomNightsAvailable,
     };
@@ -508,20 +593,8 @@ export class PerformanceService {
     const lastYearTarget = shiftYear(targetDate, -1);
     const period = this.resolvePeriod(timeframe, lastYearTarget);
 
-    const [inventory, stays] = await Promise.all([
-      this.repository.findInventory(
-        propertyIds,
-        toUtcMidnight(period.start),
-        toUtcMidnight(period.end),
-      ),
-      this.repository.findEarningStays(
-        propertyIds,
-        toUtcMidnight(period.start),
-        addDays(toUtcMidnight(period.end), 1),
-      ),
-    ]);
-
-    const totals = this.totalsFor(inventory, stays, period, null);
+    const { inventory, stays, closed } = await this.loadPeriod(propertyIds, period);
+    const totals = this.totalsFor(inventory, stays, closed, period, null);
 
     // Nothing recorded for that period at all. Returning null is honest; a
     // comparison against zero produces "+infinity% growth".
@@ -532,10 +605,7 @@ export class PerformanceService {
 
     return {
       previous,
-      revenueGrowthPercent: growth(
-        currentMetrics.totalRevenueMinor,
-        previous.totalRevenueMinor,
-      ),
+      revenueGrowthPercent: growth(currentMetrics.totalRevenueMinor, previous.totalRevenueMinor),
       // Occupancy moves in percentage *points*, not percent: 3% to 6% is "+3
       // points", and calling it "+100%" would be true but useless.
       occupancyDeltaPoints: round1(currentMetrics.avgOccupancy - previous.avgOccupancy),
@@ -558,22 +628,11 @@ export class PerformanceService {
   ): Promise<Map<string, number | null>> {
     const period = this.resolvePeriod(timeframe, shiftYear(targetDate, -1));
 
-    const [inventory, stays] = await Promise.all([
-      this.repository.findInventory(
-        propertyIds,
-        toUtcMidnight(period.start),
-        toUtcMidnight(period.end),
-      ),
-      this.repository.findEarningStays(
-        propertyIds,
-        toUtcMidnight(period.start),
-        addDays(toUtcMidnight(period.end), 1),
-      ),
-    ]);
+    const { inventory, stays, closed } = await this.loadPeriod(propertyIds, period);
 
     const result = new Map<string, number | null>();
     for (const propertyId of propertyIds) {
-      const previous = this.totalsFor(inventory, stays, period, propertyId);
+      const previous = this.totalsFor(inventory, stays, closed, period, propertyId);
       const now = current.get(propertyId)?.revenueMinor ?? 0;
       result.set(propertyId, growth(now, previous.revenueMinor));
     }
@@ -598,41 +657,35 @@ export class PerformanceService {
     targetDate: BusinessDate,
   ): Promise<MonthlyPerformance[]> {
     const year = Number(targetDate.slice(0, 4));
-    const yearStart = toUtcMidnight(`${String(year)}-01-01`);
-    const yearEnd = toUtcMidnight(`${String(year)}-12-31`);
-
-    const [inventory, stays] = await Promise.all([
-      this.repository.findInventory(propertyIds, yearStart, yearEnd),
-      this.repository.findEarningStays(propertyIds, yearStart, addDays(yearEnd, 1)),
-    ]);
-
-    // Bucketed once, so the twelve-month loop is O(rows), not O(12 × rows).
-    const byMonth = new Map<number, { sold: number; physical: number }>();
-    for (const row of inventory) {
-      const month = row.stayDate.getUTCMonth();
-      const bucket = byMonth.get(month) ?? { sold: 0, physical: 0 };
-      bucket.sold += row.sold;
-      bucket.physical += row.physical;
-      byMonth.set(month, bucket);
-    }
+    const { inventory, stays, closed } = await this.loadPeriod(propertyIds, {
+      start: `${String(year)}-01-01` as BusinessDate,
+      end: `${String(year)}-12-31` as BusinessDate,
+    });
 
     return Array.from({ length: 12 }, (_, month) => {
-      const bucket = byMonth.get(month) ?? { sold: 0, physical: 0 };
-
-      const monthStart = Date.UTC(year, month, 1);
-      const monthEndExclusive = Date.UTC(year, month + 1, 1);
-      const revenueMinor = this.revenueInWindow(stays, monthStart, monthEndExclusive);
-
       const padded = String(month + 1).padStart(2, '0');
+      const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+      const totals = this.totalsFor(
+        inventory,
+        stays,
+        closed,
+        {
+          start: `${String(year)}-${padded}-01` as BusinessDate,
+          end: `${String(year)}-${padded}-${String(lastDay).padStart(2, '0')}` as BusinessDate,
+        },
+        null,
+      );
+      const { revenueMinor, roomNightsSold, roomNightsAvailable } = totals;
+
       return {
         month: MONTHS[month] ?? '',
         monthKey: `${String(year)}-${padded}`,
         revenueMinor,
-        occupancy: percentage(bucket.sold, bucket.physical),
-        adrMinor: bucket.sold === 0 ? null : Math.round(revenueMinor / bucket.sold),
-        revParMinor: bucket.physical === 0 ? 0 : Math.round(revenueMinor / bucket.physical),
-        roomNightsSold: bucket.sold,
-        hasData: bucket.physical > 0,
+        occupancy: percentage(roomNightsSold, roomNightsAvailable),
+        adrMinor: roomNightsSold === 0 ? null : Math.round(revenueMinor / roomNightsSold),
+        revParMinor: roomNightsAvailable === 0 ? 0 : Math.round(revenueMinor / roomNightsAvailable),
+        roomNightsSold,
+        hasData: roomNightsAvailable > 0,
       };
     });
   }

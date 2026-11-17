@@ -13,6 +13,7 @@ import { Injectable } from '@nestjs/common';
 import { OPERABLE_PROPERTY_STATUSES, ReservationStatus, type BookingSource } from '@repo/types';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { findClosedDays, type SnapshotRow } from '../../common/reporting/daily-snapshots.js';
 
 /**
  * Statuses whose room-nights count as sold.
@@ -41,6 +42,8 @@ export interface PerformanceInventoryRow {
   stayDate: Date;
   physical: number;
   sold: number;
+  /** Out of order or held back; not sellable, so not in the denominator. */
+  blocked: number;
 }
 
 export interface PerformanceStayRow {
@@ -118,7 +121,7 @@ export class PerformanceRepository {
         propertyId: { in: [...propertyIds] },
         stayDate: { gte: periodStart, lte: periodEnd },
       },
-      select: { propertyId: true, stayDate: true, physical: true, sold: true },
+      select: { propertyId: true, stayDate: true, physical: true, sold: true, blocked: true },
     });
   }
 
@@ -183,5 +186,14 @@ export class PerformanceRepository {
     });
 
     return new Map(grouped.map((row) => [row.propertyId, row._count._all]));
+  }
+
+  /** Closed-day snapshots of these properties in the window (RP-08). */
+  findClosedDays(
+    propertyIds: readonly string[],
+    periodStart: Date,
+    periodEnd: Date,
+  ): Promise<SnapshotRow[]> {
+    return findClosedDays(this.prisma.client, propertyIds, periodStart, periodEnd);
   }
 }

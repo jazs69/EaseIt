@@ -38,6 +38,7 @@ export * from './dto/performance.dto.js';
 export * from './dto/reports.dto.js';
 export * from './dto/outbox.dto.js';
 export * from './dto/audit-log.dto.js';
+export * from './dto/daily-snapshot.dto.js';
 export * from './dto/master-report-columns.js';
 export * from './dto/reservation-detail.dto.js';
 export * from './dto/room-move.dto.js';

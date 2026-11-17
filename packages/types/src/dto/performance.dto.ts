@@ -298,6 +298,16 @@ export const groupPerformanceSchema = z.object({
     timezone: z.string(),
     businessDate: businessDateSchema,
   }),
+  /**
+   * Where the period's figures came from (RP-08). A property-day the night
+   * audit closed is read from its immutable snapshot; any other day (still
+   * open, in the future, or from before the audit existed) is computed live
+   * from the inventory counters and reservation totals.
+   */
+  basis: z.object({
+    closedPropertyDays: z.number().int().nonnegative(),
+    livePropertyDays: z.number().int().nonnegative(),
+  }),
 });
 
 export type GroupPerformance = z.infer<typeof groupPerformanceSchema>;

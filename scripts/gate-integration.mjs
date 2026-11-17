@@ -260,6 +260,11 @@ const suites = [
     script: 'test/integration/audit-log.test.mjs',
     why: 'audit_log:read required; another property 404; actor/entity/event filters; hotel-local dates; paging exact at microsecond precision',
   },
+  {
+    name: 'snapshot reports (RP-05, RP-08, RP-09, RP-10, GR-02)',
+    script: 'test/integration/snapshot-reports.test.mjs',
+    why: 'closed days read from daily_snapshot, never the live counters: revenue, flash, sales, dashboard, group view; tax report reconciles to folio tax lines; 403 housekeeping, 404 another property',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

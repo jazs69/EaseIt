@@ -10,6 +10,8 @@
 
 import { z } from 'zod';
 
+import { closedDaySchema } from './daily-snapshot.dto.js';
+
 import {
   businessDateSchema,
   mealPlanSchema,
@@ -263,6 +265,12 @@ export const propertyDashboardSchema = z.object({
   resultCount: z.number().int().nonnegative(),
   availability: availabilityBreakdownSchema,
   alerts: z.array(systemAlertSchema),
+  /**
+   * The last closed day (the business date minus one), as the night audit
+   * froze it (GR-02). Null when that day has no snapshot, or when the caller
+   * lacks `financial_reports:read` here.
+   */
+  lastClosedDay: closedDaySchema.nullable(),
 });
 
 export type PropertyDashboard = z.infer<typeof propertyDashboardSchema>;

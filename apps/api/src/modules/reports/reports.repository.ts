@@ -14,6 +14,7 @@ import { Prisma } from '@repo/database';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
+import { findClosedDays, type SnapshotRow } from '../../common/reporting/daily-snapshots.js';
 
 /**
  * Statuses whose room-nights count as sold — the same set
@@ -185,13 +186,31 @@ export interface MasterReportStayRow {
  * `in`, so the table correctly shows no rows rather than ignoring the filter.
  */
 function matchingStatuses(needle: string): ReservationStatus[] {
-  const wanted = needle.trim().toUpperCase().replaceAll(/[\s-]+/gu, '_');
+  const wanted = needle
+    .trim()
+    .toUpperCase()
+    .replaceAll(/[\s-]+/gu, '_');
   return Object.values(ReservationStatus).filter((value) => value.includes(wanted));
 }
 
 function matchingSources(needle: string): BookingSource[] {
-  const wanted = needle.trim().toUpperCase().replaceAll(/[\s-]+/gu, '_');
+  const wanted = needle
+    .trim()
+    .toUpperCase()
+    .replaceAll(/[\s-]+/gu, '_');
   return Object.values(BookingSource).filter((value) => value.includes(wanted));
+}
+
+/** Folio tax posted on one charge date, split by what it was charged on (RP-09). */
+export interface TaxDayRow {
+  chargeDate: Date;
+  roomTaxableMinor: number;
+  roomTaxMinor: number;
+  serviceTaxableMinor: number;
+  serviceTaxMinor: number;
+  /** Every TAX line plus every flagged tax ADJUSTMENT on the date, whatever it derives from. */
+  totalTaxMinor: number;
+  taxLines: number;
 }
 
 export interface ReportRoomTypeRow {
@@ -243,19 +262,13 @@ export class ReportsRepository {
     // dropped here rather than coerced: a custom role's permissions live on
     // its own RolePermission rows, and pretending it maps to a built-in role
     // would grant or deny the wrong set.
-    const roles = rows
-      .map((row) => row.role.key)
-      .filter((key): key is Role => key !== null);
+    const roles = rows.map((row) => row.role.key).filter((key): key is Role => key !== null);
 
     return { property: first.property, roles };
   }
 
   /** Per-date, per-room-type inventory counters across the window. */
-  findInventory(
-    propertyId: string,
-    start: Date,
-    end: Date,
-  ): Promise<ReportInventoryRow[]> {
+  findInventory(propertyId: string, start: Date, end: Date): Promise<ReportInventoryRow[]> {
     return this.prisma.client.inventoryDay.findMany({
       where: { propertyId, stayDate: { gte: start, lte: end } },
       select: {
@@ -277,11 +290,7 @@ export class ReportsRepository {
    * booking that checked out on the window's first morning sold no night
    * inside it.
    */
-  findStays(
-    propertyId: string,
-    start: Date,
-    endExclusive: Date,
-  ): Promise<ReportStayRow[]> {
+  findStays(propertyId: string, start: Date, endExclusive: Date): Promise<ReportStayRow[]> {
     return this.prisma.client.reservation.findMany({
       where: {
         propertyId,
@@ -709,7 +718,9 @@ export class ReportsRepository {
     }
     if (filters.roomType !== undefined) {
       text.push({
-        rooms: { some: { roomType: { name: { contains: filters.roomType, mode: 'insensitive' } } } },
+        rooms: {
+          some: { roomType: { name: { contains: filters.roomType, mode: 'insensitive' } } },
+        },
       });
     }
     if (filters.room !== undefined) {
@@ -736,5 +747,83 @@ export class ReportsRepository {
       },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
+  }
+
+  /** Closed-day snapshots of this property, oldest first (RP-05, RP-08, RP-10). */
+  findClosedDays(propertyId: string, from: Date, to: Date): Promise<SnapshotRow[]> {
+    return findClosedDays(this.prisma.client, [propertyId], from, to);
+  }
+
+  /**
+   * Taxable value and tax per charge date (RP-09), straight from `folio_line`.
+   *
+   * The classification is the night-audit snapshot's (step 6) and the master
+   * report's, so the three agree:
+   *
+   * - Room taxable value is the ROOM_CHARGE lines plus every non-tax
+   *   ADJUSTMENT hung off one. Service taxable value is the same for
+   *   SERVICE_CHARGE.
+   * - Tax is `kind = TAX OR isTaxAdjustment`. A negative tax delta is posted as
+   *   a flagged ADJUSTMENT, because the sign CHECK keeps TAX lines
+   *   non-negative. It is attributed to room or service through the charge it
+   *   derives from, directly or through a correction (charge, then
+   *   adjustment, then tax).
+   * - `totalTax` counts every tax line regardless of parent, so tax the report
+   *   cannot attribute shows up as a difference rather than vanishing.
+   */
+  async findTaxByDate(propertyId: string, from: Date, to: Date): Promise<TaxDayRow[]> {
+    const rows = await this.prisma.client.$queryRaw<
+      {
+        chargeDate: Date;
+        roomTaxable: bigint;
+        roomTax: bigint;
+        serviceTaxable: bigint;
+        serviceTax: bigint;
+        totalTax: bigint;
+        taxLines: bigint;
+      }[]
+    >`
+      SELECT
+        l."chargeDate"                                                      AS "chargeDate",
+        COALESCE(SUM(CASE WHEN l."kind" = 'ROOM_CHARGE'
+                             OR (l."kind" = 'ADJUSTMENT' AND NOT l."isTaxAdjustment"
+                                 AND p."kind" = 'ROOM_CHARGE')
+                          THEN l."amountMinor" ELSE 0 END), 0)              AS "roomTaxable",
+        COALESCE(SUM(CASE WHEN (l."kind" = 'TAX' OR l."isTaxAdjustment")
+                           AND (p."kind" = 'ROOM_CHARGE'
+                                OR (p."kind" = 'ADJUSTMENT' AND gp."kind" = 'ROOM_CHARGE'))
+                          THEN l."amountMinor" ELSE 0 END), 0)              AS "roomTax",
+        COALESCE(SUM(CASE WHEN l."kind" = 'SERVICE_CHARGE'
+                             OR (l."kind" = 'ADJUSTMENT' AND NOT l."isTaxAdjustment"
+                                 AND p."kind" = 'SERVICE_CHARGE')
+                          THEN l."amountMinor" ELSE 0 END), 0)              AS "serviceTaxable",
+        COALESCE(SUM(CASE WHEN (l."kind" = 'TAX' OR l."isTaxAdjustment")
+                           AND (p."kind" = 'SERVICE_CHARGE'
+                                OR (p."kind" = 'ADJUSTMENT' AND gp."kind" = 'SERVICE_CHARGE'))
+                          THEN l."amountMinor" ELSE 0 END), 0)              AS "serviceTax",
+        COALESCE(SUM(CASE WHEN l."kind" = 'TAX' OR l."isTaxAdjustment"
+                          THEN l."amountMinor" ELSE 0 END), 0)              AS "totalTax",
+        COUNT(*) FILTER (WHERE l."kind" = 'TAX' OR l."isTaxAdjustment")     AS "taxLines"
+      FROM "folio_line" l
+      LEFT JOIN "folio_line" p ON p."id" = l."derivedFromLineId"
+      LEFT JOIN "folio_line" gp ON gp."id" = p."derivedFromLineId"
+      WHERE l."propertyId" = ${propertyId}::uuid
+        AND l."chargeDate" >= ${from}::date
+        AND l."chargeDate" <= ${to}::date
+        AND l."kind" IN ('ROOM_CHARGE', 'SERVICE_CHARGE', 'TAX', 'ADJUSTMENT')
+      GROUP BY l."chargeDate"
+      ORDER BY l."chargeDate" ASC
+    `;
+    // Postgres SUM and COUNT return bigint; these are minor units and line
+    // counts well inside the safe-integer range, so the narrowing is lossless.
+    return rows.map((row) => ({
+      chargeDate: row.chargeDate,
+      roomTaxableMinor: Number(row.roomTaxable),
+      roomTaxMinor: Number(row.roomTax),
+      serviceTaxableMinor: Number(row.serviceTaxable),
+      serviceTaxMinor: Number(row.serviceTax),
+      totalTaxMinor: Number(row.totalTax),
+      taxLines: Number(row.taxLines),
+    }));
   }
 }

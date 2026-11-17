@@ -39,6 +39,7 @@ export const reportTypeSchema = z.enum([
   'shift',
   'bar-pricing',
   'folio',
+  'tax',
 ]);
 
 export type ReportType = z.infer<typeof reportTypeSchema>;
@@ -90,7 +91,7 @@ export const REPORT_CATALOGUE: readonly ReportDefinition[] = [
     type: 'flash-manager',
     title: 'Flash manager report',
     description:
-      'Summary of today, month-to-date, and year-to-date occupancy, ADR, RevPAR, Taxes, and other essential metrics.',
+      'The last closed day, month-to-date and year-to-date occupancy, ADR, RevPAR, revenue, tax and payments, read from the night-audit snapshots.',
     isMostUsed: false,
     availability: { available: true, blockedBy: null },
   },
@@ -123,6 +124,14 @@ export const REPORT_CATALOGUE: readonly ReportDefinition[] = [
     title: 'Sales report',
     description:
       'Date-wise performance report of the hotel. Occupancy, ADR, RevPAR, Revenue, payments, and other vital metrics.',
+    isMostUsed: false,
+    availability: { available: true, blockedBy: null },
+  },
+  {
+    type: 'tax',
+    title: 'Tax report',
+    description:
+      'Date-wise taxable value and tax posted on folios, for room tariff and services, reconciled to the folio tax lines and the closed-day snapshots.',
     isMostUsed: false,
     availability: { available: true, blockedBy: null },
   },
@@ -216,10 +225,7 @@ export type ReportColumn = z.infer<typeof reportColumnSchema>;
  * the typing the renderer needs. The *server* still builds each report from a
  * typed query; this is the wire shape only.
  */
-export const reportRowSchema = z.record(
-  z.string(),
-  z.union([z.string(), z.number(), z.null()]),
-);
+export const reportRowSchema = z.record(z.string(), z.union([z.string(), z.number(), z.null()]));
 
 export type ReportRow = z.infer<typeof reportRowSchema>;
 

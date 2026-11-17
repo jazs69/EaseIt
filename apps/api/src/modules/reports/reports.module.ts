@@ -6,6 +6,8 @@ import { ReportsController } from './reports.controller.js';
 import { ReportsRepository } from './reports.repository.js';
 import { MasterReportService } from './master-report.service.js';
 import { ReportsService } from './reports.service.js';
+import { RevenueController } from './revenue.controller.js';
+import { RevenueService } from './revenue.service.js';
 
 /**
  * Property reporting.
@@ -17,8 +19,15 @@ import { ReportsService } from './reports.service.js';
  * than at request time.
  */
 @Module({
-  controllers: [ReportsController],
-  providers: [ReportsService, MasterReportService, ReportsRepository, TokenService, SessionAuthGuard],
+  controllers: [ReportsController, RevenueController],
+  providers: [
+    ReportsService,
+    MasterReportService,
+    RevenueService,
+    ReportsRepository,
+    TokenService,
+    SessionAuthGuard,
+  ],
   exports: [ReportsService],
 })
 export class ReportsModule {}
