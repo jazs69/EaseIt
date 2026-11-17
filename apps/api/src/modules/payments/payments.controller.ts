@@ -7,7 +7,18 @@
  * verified by signature instead.
  */
 
-import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -109,6 +120,7 @@ export class PaymentsController {
   }
 
   @Post(':hotelId/payment-links/:linkId/refresh')
+  @HttpCode(200)
   @ApiOperation({
     summary: 'Check payment: ask Razorpay and post any captured payment to the folio',
     description: 'For when no webhook can reach the API. Safe to repeat.',
@@ -122,6 +134,7 @@ export class PaymentsController {
   }
 
   @Post(':hotelId/payment-links/:linkId/cancel')
+  @HttpCode(200)
   @ApiOperation({ summary: 'Cancel an unpaid link at Razorpay' })
   cancel(
     @Req() request: FastifyRequest,

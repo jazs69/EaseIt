@@ -49,6 +49,7 @@
     "test:guests-billing": "node test/integration/guests-and-direct-billing.test.mjs",
     "gst:smoke": "node scripts/gst-smoke.mjs",
     "test:payment-links": "node test/integration/payment-links.test.mjs",
+    "razorpay:smoke": "node scripts/razorpay-smoke.mjs",
     "db:app-role": "node scripts/db-app-role.mjs",
     "test:cancellation": "node test/integration/cancel-reservation.test.mjs",
     "test:cancellation:retry": "node test/integration/cancel-retry.test.mjs",

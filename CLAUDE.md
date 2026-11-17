@@ -339,7 +339,11 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
   re-checks OPEN, company and balance under the lock) and inserts a `company_ledger_entry` in the
   same transaction. A company payment locks only the `company` row `FOR NO KEY UPDATE`, which the
   transfer's FK check (`FOR KEY SHARE`) does not wait on, so the two cannot deadlock. Both races are
-  in `guests-and-direct-billing.test.mjs`. That suite has **not run yet**.
+  in `guests-and-direct-billing.test.mjs` (passing since 2026-11-17).
+  A gateway payment (FO-15, `postGatewayPayment`) is a folio write too: reservation → folio locks, key
+  `razorpay_<payment id>` looked up under the lock with the unique index as backstop, so a webhook
+  and "Check payment" racing post once (`payment-links.test.mjs`). The Razorpay call is never inside
+  the transaction.
 - **Create-reservation racing cancellation or a room move** on the same room type and dates.
 
 **Requirements for any future module writing these tables.** `nightaudit` now exists and follows them

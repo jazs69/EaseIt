@@ -444,6 +444,9 @@ async function main() {
     SMTP_PASS: 'p',
     GST_PROVIDER: 'sandbox',
     GST_API_KEY: 'k',
+    // Required in production since GP-04 (2026-11-17).
+    GST_API_SECRET: 's',
+    GST_ENVIRONMENT: 'live',
     AUTH_COOKIE_DOMAIN: '.alerts.invalid',
     WEB_ADMIN_URL: 'https://admin.alerts.invalid',
   };
