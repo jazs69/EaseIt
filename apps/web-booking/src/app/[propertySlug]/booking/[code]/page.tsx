@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { format, money, publicBookingSchema } from '@repo/types';
+import { bookingEnginePropertySchema, format, money, publicBookingSchema } from '@repo/types';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@repo/ui';
 
 import { BookingApiError, bookingApi } from '@/lib/booking-api';
@@ -31,11 +31,19 @@ export default async function BookingPage({
   if (access === undefined) notFound();
 
   let booking;
+  let prepayAvailable = false;
   try {
-    booking = await bookingApi(
-      `/${encodeURIComponent(propertySlug)}/bookings/${encodeURIComponent(code)}?access=${encodeURIComponent(access)}`,
-      publicBookingSchema,
-    );
+    const [found, property] = await Promise.all([
+      bookingApi(
+        `/${encodeURIComponent(propertySlug)}/bookings/${encodeURIComponent(code)}?access=${encodeURIComponent(access)}`,
+        publicBookingSchema,
+      ),
+      bookingApi(`/${encodeURIComponent(propertySlug)}`, bookingEnginePropertySchema),
+    ]);
+    booking = found;
+    // Offer online payment only where the hotel takes it (found in the browser
+    // test: the button was offered, then refused, at a hotel without a gateway).
+    prepayAvailable = property.prepayAvailable;
   } catch (error) {
     if (error instanceof BookingApiError && (error.status === 404 || error.status === 400))
       notFound();
@@ -44,6 +52,7 @@ export default async function BookingPage({
 
   const price = (minor: number) => format(money(minor, booking.currency));
   const owed = booking.balanceMinor > 0 && booking.status === 'CONFIRMED';
+  const canPayOnline = owed && prepayAvailable;
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6">
@@ -79,7 +88,7 @@ export default async function BookingPage({
           </dl>
         </CardContent>
       </Card>
-      {owed && (
+      {canPayOnline && (
         <div className="flex flex-col gap-2">
           <p className="text-sm text-muted-foreground">
             {booking.paymentChoice === 'PAY_NOW'
@@ -93,6 +102,11 @@ export default async function BookingPage({
             existingUrl={booking.payment?.url ?? null}
           />
         </div>
+      )}
+      {owed && !canPayOnline && (
+        <p className="text-sm text-muted-foreground">
+          The balance is payable at the hotel when you arrive.
+        </p>
       )}
       <p className="text-xs text-muted-foreground">
         Keep this page’s address: it is how you can see this booking again.
