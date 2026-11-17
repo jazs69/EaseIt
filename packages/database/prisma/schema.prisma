@@ -207,6 +207,10 @@ enum PaymentMethod {
   BANK_TRANSFER
   CHEQUE
   OTHER
+  /// GP-07: the folio balance was billed to the stay's company account. Written
+  /// only by the bill-to-company transfer, never chosen as a way to pay, and no
+  /// money was received: payment totals and the night-audit snapshot leave it out.
+  CITY_LEDGER
 }
 
 /// The kind of government photo ID recorded at check-in.
@@ -380,6 +384,8 @@ model Property {
   amenityLinks      PropertyAmenityLink[]
   policies          PropertyPolicy[]
   fees              FeeAndSurcharge[]
+  guestProfiles     GuestProfile[]
+  companyLedger     CompanyLedgerEntry[]
 
   @@index([status])
   @@map("property")
@@ -1877,6 +1883,7 @@ model Reservation {
   folio         Folio?
   invoices      Invoice[]
   internalNotes ReservationNote[]
+  companyLedger CompanyLedgerEntry[]
   /// What each night was sold for. Written once at booking; never repriced.
   pricedNights  ReservationNight[]
 
@@ -2043,6 +2050,11 @@ model ReservationGuest {
 
   specialRequest String?
 
+  /// GP-02: the reusable profile a clerk linked this row to. Never set
+  /// automatically; null for a guest nobody has linked.
+  guestProfileId String?       @db.Uuid
+  guestProfile   GuestProfile? @relation(fields: [guestProfileId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
@@ -2050,6 +2062,7 @@ model ReservationGuest {
   /// other operational unique constraint (section 3.2).
   @@unique([propertyId, reservationId, ordinal], name: "reservation_guest_unique_ordinal")
   @@index([propertyId, reservationId])
+  @@index([propertyId, guestProfileId])
   @@map("reservation_guest")
 }
 
@@ -2104,6 +2117,7 @@ model Company {
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
   reservations Reservation[]
+  ledger       CompanyLedgerEntry[]
 
   @@unique([propertyId, gstin], name: "company_unique_gstin_per_property")
   @@index([propertyId, legalName])
@@ -2571,6 +2585,9 @@ model FolioLine {
   reversesLineId String?     @db.Uuid
   reverses       FolioLine?  @relation("Reversal", fields: [reversesLineId], references: [id], onDelete: SetNull)
   reversedBy     FolioLine[] @relation("Reversal")
+
+  /// GP-07: the company-ledger entry a CITY_LEDGER transfer line created.
+  companyLedgerEntry CompanyLedgerEntry?
 
   /// Staff member who posted it. Null for lines posted by the night audit.
   postedById String? @db.Uuid
@@ -3102,4 +3119,107 @@ model HousekeepingTask {
   @@index([propertyId, roomId])
   @@index([propertyId, assignedToId, status])
   @@map("housekeeping_task")
+}
+
+/// A reusable guest profile (GP-02).
+///
+/// ===========================================================================
+/// One per guest per property. Shared across the portfolio it would be a
+/// cross-tenant record (section 3.2), so a guest who stays at two hotels has
+/// two profiles, as they have two companies' worth of terms with `Company`.
+///
+/// `emailNormalized` and `phoneNormalized` are the matching keys, written by
+/// the service from the same helpers that match `reservation_guest` rows.
+/// They are deliberately NOT unique: a family shares a phone and an agent's
+/// email is on many bookings. Duplicates are suggested, never merged.
+///
+/// Guest PII. Never logged, never copied into `audit_log` (section 5).
+/// ===========================================================================
+model GuestProfile {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  firstName   String
+  lastName    String  @default("")
+  email       String?
+  phone       String?
+  countryCode String? @db.Char(2)
+
+  emailNormalized String?
+  phoneNormalized String?
+
+  preferences String?
+  notes       String?
+
+  createdById String?  @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  stays ReservationGuest[]
+
+  @@index([propertyId, lastName, firstName])
+  @@index([propertyId, emailNormalized])
+  @@index([propertyId, phoneNormalized])
+  @@map("guest_profile")
+}
+
+enum CompanyLedgerEntryKind {
+  /// A folio balance billed to the company. Positive.
+  TRANSFER
+  /// The company paid against its account. Negative.
+  PAYMENT
+}
+
+/// The city ledger: what each company owes this property (GP-07).
+///
+/// ===========================================================================
+/// Append-only, like `folio_line`: an UPDATE is refused by a trigger, and a
+/// mistake is corrected by a new entry. A company's balance is the sum of its
+/// entries and is never stored (section 3.4).
+///
+/// A TRANSFER is written in the same transaction as the guest folio's
+/// CITY_LEDGER payment line it mirrors, and points at it (`folioLineId`,
+/// unique), so the two cannot disagree. CHECK constraints in the migration
+/// pin the sign and the required fields to the kind.
+/// ===========================================================================
+model CompanyLedgerEntry {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  companyId String  @db.Uuid
+  company   Company @relation(fields: [companyId], references: [id], onDelete: NoAction)
+
+  kind CompanyLedgerEntryKind
+
+  /// Integer minor units, signed by kind.
+  amountMinor Int
+  currency    String @db.Char(3)
+
+  /// The business date it was posted on (section 3.3), never `now()`.
+  postingDate DateTime @db.Date
+
+  /// TRANSFER only: the stay and the folio line it came from.
+  reservationId String?      @db.Uuid
+  reservation   Reservation? @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  folioLineId   String?      @unique @db.Uuid
+  folioLine     FolioLine?   @relation(fields: [folioLineId], references: [id], onDelete: Cascade)
+
+  /// PAYMENT only: how the company paid, and its reference.
+  paymentMethod PaymentMethod?
+  reference     String?
+
+  remark         String?
+  postedById     String? @db.Uuid
+  /// PAYMENT only; a TRANSFER is deduplicated by its folio line's key.
+  idempotencyKey String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, idempotencyKey], name: "company_ledger_unique_idempotency_key")
+  @@index([propertyId, companyId, postingDate])
+  @@map("company_ledger_entry")
 }

@@ -141,7 +141,9 @@ export class NightAuditRunner {
   private async runStep(run: RunRef, step: number, startedAt: Date): Promise<void> {
     switch (step) {
       case 1:
-        return this.inStepTransaction(run, step, startedAt, (tx) => this.validatePreconditions(tx, run));
+        return this.inStepTransaction(run, step, startedAt, (tx) =>
+          this.validatePreconditions(tx, run),
+        );
       case 2: {
         const outcome = await this.rollNoShows(run);
         return this.inStepTransaction(run, step, startedAt, () => Promise.resolve(outcome));
@@ -164,7 +166,9 @@ export class NightAuditRunner {
       case 6:
         return this.inStepTransaction(run, step, startedAt, (tx) => this.snapshot(tx, run));
       case 7:
-        return this.inStepTransaction(run, step, startedAt, (tx) => this.advanceBusinessDate(tx, run));
+        return this.inStepTransaction(run, step, startedAt, (tx) =>
+          this.advanceBusinessDate(tx, run),
+        );
       case 8:
         return this.inStepTransaction(run, step, startedAt, (tx) => this.emit(tx, run));
       default:
@@ -187,7 +191,9 @@ export class NightAuditRunner {
       async (tx) => {
         await this.lockRun(tx, run);
         const existing = await tx.nightAuditStep.findUnique({
-          where: { night_audit_step_one_per_run: { propertyId: run.propertyId, runId: run.id, step } },
+          where: {
+            night_audit_step_one_per_run: { propertyId: run.propertyId, runId: run.id, step },
+          },
           select: { status: true },
         });
         if (existing?.status === 'COMPLETED') return;
@@ -249,13 +255,20 @@ export class NightAuditRunner {
    * is safe to show; anything else is summarised -- SQL and driver text never
    * reach a client (section 5), and the full error is in the worker log.
    */
-  private async recordFailure(run: RunRef, step: number, startedAt: Date, error: unknown): Promise<void> {
+  private async recordFailure(
+    run: RunRef,
+    step: number,
+    startedAt: Date,
+    error: unknown,
+  ): Promise<void> {
     const message =
       error instanceof DomainError
         ? error.message
         : `Step ${String(step)} failed unexpectedly; see the worker log. It will be retried.`;
     const details = error instanceof DomainError ? (error.details ?? {}) : {};
-    this.logger.error(`Night audit ${run.businessDate} step ${String(step)} failed: ${String(error)}`);
+    this.logger.error(
+      `Night audit ${run.businessDate} step ${String(step)} failed: ${String(error)}`,
+    );
     await this.prisma.client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_config('app.current_property_id', ${run.propertyId}, true)`;
       await this.writeStep(tx, run, step, 'FAILED', { error: message, ...details }, startedAt);
@@ -392,7 +405,13 @@ export class NightAuditRunner {
         taxMinor += result.taxMinor;
       }
     }
-    return { posted, alreadyPosted, postedRoomMinor: roomMinor, postedTaxMinor: taxMinor, overstays };
+    return {
+      posted,
+      alreadyPosted,
+      postedRoomMinor: roomMinor,
+      postedTaxMinor: taxMinor,
+      overstays,
+    };
   }
 
   /** One stay's night, in its own transaction. Null when already posted. */
@@ -441,7 +460,12 @@ export class NightAuditRunner {
              FOR UPDATE`;
         const folio = await tx.folio.upsert({
           where: { reservationId },
-          create: { propertyId: run.propertyId, reservationId, currency: stay.currency, status: 'OPEN' },
+          create: {
+            propertyId: run.propertyId,
+            reservationId,
+            currency: stay.currency,
+            status: 'OPEN',
+          },
           update: {},
           select: { id: true, status: true, currency: true },
         });
@@ -646,7 +670,9 @@ export class NightAuditRunner {
   private async snapshot(tx: Tx, run: RunRef): Promise<Outcome> {
     const date = toDate(run.businessDate);
     const existing = await tx.dailySnapshot.findUnique({
-      where: { daily_snapshot_one_per_business_date: { propertyId: run.propertyId, businessDate: date } },
+      where: {
+        daily_snapshot_one_per_business_date: { propertyId: run.propertyId, businessDate: date },
+      },
       select: { roomsSold: true, roomsAvailable: true, roomRevenueMinor: true, occupancyBp: true },
     });
     if (existing !== null) return { alreadySnapshotted: true, ...existing };
@@ -669,7 +695,11 @@ export class NightAuditRunner {
                           THEN l."amountMinor" ELSE 0 END), 0) AS service,
         COALESCE(SUM(CASE WHEN l."kind" = 'TAX' OR l."isTaxAdjustment"
                           THEN l."amountMinor" ELSE 0 END), 0) AS tax,
-        COALESCE(SUM(CASE WHEN l."kind" = 'PAYMENT' THEN -l."amountMinor" ELSE 0 END), 0) AS payments,
+        -- Money received only: a transfer to the company account (GP-07)
+        -- settles the folio but receives nothing.
+        COALESCE(SUM(CASE WHEN l."kind" = 'PAYMENT'
+                           AND l."paymentMethod" IS DISTINCT FROM 'CITY_LEDGER'
+                          THEN -l."amountMinor" ELSE 0 END), 0) AS payments,
         COALESCE(SUM(CASE WHEN l."kind" = 'REFUND' THEN l."amountMinor" ELSE 0 END), 0) AS refunds
         FROM "folio_line" l
         LEFT JOIN "folio_line" p ON p."id" = l."derivedFromLineId"

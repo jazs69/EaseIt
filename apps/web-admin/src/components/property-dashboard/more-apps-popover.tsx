@@ -43,6 +43,7 @@ import {
   ScrollText,
   Settings,
   ShoppingBag,
+  UsersRound,
   Wallet,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -64,7 +65,20 @@ interface AppItem {
 const APPS: readonly AppItem[] = [
   { id: 'reports', name: 'Reports', icon: FileText, href: '/reports/property-reports' },
   { id: 'shops', name: 'Shops', icon: ShoppingBag, isLocked: true },
-  { id: 'direct-billing', name: 'Direct billing', icon: Wallet, href: '/direct-billing' },
+  {
+    id: 'guests',
+    name: 'Guest profiles',
+    icon: UsersRound,
+    href: '/guests',
+    requiredPermission: Permission.RESERVATIONS_READ,
+  },
+  {
+    id: 'direct-billing',
+    name: 'Direct billing',
+    icon: Wallet,
+    href: '/direct-billing',
+    requiredPermission: Permission.FINANCIAL_REPORTS_READ,
+  },
   { id: 'payments', name: 'Payment', icon: CreditCard, href: '/payments' },
   {
     id: 'revenue',

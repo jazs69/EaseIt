@@ -129,6 +129,13 @@ export const Permission = {
   FOLIO_DISCOUNT: 'folio:discount',
   FOLIO_REFUND: 'folio:refund',
   FOLIO_SETTLE: 'folio:settle',
+  /**
+   * GP-07: bill a stay to its company's account (the city ledger) and record
+   * the company's payments against it. Extends credit, so a manager action:
+   * administrators hold it by default; reading the ledger needs
+   * `financial_reports:read`.
+   */
+  DIRECT_BILLING_MANAGE: 'direct_billing:manage',
 
   /* -- Rates & distribution ----------------------------------------------- */
   RATES_READ: 'rates:read',
@@ -307,6 +314,13 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
     key: P.FOLIO_DISCOUNT,
     label: 'Apply discounts',
     description: 'Reduce a folio total. Writes an audited adjustment line.',
+    category: C.BILLING,
+    sensitive: true,
+  },
+  {
+    key: P.DIRECT_BILLING_MANAGE,
+    label: 'Manage direct billing',
+    description: "Bill a stay's balance to its company account, and record the company's payments.",
     category: C.BILLING,
     sensitive: true,
   },

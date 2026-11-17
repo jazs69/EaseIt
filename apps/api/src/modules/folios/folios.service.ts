@@ -32,6 +32,7 @@ import {
   type PostFolioPaymentCommand,
   type CloseFolioCommand,
   type PostFolioRefundCommand,
+  type BillToCompanyCommand,
   type PropertyId,
   type Role,
   type TaxSlab,
@@ -49,6 +50,7 @@ import {
 import { Prisma } from '@repo/database';
 
 import { isLockTimeout, ROW_LOCK_TIMEOUT_MS } from '../../common/errors/sql-state.js';
+import { uniqueViolationMentions } from '../../common/errors/unique-violation.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { grantedPropertyWhere } from '../../common/property-scope/property-identifier.js';
 import { ClockService } from '../platform/clock.service.js';
@@ -82,12 +84,21 @@ function assertSameRefundIntent(
  */
 function refundableFrom(
   paymentId: string,
-  lines: readonly { id: string; kind: string; amountMinor: number; derivedFromLineId: string | null; reversesLineId: string | null }[],
+  lines: readonly {
+    id: string;
+    kind: string;
+    amountMinor: number;
+    derivedFromLineId: string | null;
+    reversesLineId: string | null;
+  }[],
 ): number {
   let received = 0;
   let refunded = 0;
   for (const line of lines) {
-    if (line.kind === 'PAYMENT' && (line.id === paymentId || line.derivedFromLineId === paymentId)) {
+    if (
+      line.kind === 'PAYMENT' &&
+      (line.id === paymentId || line.derivedFromLineId === paymentId)
+    ) {
       received -= line.amountMinor;
     } else if (line.kind === 'REFUND' && line.reversesLineId === paymentId) {
       refunded += line.amountMinor;
@@ -110,7 +121,13 @@ async function refundableOf(
         { reversesLineId: paymentId, kind: 'REFUND' },
       ],
     },
-    select: { id: true, kind: true, amountMinor: true, derivedFromLineId: true, reversesLineId: true },
+    select: {
+      id: true,
+      kind: true,
+      amountMinor: true,
+      derivedFromLineId: true,
+      reversesLineId: true,
+    },
   });
   return refundableFrom(paymentId, lines);
 }
@@ -214,7 +231,10 @@ function isTaxLine(line: { kind: string; isTaxAdjustment: boolean }): boolean {
 }
 
 /** The kind and flag for a tax delta: TAX when >= 0, a flagged ADJUSTMENT when < 0. */
-function taxDeltaShape(deltaMinor: number): { kind: 'TAX' | 'ADJUSTMENT'; isTaxAdjustment: boolean } {
+function taxDeltaShape(deltaMinor: number): {
+  kind: 'TAX' | 'ADJUSTMENT';
+  isTaxAdjustment: boolean;
+} {
   return deltaMinor < 0
     ? { kind: 'ADJUSTMENT', isTaxAdjustment: true }
     : { kind: 'TAX', isTaxAdjustment: false };
@@ -246,11 +266,7 @@ export class FoliosService {
    * caller's own grant — the same code at another hotel is a different
    * booking and must not be reachable (section 3.2).
    */
-  async byBookingCode(
-    userId: string,
-    hotelId: string,
-    bookingCode: string,
-  ): Promise<FolioPage> {
+  async byBookingCode(userId: string, hotelId: string, bookingCode: string): Promise<FolioPage> {
     const property = await this.authorise(userId, hotelId, Permission.FOLIO_READ);
 
     const reservation = await this.prisma.client.reservation.findFirst({
@@ -258,6 +274,7 @@ export class FoliosService {
       select: {
         id: true,
         confirmationCode: true,
+        company: { select: { id: true, legalName: true, tradeName: true } },
         status: true,
         source: true,
         createdAt: true,
@@ -369,8 +386,8 @@ export class FoliosService {
       ),
     );
 
-    const transactions = [...this.toTransactions(lines, roomNumber), ...scheduled].sort(
-      (a, b) => (a.date === b.date ? a.postedAt.localeCompare(b.postedAt) : a.date.localeCompare(b.date)),
+    const transactions = [...this.toTransactions(lines, roomNumber), ...scheduled].sort((a, b) =>
+      a.date === b.date ? a.postedAt.localeCompare(b.postedAt) : a.date.localeCompare(b.date),
     );
     const breakdown = this.toBreakdown(transactions, currency);
 
@@ -387,6 +404,13 @@ export class FoliosService {
         source: reservation.source,
         isWalkIn: reservation.source === 'WALK_IN',
         bookedAt: reservation.createdAt.toISOString(),
+        company:
+          reservation.company === null
+            ? null
+            : {
+                id: reservation.company.id,
+                name: reservation.company.tradeName ?? reservation.company.legalName,
+              },
 
         arrivalDate: toBusinessDate(
           reservation.arrivalDate,
@@ -489,7 +513,6 @@ export class FoliosService {
     const chargeDate = command.chargeDate ?? toBusinessDate(property.businessDate);
 
     await this.inFolioWrite(property.id, folio, async (tx) => {
-
       const charge = await tx.folioLine.create({
         data: {
           propertyId: property.id,
@@ -736,7 +759,6 @@ export class FoliosService {
 
     try {
       await this.inFolioWrite(property.id, folio, async (tx) => {
-
         await tx.folioLine.create({
           data: {
             propertyId: property.id,
@@ -791,9 +813,7 @@ export class FoliosService {
       if (!isIdempotencyKeyCollision(cause)) throw cause;
 
       await this.assertSamePaymentIntent(property.id, folio.id, command);
-      this.logger.debug(
-        `Folio payment replayed on an existing reference; nothing was posted.`,
-      );
+      this.logger.debug(`Folio payment replayed on an existing reference; nothing was posted.`);
     }
 
     return this.byBookingCode(userId, hotelId, folio.bookingCode);
@@ -918,6 +938,15 @@ export class FoliosService {
 
     if (line === null) throw new TenantScopeViolationError('Folio line');
 
+    // A transfer to the city ledger mirrors a receivable on the company's
+    // account (GP-07). Correcting one side alone would split them, so it is
+    // refused; the company account is corrected with its own entries.
+    if (line.paymentMethod === 'CITY_LEDGER') {
+      throw new ValidationFailedError({
+        lineId: 'A transfer to the company account cannot be corrected here.',
+      });
+    }
+
     // A refund is money returned; it is not edited (FO-12).
     if (line.kind === 'REFUND') {
       throw new ValidationFailedError({
@@ -1016,7 +1045,6 @@ export class FoliosService {
     const deltaTaxMinor = deltaGrossMinor - deltaNetMinor;
 
     await this.inFolioWrite(property.id, folio, async (tx) => {
-
       const adjustment = await tx.folioLine.create({
         data: {
           propertyId: property.id,
@@ -1031,9 +1059,7 @@ export class FoliosService {
            * negative, which a magnitude-plus-sign-from-the-line gives it.
            */
           kind: isCredit ? 'PAYMENT' : 'ADJUSTMENT',
-          ...(isCredit && line.paymentMethod !== null
-            ? { paymentMethod: line.paymentMethod }
-            : {}),
+          ...(isCredit && line.paymentMethod !== null ? { paymentMethod: line.paymentMethod } : {}),
           description:
             command.reason === null
               ? `Correction — ${line.description}`
@@ -1093,15 +1119,22 @@ export class FoliosService {
         });
       }
 
-      await this.writeAudit(tx, property.id, userId, folio.reservationId, 'FOLIO_CHARGE_CORRECTED', {
-        lineId: line.id,
-        kind: line.kind,
-        fromGrossMinor: currentGrossMinor,
-        toGrossMinor: targetGrossMinor,
-        deltaNetMinor,
-        deltaTaxMinor,
-        reason: command.reason,
-      });
+      await this.writeAudit(
+        tx,
+        property.id,
+        userId,
+        folio.reservationId,
+        'FOLIO_CHARGE_CORRECTED',
+        {
+          lineId: line.id,
+          kind: line.kind,
+          fromGrossMinor: currentGrossMinor,
+          toGrossMinor: targetGrossMinor,
+          deltaNetMinor,
+          deltaTaxMinor,
+          reason: command.reason,
+        },
+      );
     });
 
     return this.byBookingCode(userId, hotelId, folio.bookingCode);
@@ -1255,8 +1288,7 @@ export class FoliosService {
       (mixedBands
         ? // A target NET is grossed up night by night, each at its own rate.
           apportion(command.netAmountMinor ?? 0).reduce(
-            (sum, net, index) =>
-              sum + net + Math.round((net * (nightRates[index] ?? 0)) / 100),
+            (sum, net, index) => sum + net + Math.round((net * (nightRates[index] ?? 0)) / 100),
             0,
           )
         : taxable
@@ -1308,7 +1340,11 @@ export class FoliosService {
             .filter((child) => child.derivedFromLineId === charge.id)
             .reduce((sum, child) => sum + child.amountMinor, 0) +
           grandchildren
-            .filter((child) => child.derivedFromLineId !== null && nightOf.get(child.derivedFromLineId) === charge.id)
+            .filter(
+              (child) =>
+                child.derivedFromLineId !== null &&
+                nightOf.get(child.derivedFromLineId) === charge.id,
+            )
             .reduce((sum, child) => sum + child.amountMinor, 0),
       );
       const targetPerNight =
@@ -1321,7 +1357,6 @@ export class FoliosService {
     }
 
     await this.inFolioWrite(property.id, folio, async (tx) => {
-
       for (const [index, charge] of charges.entries()) {
         const shareGrossMinor = shares[index] ?? 0;
         if (shareGrossMinor === 0) continue;
@@ -1418,7 +1453,6 @@ export class FoliosService {
     const businessDate = toBusinessDate(property.businessDate);
 
     await this.inFolioWrite(property.id, folio, async (tx) => {
-
       await tx.folioLine.create({
         data: {
           propertyId: property.id,
@@ -1432,11 +1466,18 @@ export class FoliosService {
         },
       });
 
-      await this.writeAudit(tx, property.id, userId, folio.reservationId, 'FOLIO_DISCOUNT_APPLIED', {
-        reason: command.reason,
-        amountMinor: command.amountMinor,
-        businessDate,
-      });
+      await this.writeAudit(
+        tx,
+        property.id,
+        userId,
+        folio.reservationId,
+        'FOLIO_DISCOUNT_APPLIED',
+        {
+          reason: command.reason,
+          amountMinor: command.amountMinor,
+          businessDate,
+        },
+      );
     });
 
     return this.byBookingCode(userId, hotelId, folio.bookingCode);
@@ -1697,9 +1738,7 @@ export class FoliosService {
     const forecastsNights = !STAYS_NOT_ACCRUING.has(reservation.status);
 
     for (let offset = 0; forecastsNights && offset < nights; offset += 1) {
-      const date = toBusinessDate(
-        new Date(reservation.arrivalDate.getTime() + offset * DAY_MS),
-      );
+      const date = toBusinessDate(new Date(reservation.arrivalDate.getTime() + offset * DAY_MS));
       if (postedRoomDates.has(date)) continue;
 
       // F9: a stay priced per night shows each night at its own price. Older
@@ -1790,14 +1829,12 @@ export class FoliosService {
    * `postedSubtotalMinor` keeps the ledger-only figure beside it, because that
    * is the number an invoice may be raised from.
    */
-  private toBreakdown(
-    transactions: readonly FolioTransaction[],
-    currency: string,
-  ): FolioBreakdown {
+  private toBreakdown(transactions: readonly FolioTransaction[], currency: string): FolioBreakdown {
     let subtotalMinor = 0;
     let postedSubtotalMinor = 0;
     let taxMinor = 0;
     let paymentsReceivedMinor = 0;
+    let billedToCompanyMinor = 0;
     let refundsIssuedMinor = 0;
 
     for (const entry of transactions) {
@@ -1807,6 +1844,7 @@ export class FoliosService {
       if (entry.kind === 'PAYMENT') {
         // Stored negative; reported as the positive sum a clerk expects.
         paymentsReceivedMinor += -entry.grossMinor;
+        if (entry.paymentMethod === 'CITY_LEDGER') billedToCompanyMinor += -entry.grossMinor;
         continue;
       }
       if (entry.kind === 'REFUND') {
@@ -1847,12 +1885,148 @@ export class FoliosService {
       sgstMinor,
       taxIsSplit: taxMinor > 0,
       paymentsReceivedMinor,
+      billedToCompanyMinor,
       refundsIssuedMinor,
       // No deposit concept exists; reported as zero rather than hidden.
       depositsHeldMinor: 0,
-      balanceDueMinor:
-        subtotalMinor + taxMinor - paymentsReceivedMinor + refundsIssuedMinor,
+      balanceDueMinor: subtotalMinor + taxMinor - paymentsReceivedMinor + refundsIssuedMinor,
     };
+  }
+
+  /* -------------------------------------------------------------------- */
+  /*  Bill to company: the city ledger (GP-07)                             */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Moves (part of) a folio's balance onto the stay's company account.
+   *
+   * ===========================================================================
+   * One transaction, under the folio locks every folio write takes
+   * (reservation, then folio, FOR UPDATE, bounded wait):
+   *
+   * 1. Re-read, under the lock, the stay's company and the folio balance. A
+   *    stay with no company is refused. So is an amount above the balance:
+   *    a transfer settles what the guest owes, it never puts the folio in
+   *    credit.
+   * 2. Post a PAYMENT line with method CITY_LEDGER, negative like every
+   *    payment, on the business date, carrying the client's idempotency key.
+   * 3. Write the TRANSFER entry on `company_ledger_entry` pointing at that
+   *    line. A deferred trigger refuses a CITY_LEDGER line with no entry, and
+   *    the entry's trigger refuses one that does not match its line, so the
+   *    two cannot disagree.
+   * 4. Keep the reservation's paid mirror in step and write the audit row.
+   *
+   * The folio then settles, checks out, closes and is invoiced to the company
+   * as usual. A replay with the same key is the original success; a different
+   * intent under that key is a typed conflict. Concurrent transfers serialise
+   * on the folio lock, and the second sees the reduced balance.
+   *
+   * Lock order matches every folio write. The company row is not locked here,
+   * only referenced: the insert takes FOR KEY SHARE on it, which the company
+   * payment's FOR NO KEY UPDATE does not block, so the two never deadlock.
+   * ===========================================================================
+   */
+  async billToCompany(
+    userId: string,
+    hotelId: string,
+    folioId: string,
+    command: BillToCompanyCommand,
+  ): Promise<FolioPage> {
+    const property = await this.authorise(userId, hotelId, Permission.DIRECT_BILLING_MANAGE);
+    const folio = await this.loadOpenFolio(property.id, folioId);
+    const businessDate = toBusinessDate(property.businessDate);
+
+    try {
+      await this.inFolioWrite(property.id, folio, async (tx) => {
+        const stay = await tx.reservation.findFirst({
+          where: { id: folio.reservationId, propertyId: property.id },
+          select: { companyId: true },
+        });
+        if (stay?.companyId === null || stay?.companyId === undefined) {
+          throw new ValidationFailedError({
+            amountMinor: 'This stay is not attached to a company, so it cannot be billed to one.',
+          });
+        }
+
+        const balanceMinor =
+          (
+            await tx.folioLine.aggregate({
+              where: { folioId: folio.id, propertyId: property.id },
+              _sum: { amountMinor: true },
+            })
+          )._sum.amountMinor ?? 0;
+        if (command.amountMinor > balanceMinor) {
+          throw new ValidationFailedError({
+            amountMinor:
+              balanceMinor <= 0
+                ? 'Nothing is owed on this folio.'
+                : `At most ${String(balanceMinor)} is owed on this folio.`,
+          });
+        }
+
+        const line = await tx.folioLine.create({
+          data: {
+            propertyId: property.id,
+            folioId: folio.id,
+            kind: 'PAYMENT',
+            description: 'Billed to company account',
+            amountMinor: -command.amountMinor,
+            currency: folio.currency,
+            chargeDate: toUtcMidnight(businessDate),
+            paymentMethod: 'CITY_LEDGER',
+            remark: command.remark,
+            postedById: userId,
+            idempotencyKey: command.idempotencyKey,
+          },
+          select: { id: true },
+        });
+
+        await tx.companyLedgerEntry.create({
+          data: {
+            propertyId: property.id,
+            companyId: stay.companyId,
+            kind: 'TRANSFER',
+            amountMinor: command.amountMinor,
+            currency: folio.currency,
+            postingDate: toUtcMidnight(businessDate),
+            reservationId: folio.reservationId,
+            folioLineId: line.id,
+            remark: command.remark,
+            postedById: userId,
+          },
+        });
+
+        await tx.reservation.update({
+          where: { id: folio.reservationId },
+          data: { paidAmountMinor: { increment: command.amountMinor } },
+        });
+
+        await this.writeAudit(
+          tx,
+          property.id,
+          userId,
+          folio.reservationId,
+          'FOLIO_BILLED_TO_COMPANY',
+          {
+            companyId: stay.companyId,
+            amountMinor: command.amountMinor,
+            businessDate,
+            idempotencyKey: command.idempotencyKey,
+          },
+        );
+      });
+    } catch (cause) {
+      if (!isIdempotencyKeyCollision(cause)) throw cause;
+      // The same check a payment replay gets: same folio, amount and method.
+      await this.assertSamePaymentIntent(property.id, folio.id, {
+        method: 'CITY_LEDGER' as PostFolioPaymentCommand['method'],
+        amountMinor: command.amountMinor,
+        remark: command.remark,
+        idempotencyKey: command.idempotencyKey,
+      });
+    }
+
+    return this.byBookingCode(userId, hotelId, folio.bookingCode);
   }
 
   /* -------------------------------------------------------------------- */
@@ -1920,6 +2094,13 @@ export class FoliosService {
           throw new ValidationFailedError({
             paymentLineId:
               'Only a posted payment can be refunded. Refund the original payment, not a correction to it.',
+          });
+        }
+        // Billed to a company, not received: there is no money to return (GP-07).
+        if (payment.paymentMethod === 'CITY_LEDGER') {
+          throw new ValidationFailedError({
+            paymentLineId:
+              'This was billed to the company account, not paid, so it cannot be refunded.',
           });
         }
 
@@ -2269,9 +2450,7 @@ export class FoliosService {
     const first = grants[0];
     if (first === undefined) throw new TenantScopeViolationError('Property');
 
-    const roles = grants
-      .map((grant) => grant.role.key)
-      .filter((key): key is Role => key !== null);
+    const roles = grants.map((grant) => grant.role.key).filter((key): key is Role => key !== null);
 
     if (!permissionsForRoles(roles).includes(required)) {
       throw new ForbiddenError(required);
@@ -2309,76 +2488,6 @@ export function isIdempotencyKeyCollision(cause: unknown): boolean {
 /** The one-folio-per-reservation index, for the concurrent-opener case. */
 export function isFolioPerReservationCollision(cause: unknown): boolean {
   return uniqueViolationMentions(cause, ['folio_reservationId_key']);
-}
-
-/**
- * A unique violation that names one of `needles` as the index it hit.
- *
- * ===========================================================================
- * The name is read from where this stack actually puts it, which was measured
- * rather than assumed.
- *
- * Prisma 7 with the `pg` driver adapter reports the index at
- * `meta.driverAdapterError.cause.constraint.index`, and leaves `meta.target`
- * undefined — so a detector written against `target` alone compiles, passes
- * typecheck, and silently never matches. That is exactly what happened here:
- * every collision answered 500 until the shape was probed. Hence all three
- * known shapes, most structured first:
- *
- *   1. the driver adapter's `constraint.index` (this build),
- *   2. `meta.target`, a name or a column list (query-engine builds),
- *   3. the message text, which carries the index name verbatim.
- *
- * The needles are **full index names and nothing looser**. A bare column name
- * would also be matched against the message, and Prisma's message embeds the
- * calling source — which mentions `idempotencyKey` — so a genuine
- * double-charged-night violation could have matched it and been swallowed as a
- * replay. A full index name appears in no other error, which is what makes
- * reading the message a legitimate last resort rather than a shortcut. It is
- * still the *last* resort: a message is the one part of an error nobody
- * promises to keep stable.
- *
- * If a future Prisma reports only a column list, this fails **closed** — a
- * loud 500 and a failing test, never a silently widened predicate.
- *
- * `P2002` is the client's code and `23505` the SQLSTATE; both are accepted,
- * because the query builder surfaces the former while a raw query surfaces the
- * latter and these paths are reachable through either — the same reasoning as
- * `outbox.service.ts`.
- *
- * The payment suite pins this shape against a real violation, so a Prisma
- * upgrade that moves it fails a test rather than quietly turning every replay
- * back into a 500.
- * ===========================================================================
- */
-function uniqueViolationMentions(cause: unknown, needles: readonly string[]): boolean {
-  if (cause === null || typeof cause !== 'object') return false;
-
-  const record = cause as { code?: unknown; meta?: unknown; message?: unknown };
-  const adapterCause = (
-    record.meta as { driverAdapterError?: { cause?: unknown } } | undefined
-  )?.driverAdapterError?.cause as
-    | { originalCode?: unknown; constraint?: { index?: unknown } }
-    | undefined;
-
-  const isUnique =
-    record.code === 'P2002' ||
-    record.code === '23505' ||
-    adapterCause?.originalCode === '23505';
-  if (!isUnique) return false;
-
-  const candidates: string[] = [];
-
-  const index = adapterCause?.constraint?.index;
-  if (typeof index === 'string') candidates.push(index);
-
-  const target = (record.meta as { target?: unknown } | undefined)?.target;
-  if (Array.isArray(target)) candidates.push(target.map((part) => String(part)).join(','));
-  else if (typeof target === 'string') candidates.push(target);
-
-  if (typeof record.message === 'string') candidates.push(record.message);
-
-  return candidates.some((text) => needles.some((needle) => text.includes(needle)));
 }
 
 /** Kinds that add to what is owed, exported for the night audit to reuse. */

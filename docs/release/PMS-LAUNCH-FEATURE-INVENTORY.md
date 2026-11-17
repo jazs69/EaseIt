@@ -79,8 +79,8 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
 | `CV` COMPLETE AND VERIFIED | 79      | 38.5% |
-| `PI` PARTIALLY IMPLEMENTED | 95      | 46.3% |
-| `NI` NOT IMPLEMENTED       | 27      | 13.2% |
+| `PI` PARTIALLY IMPLEMENTED | 97      | 47.3% |
+| `NI` NOT IMPLEMENTED       | 25      | 12.2% |
 | `BU` BLOCKED / UNKNOWN     | 4       | 2.0%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -301,15 +301,15 @@ Parent status: **`PI`** — check-in and room move are well verified; **check-ou
 
 Parent status: **`PI`**
 
-| ID    | Subfeature             | St   | Evidence                                                                                                                                       | U/A/L/D/I          | Tests and actual result                          | Acceptance criterion                                                                      | Dep          | Pri | Launch | Verified   | Method     |
-| ----- | ---------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------ | --- | ------ | ---------- | ---------- |
-| GP-01 | Per-reservation guests | `PI` | `ReservationGuest`; `GovtIdType`, `Gender`; migration `20261017120000`                                                                         | ✔/✔/✔/✔/–          | government-ID blocker asserted in check-in suite | Guest details persist and satisfy check-in requirements                                   | —            | 2   | M      | 2026-10-29 | TR partial |
-| GP-02 | Reusable guest profile | `NI` | no `Guest` model — guests are reservation-scoped only                                                                                          | ✖/✖/✖/✖/–          | none                                             | Profile with dedupe, stay history and preferences                                         | GP-01        | 2   | A      | 2026-10-29 | SI         |
-| GP-03 | Company list / create  | `PI` | `companies.controller.ts:34`, `:44`; `Company`                                                                                                 | ✔/✔/✔/✔/–          | none                                             | Company round-trips and can be attached to a booking                                      | —            | 3   | A      | 2026-10-29 | SI         |
-| GP-04 | GSTIN lookup           | `PI` | `companies.controller.ts:59`; `gst.service.ts:33` provider union, `:60` default `mock`, `:68` warns lookups return **synthetic** company names | ✔/✔/⚠/✔/⚠          | none                                             | A real provider path is exercised against sandbox; mock is impossible outside development | —            | 2   | A      | 2026-10-29 | SI         |
-| GP-05 | GSTIN validation       | `PI` | `apps/api/src/modules/companies/gstin.ts`; `GstinVerification` enum; migration `20261017150000`                                                | ✔/✔/✔/✔/–          | none                                             | Checksum and format validated; invalid refused with a typed error                         | GP-04        | 3   | A      | 2026-10-29 | SI         |
-| GP-06 | Postal-code lookup     | `PI` | `companies.controller.ts:72`                                                                                                                   | ✔/✔/✔/–/?          | none                                             | Returns city/state for a valid code; provider documented                                  | —            | 4   | P      | 2026-10-29 | SI         |
-| GP-07 | Direct-billing screen  | `NI` | `apps/web-admin/src/app/(property)/direct-billing/page.tsx` — 44 lines, **0 API calls**, `PlaceholderScreen`                                   | ✖ labelled/✖/✖/–/– | none                                             | Ledger of company-billed stays with aging                                                 | GP-03, FO-14 | 2   | A      | 2026-10-29 | SI         |
+| ID    | Subfeature             | St   | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | U/A/L/D/I | Tests and actual result                                                                                                                                                                                                                                                     | Acceptance criterion                                                                      | Dep          | Pri | Launch | Verified   | Method     |
+| ----- | ---------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------ | --- | ------ | ---------- | ---------- |
+| GP-01 | Per-reservation guests | `PI` | `ReservationGuest`; `GovtIdType`, `Gender`; migration `20261017120000`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | ✔/✔/✔/✔/– | government-ID blocker asserted in check-in suite                                                                                                                                                                                                                            | Guest details persist and satisfy check-in requirements                                   | —            | 2   | M      | 2026-10-29 | TR partial |
+| GP-02 | Reusable guest profile | `PI` | 2026-11-17: `GuestProfile` (per property, RLS), `reservation_guest.guestProfileId` + same-property trigger; `modules/guests` (search cursor-paged, create, edit, link/unlink by hand); suggestions by normalised email/phone, never merged; screen `/guests`                                                                                                                                                                                                                                                                                        | ~/✔/✔/✔/– | vitest (matching keys); integration suite `guests-and-direct-billing.test.mjs` written and gated but **not yet run** (PostgreSQL down; migration `20261117180000_guest_profiles_and_city_ledger` not yet applied anywhere); screen not opened in a browser                  | Profile with dedupe, stay history and preferences                                         | GP-01        | 2   | A      | 2026-11-17 | SI         |
+| GP-03 | Company list / create  | `PI` | `companies.controller.ts:34`, `:44`; `Company`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                                                        | Company round-trips and can be attached to a booking                                      | —            | 3   | A      | 2026-10-29 | SI         |
+| GP-04 | GSTIN lookup           | `PI` | `companies.controller.ts:59`; `gst.service.ts:33` provider union, `:60` default `mock`, `:68` warns lookups return **synthetic** company names                                                                                                                                                                                                                                                                                                                                                                                                      | ✔/✔/⚠/✔/⚠ | none                                                                                                                                                                                                                                                                        | A real provider path is exercised against sandbox; mock is impossible outside development | —            | 2   | A      | 2026-10-29 | SI         |
+| GP-05 | GSTIN validation       | `PI` | `apps/api/src/modules/companies/gstin.ts`; `GstinVerification` enum; migration `20261017150000`                                                                                                                                                                                                                                                                                                                                                                                                                                                     | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                                                        | Checksum and format validated; invalid refused with a typed error                         | GP-04        | 3   | A      | 2026-10-29 | SI         |
+| GP-06 | Postal-code lookup     | `PI` | `companies.controller.ts:72`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ✔/✔/✔/–/? | none                                                                                                                                                                                                                                                                        | Returns city/state for a valid code; provider documented                                  | —            | 4   | P      | 2026-10-29 | SI         |
+| GP-07 | Direct-billing screen  | `PI` | 2026-11-17: city ledger. `PaymentMethod.CITY_LEDGER` + `company_ledger_entry` (append-only, CHECKs, same-property and folio-line triggers, deferred check that every CITY_LEDGER line has its entry); `POST …/folios/:id/bill-to-company` under the folio locks; `modules/direct-billing` (accounts aged 0-30/31-60/61-90/90+ from invoice date, statement, company payments capped at balance); permission `direct_billing:manage`; invoice balance = billed amount; screen `/direct-billing` and "Bill to company" on the folio. No credit limits | ~/✔/✔/✔/– | vitest (aging, statement, permissions); integration suite `guests-and-direct-billing.test.mjs` written and gated but **not yet run** (PostgreSQL down; migration `20261117180000_guest_profiles_and_city_ledger` not yet applied anywhere); screens not opened in a browser | Ledger of company-billed stays with aging                                                 | GP-03, FO-14 | 2   | A      | 2026-11-17 | SI         |
 
 ### 2.9 Folios, billing, taxes, payments, refunds, invoices
 
@@ -796,6 +796,58 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-17 (fortieth pass) - reusable guest profiles and direct billing (GP-02, GP-07)
+
+**Status transitions.** GP-02 `NI`→`PI`, GP-07 `NI`→`PI`. Counts: `PI` 95→97, `NI` 27→25.
+Neither is `CV`: the migration and the integration suite have not run against PostgreSQL yet.
+
+**Decision (owner, 2026-11-17).** Build a real city ledger for GP-07 rather than a read-only
+screen. Before this, nothing could be owed by a company: check-out refuses any folio that does not
+balance to zero. No credit limits; that policy is not decided yet.
+
+**Guest profiles (GP-02).**
+
+- `guest_profile` is per property (section 3.2), with RLS. `reservation_guest` gets a nullable
+  `guestProfileId`, and a trigger refuses a link to another property's profile.
+- Staff search, create and edit profiles, and link or unlink a booking's guest row by hand.
+- Stays and profiles that share a normalised email (case, spaces) or phone (digits only, last ten)
+  are suggested, never linked or merged. A row already linked elsewhere is refused, not moved.
+- Reading needs `reservations:read` and writing `reservations:edit`. Audit rows name fields and
+  rows, never values.
+
+**Direct billing (GP-07).**
+
+- "Bill to company" on a folio whose stay has a company, needing the new `direct_billing:manage`.
+  Under the folio locks it posts a `CITY_LEDGER` payment line and, in the same transaction, a
+  TRANSFER on the new append-only `company_ledger_entry`. It is never more than the balance, and
+  is idempotent per key.
+- The folio then checks out and closes. Its invoice goes to the company with "paid" excluding the
+  transfer and "balance" equal to it.
+- A transfer cannot be refunded or corrected.
+- Database guarantees:
+  - CHECKs pin each entry's sign and fields to its kind.
+  - Triggers keep company, stay and folio line in the same property, and require the line to
+    mirror the entry.
+  - A deferred trigger refuses a `CITY_LEDGER` line with no entry.
+- Company payments lock the company row (`FOR NO KEY UPDATE`, bounded wait), are capped at the
+  balance, and are idempotent.
+- The night-audit snapshot's `paymentsMinor` now leaves out `CITY_LEDGER`: no money was
+  received. Past snapshots are unchanged.
+- The screen shows each company's balance aged 0-30, 31-60, 61-90 and 90+ days. Payments clear the
+  oldest debt first, and the rest ages from the invoice date (or the transfer date). Each company
+  has a statement with a running balance and a payment form.
+
+**Verified.** `pnpm typecheck`, `pnpm lint`, `pnpm gate` (fast) exit 0. New vitest suites: aging and
+matching keys 6/6, direct-billing reads and permissions 5/5.
+
+**Not verified.**
+
+- Migration `20261117180000_guest_profiles_and_city_ledger` has not been applied to any database.
+- `test/integration/guests-and-direct-billing.test.mjs` is written and added to `gate:integration`
+  but **not run**. It covers 8-way races of transfers and of company payments (exactly one each),
+  the mirrored line and entry, the invoice balance, the CHECKs and triggers, and 403/404.
+- No screen has been opened in a browser.
 
 ### 2026-11-17 (thirty-ninth pass) - reports read the night-audit snapshots; tax report; revenue screen (RP-05, RP-08, RP-09, RP-10, GR-02)
 

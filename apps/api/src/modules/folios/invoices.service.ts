@@ -52,7 +52,12 @@ import { fiscalYearOf, invoiceNumber } from './invoice-document.js';
 /** What is stored in `invoice.document`: the invoice without its row id. */
 const storedDocumentSchema = invoiceSchema.omit({ id: true });
 
-const LINE_KINDS: ReadonlySet<string> = new Set(['ROOM_CHARGE', 'SERVICE_CHARGE', 'TAX', 'ADJUSTMENT']);
+const LINE_KINDS: ReadonlySet<string> = new Set([
+  'ROOM_CHARGE',
+  'SERVICE_CHARGE',
+  'TAX',
+  'ADJUSTMENT',
+]);
 
 function toBusinessDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -83,7 +88,8 @@ function isInvoicePerFolioCollision(cause: unknown): boolean {
   if (cause === null || typeof cause !== 'object') return false;
   const record = cause as { code?: unknown; message?: unknown; meta?: unknown };
   const adapter = (record.meta as { driverAdapterError?: { cause?: unknown } } | undefined)
-    ?.driverAdapterError?.cause as { originalCode?: unknown; constraint?: { index?: unknown } } | undefined;
+    ?.driverAdapterError?.cause as
+    { originalCode?: unknown; constraint?: { index?: unknown } } | undefined;
   const unique = record.code === 'P2002' || adapter?.originalCode === '23505';
   if (!unique) return false;
   const named = [adapter?.constraint?.index, record.message].filter(
@@ -154,7 +160,11 @@ export class InvoicesService {
     if (folio.status !== 'CLOSED') throw this.notClosed();
 
     // The folio is closed, so its lines are final; see the file note.
-    const page = await this.folios.byBookingCode(userId, hotelId, folio.reservation.confirmationCode);
+    const page = await this.folios.byBookingCode(
+      userId,
+      hotelId,
+      folio.reservation.confirmationCode,
+    );
     const body = this.compose(page, property, folio.reservation);
 
     let invoiceId: string;
@@ -196,7 +206,11 @@ export class InvoicesService {
         const sequence = advanced[0]?.lastNumber;
         if (sequence === undefined) throw new TransactionConflictError('invoice number');
 
-        const number = invoiceNumber(property.settings?.invoicePrefix ?? 'INV_', fiscalYear, sequence);
+        const number = invoiceNumber(
+          property.settings?.invoicePrefix ?? 'INV_',
+          fiscalYear,
+          sequence,
+        );
         const issuedAt = this.clock.now();
         const document = storedDocumentSchema.parse({
           ...body,
@@ -312,7 +326,9 @@ export class InvoicesService {
       });
     }
     if (page.breakdown.balanceDueMinor !== 0) {
-      throw new ValidationFailedError({ folioId: 'An invoice is issued only for a folio settled at zero.' });
+      throw new ValidationFailedError({
+        folioId: 'An invoice is issued only for a folio settled at zero.',
+      });
     }
 
     const lines: InvoiceLine[] = page.transactions
@@ -401,20 +417,27 @@ export class InvoicesService {
         cgstMinor: b.cgstMinor,
         sgstMinor: b.sgstMinor,
         totalMinor: b.subtotalMinor + b.taxMinor,
-        paidMinor: b.paymentsReceivedMinor,
+        // Billed to the company account is owed by the bill-to, not paid
+        // (GP-07): it is left out of "paid" and is the invoice's balance.
+        paidMinor: b.paymentsReceivedMinor - b.billedToCompanyMinor,
         refundedMinor: b.refundsIssuedMinor,
-        balanceMinor: b.balanceDueMinor,
+        balanceMinor: b.balanceDueMinor + b.billedToCompanyMinor,
       },
     };
   }
 
   private notClosed(): ValidationFailedError {
     return new ValidationFailedError({
-      folioId: 'Only a closed folio can be invoiced. Settle it to zero and close it, or check the guest out.',
+      folioId:
+        'Only a closed folio can be invoiced. Settle it to zero and close it, or check the guest out.',
     });
   }
 
-  private async authorise(userId: string, codeOrId: string, required: Permission): Promise<CallerProperty> {
+  private async authorise(
+    userId: string,
+    codeOrId: string,
+    required: Permission,
+  ): Promise<CallerProperty> {
     const grants = await this.prisma.client.userPropertyRole.findMany({
       where: grantedPropertyWhere({ userId, codeOrId, operableOnly: false }),
       select: {

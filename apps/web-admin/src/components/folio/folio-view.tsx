@@ -58,6 +58,7 @@ import {
 import { usePaymentIntent } from './use-payment-intent';
 import {
   PAYMENT_METHOD_LABELS,
+  STORED_PAYMENT_METHOD_LABELS,
   paymentMethodSchema,
   type FolioPage,
   type FolioTransaction,
@@ -65,6 +66,7 @@ import {
 } from '@repo/types';
 
 import { BookingActionsMenu } from './booking-actions-menu';
+import { BillToCompany } from './bill-to-company';
 import { InvoiceActions } from './invoice-actions';
 import { useFolioSummaryRows, type FolioSummaryRow } from './use-folio-summary-rows';
 import { EditableFolioCell } from './editable-folio-cell';
@@ -305,8 +307,16 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
               router.refresh();
             }}
           />
-          <ActionPill icon={IdCard} label="Registration card" needs="the frontdesk module's registration card" />
-          <ActionPill icon={Link2} label="Send payment link" needs="the payments module's hosted link" />
+          <ActionPill
+            icon={IdCard}
+            label="Registration card"
+            needs="the frontdesk module's registration card"
+          />
+          <ActionPill
+            icon={Link2}
+            label="Send payment link"
+            needs="the payments module's hosted link"
+          />
           <ActionPill
             icon={Plus}
             label="Add charge"
@@ -314,7 +324,9 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
               setSheet('charge');
             }}
             disabled={folio.folioId === null || folioClosed}
-            disabledReason={folioClosed ? 'The folio is closed' : 'No folio yet — one opens at check-in'}
+            disabledReason={
+              folioClosed ? 'The folio is closed' : 'No folio yet — one opens at check-in'
+            }
           />
           <ActionPill
             icon={Percent}
@@ -323,7 +335,9 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
               setSheet('discount');
             }}
             disabled={folio.folioId === null || folioClosed}
-            disabledReason={folioClosed ? 'The folio is closed' : 'No folio yet — one opens at check-in'}
+            disabledReason={
+              folioClosed ? 'The folio is closed' : 'No folio yet — one opens at check-in'
+            }
           />
           {/* FO-12: refund against a posted payment. FO-13: close a settled
               folio for a stay that is no longer accruing charges. */}
@@ -351,8 +365,14 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
                 : 'Upcoming and in-house stays close their folio at check-out'
             }
           />
+          {/* GP-07: settle the balance onto the stay's company account. */}
+          <BillToCompany hotelId={hotelId} folio={folio} onBilled={setFolio} />
           <ActionPill icon={Mail} label="Email folio" needs="the platform module's mail outbox" />
-          <ActionPill icon={RotateCcw} label="Rollback" needs="reversing entries in the folios module" />
+          <ActionPill
+            icon={RotateCcw}
+            label="Rollback"
+            needs="reversing entries in the folios module"
+          />
           {/* FO-14: issued from a closed folio, then downloaded as PDF or CSV. */}
           <InvoiceActions
             hotelId={hotelId}
@@ -404,7 +424,10 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
       </header>
 
       {/* ---- Tabs ------------------------------------------------------ */}
-      <nav className="flex gap-1 overflow-x-auto border-b border-white/[0.08] px-4" aria-label="Folio views">
+      <nav
+        className="flex gap-1 overflow-x-auto border-b border-white/[0.08] px-4"
+        aria-label="Folio views"
+      >
         {TABS.map((entry) => (
           <button
             key={entry.id}
@@ -480,7 +503,10 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             label="Payments received"
             value={money(breakdown.paymentsReceivedMinor, currency)}
           />
-          <SummaryRow label="Refunds issued" value={money(breakdown.refundsIssuedMinor, currency)} />
+          <SummaryRow
+            label="Refunds issued"
+            value={money(breakdown.refundsIssuedMinor, currency)}
+          />
           {/* Always zero: there is no deposit instrument in the schema. Shown
               rather than hidden, so nobody assumes it is tracked elsewhere. */}
           <SummaryRow
@@ -1182,8 +1208,8 @@ function PostingSheet({
             className="flex flex-col gap-2 rounded-lg border border-rose-500/30 bg-rose-500/[0.07] px-3 py-2.5 text-[11px] leading-relaxed text-rose-200"
           >
             <span className="font-semibold">
-              A payment reference for this booking could not be read. An earlier payment attempt
-              may have succeeded, but we cannot verify it using the missing reference.
+              A payment reference for this booking could not be read. An earlier payment attempt may
+              have succeeded, but we cannot verify it using the missing reference.
             </span>
             <span className="text-rose-300/80">
               {intent?.quarantine === 'unidentified'
@@ -1194,9 +1220,7 @@ function PostingSheet({
 
             <ol className="flex flex-col gap-2 text-rose-300/90">
               <li className="flex flex-col gap-1">
-                <span className="font-semibold text-rose-200">
-                  1. Review the folio ledger
-                </span>
+                <span className="font-semibold text-rose-200">1. Review the folio ledger</span>
                 <Link
                   href={`/folio/${encodeURIComponent(bookingCode)}?hotelId=${encodeURIComponent(hotelId)}`}
                   onClick={() => {
@@ -1246,7 +1270,7 @@ function PostingSheet({
               Start a new payment
             </button>
 
-            <span className="text-rose-300/60 break-all">
+            <span className="break-all text-rose-300/60">
               The unreadable value is kept untouched for support. Booking {bookingCode}.
             </span>
           </div>
@@ -1380,7 +1404,7 @@ function PostingSheet({
             </div>
             {/* Everything a supervisor needs to chase it, and nothing a
                 shoulder-surfer can read as a guest's detail. */}
-            <span className="text-rose-300/60 break-all">
+            <span className="break-all text-rose-300/60">
               Reference {intent?.key ?? '—'} · booking {bookingCode}
             </span>
           </div>
@@ -1554,7 +1578,7 @@ function SettleSheet({
                     {`${formatDate(entry.date)} · ${
                       entry.paymentMethod === null
                         ? 'Payment'
-                        : PAYMENT_METHOD_LABELS[entry.paymentMethod]
+                        : STORED_PAYMENT_METHOD_LABELS[entry.paymentMethod]
                     } · ${money(entry.refundableMinor ?? 0, currency)} refundable`}
                   </option>
                 ))}
@@ -1667,22 +1691,17 @@ function StatusPill({ status }: { status: string }) {
 
   return (
     <span
-      className={cn('rounded border px-2 py-0.5 text-[10px] font-bold tracking-wider uppercase', tone)}
+      className={cn(
+        'rounded border px-2 py-0.5 text-[10px] font-bold tracking-wider uppercase',
+        tone,
+      )}
     >
       {status.replace(/_/g, ' ')}
     </span>
   );
 }
 
-function Kpi({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: string | undefined;
-}) {
+function Kpi({ label, value, tone }: { label: string; value: string; tone?: string | undefined }) {
   return (
     <div className="text-right">
       <p className="text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">{label}</p>

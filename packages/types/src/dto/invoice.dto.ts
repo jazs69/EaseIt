@@ -19,7 +19,7 @@
 import { z } from 'zod';
 
 import { businessDateSchema } from '../domain.js';
-import { paymentMethodSchema } from './create-reservation.dto.js';
+import { storedPaymentMethodSchema } from './create-reservation.dto.js';
 
 export const invoicePartySchema = z.object({
   name: z.string(),
@@ -51,7 +51,7 @@ export type InvoiceLine = z.infer<typeof invoiceLineSchema>;
 export const invoicePaymentSchema = z.object({
   date: businessDateSchema,
   kind: z.enum(['PAYMENT', 'REFUND']),
-  method: paymentMethodSchema.nullable(),
+  method: storedPaymentMethodSchema.nullable(),
   amountMinor: z.number().int().nonnegative(),
 });
 
@@ -90,9 +90,14 @@ export const invoiceSchema = z.object({
     cgstMinor: z.number().int(),
     sgstMinor: z.number().int(),
     totalMinor: z.number().int(),
+    /** Money received, excluding anything billed to the company account. */
     paidMinor: z.number().int(),
     refundedMinor: z.number().int(),
-    /** Always zero: an invoice is raised only from a folio settled at zero. */
+    /**
+     * Owed by the bill-to after this invoice: the amount billed to the
+     * company's account (GP-07), and zero for a stay paid in full. The folio
+     * itself is always settled at zero before an invoice is raised.
+     */
     balanceMinor: z.number().int(),
   }),
 });

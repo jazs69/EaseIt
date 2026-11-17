@@ -265,6 +265,11 @@ const suites = [
     script: 'test/integration/snapshot-reports.test.mjs',
     why: 'closed days read from daily_snapshot, never the live counters: revenue, flash, sales, dashboard, group view; tax report reconciles to folio tax lines; 403 housekeeping, 404 another property',
   },
+  {
+    name: 'guests and direct billing (GP-02, GP-07)',
+    script: 'test/integration/guests-and-direct-billing.test.mjs',
+    why: 'profiles suggest by email/phone and never merge; links refused across profiles and properties; bill-to-company 8-way race gives one transfer mirrored by one folio line; company payments capped, 8-way race gives one; invoice balance is the billed amount; append-only ledger; 403/404',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

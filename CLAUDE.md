@@ -335,6 +335,11 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
   nothing else locks that table. Once a folio is invoiced, triggers refuse any new `folio_line`, any
   reopening of the folio and any UPDATE of the invoice, so a new folio-writing path cannot silently
   change an invoiced bill.
+  Bill-to-company (GP-07, `billToCompany`) is a folio write like the others (reservation → folio,
+  re-checks OPEN, company and balance under the lock) and inserts a `company_ledger_entry` in the
+  same transaction. A company payment locks only the `company` row `FOR NO KEY UPDATE`, which the
+  transfer's FK check (`FOR KEY SHARE`) does not wait on, so the two cannot deadlock. Both races are
+  in `guests-and-direct-billing.test.mjs`. That suite has **not run yet**.
 - **Create-reservation racing cancellation or a room move** on the same room type and dates.
 
 **Requirements for any future module writing these tables.** `nightaudit` now exists and follows them

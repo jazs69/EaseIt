@@ -20,7 +20,7 @@ import { z } from 'zod';
 
 import { businessDateSchema, propertyIdSchema, reservationStatusSchema } from '../domain.js';
 import { folioLineSchema } from './check-in.dto.js';
-import { paymentMethodSchema } from './create-reservation.dto.js';
+import { paymentMethodSchema, storedPaymentMethodSchema } from './create-reservation.dto.js';
 import { invoiceRefSchema } from './invoice.dto.js';
 
 /* -------------------------------------------------------------------------- */
@@ -87,8 +87,8 @@ export const folioTransactionSchema = z.object({
    */
   isPosted: z.boolean(),
 
-  /** Set on a payment or refund row. */
-  paymentMethod: paymentMethodSchema.nullable(),
+  /** Set on a payment or refund row. `CITY_LEDGER` is a bill-to-company transfer. */
+  paymentMethod: storedPaymentMethodSchema.nullable(),
   /** Set on a correction, pointing at the line it reverses. */
   reversesLineId: z.uuid().nullable(),
   /**
@@ -153,6 +153,11 @@ export const folioBreakdownSchema = z.object({
   taxIsSplit: z.boolean(),
 
   paymentsReceivedMinor: z.number().int(),
+  /**
+   * The part of `paymentsReceivedMinor` that was billed to the stay's company
+   * account (GP-07): it settles the guest folio but no money was received.
+   */
+  billedToCompanyMinor: z.number().int().nonnegative(),
   refundsIssuedMinor: z.number().int(),
   /**
    * Always zero today, and reported rather than hidden.
@@ -206,6 +211,12 @@ export const folioPageSchema = z.object({
 
     canCheckIn: z.boolean(),
     canCheckOut: z.boolean(),
+
+    /**
+     * The company the stay is billed to, if any (GP-07). Only such a stay can
+     * have its balance billed to a company account.
+     */
+    company: z.object({ id: z.uuid(), name: z.string() }).nullable(),
   }),
 
   /** Headline figures, from the same lines as everything else. */
@@ -362,7 +373,7 @@ export const paymentByKeyResultSchema = z.object({
   folioId: z.uuid().nullable(),
   /** Positive minor units received. Null when nothing was found. */
   amountMinor: z.number().int().nullable(),
-  method: paymentMethodSchema.nullable(),
+  method: storedPaymentMethodSchema.nullable(),
   /** The business date it was posted against, never `now()`. */
   chargeDate: businessDateSchema.nullable(),
 });
@@ -408,8 +419,7 @@ export const correctFolioChargeSchema = z
     reason: z.string().trim().max(200).nullable().default(null),
   })
   .refine(
-    (value) =>
-      (value.grossAmountMinor === undefined) !== (value.netAmountMinor === undefined),
+    (value) => (value.grossAmountMinor === undefined) !== (value.netAmountMinor === undefined),
     {
       // Both would be a contradiction the moment they disagree about tax, and
       // the server would have to silently pick one. Neither is a no-op dressed
@@ -452,8 +462,7 @@ export const correctRoomChargesSchema = z
     reason: z.string().trim().max(200).nullable().default(null),
   })
   .refine(
-    (value) =>
-      (value.grossAmountMinor === undefined) !== (value.netAmountMinor === undefined),
+    (value) => (value.grossAmountMinor === undefined) !== (value.netAmountMinor === undefined),
     { message: 'Supply exactly one of grossAmountMinor or netAmountMinor.' },
   );
 

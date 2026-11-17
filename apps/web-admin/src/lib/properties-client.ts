@@ -9,6 +9,18 @@
  */
 
 import {
+  companyStatementSchema,
+  directBillingOverviewSchema,
+  guestProfileDetailSchema,
+  guestProfilePageSchema,
+  type BillToCompanyCommand,
+  type CompanyStatement,
+  type CreateGuestProfileCommand,
+  type DirectBillingOverview,
+  type GuestProfileDetail,
+  type GuestProfilePage,
+  type RecordCompanyPaymentCommand,
+  type UpdateGuestProfileCommand,
   revenueOverviewSchema,
   type RevenueOverview,
   rateRestrictionsResponseSchema,
@@ -1963,5 +1975,128 @@ export function fetchRevenue(
       ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Direct billing: the city ledger (GP-07)                                   */
+/* -------------------------------------------------------------------------- */
+
+function propertyPath(hotelId: string): string {
+  return `/properties/${encodeURIComponent(hotelId)}`;
+}
+
+/** Bill (part of) a folio's balance to the stay's company account. */
+export function billFolioToCompany(
+  hotelId: string,
+  folioId: string,
+  body: BillToCompanyCommand,
+): Promise<FolioPage> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/folios/${encodeURIComponent(folioId)}/bill-to-company`,
+    folioPageSchema,
+    { method: 'POST', body },
+  );
+}
+
+export function fetchDirectBilling(
+  hotelId: string,
+  options: { cookieHeader?: string } = {},
+): Promise<DirectBillingOverview> {
+  return apiFetch(`${propertyPath(hotelId)}/direct-billing`, directBillingOverviewSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+export function fetchCompanyStatement(
+  hotelId: string,
+  companyId: string,
+): Promise<CompanyStatement> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/direct-billing/companies/${encodeURIComponent(companyId)}`,
+    companyStatementSchema,
+  );
+}
+
+export function recordCompanyPayment(
+  hotelId: string,
+  companyId: string,
+  body: RecordCompanyPaymentCommand,
+): Promise<CompanyStatement> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/direct-billing/companies/${encodeURIComponent(companyId)}/payments`,
+    companyStatementSchema,
+    { method: 'POST', body },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Guest profiles (GP-02)                                                    */
+/* -------------------------------------------------------------------------- */
+
+export function fetchGuestProfiles(
+  hotelId: string,
+  query: { q?: string; cursor?: string } = {},
+  options: { cookieHeader?: string } = {},
+): Promise<GuestProfilePage> {
+  const params = new URLSearchParams();
+  if (query.q !== undefined && query.q.trim() !== '') params.set('q', query.q.trim());
+  if (query.cursor !== undefined) params.set('cursor', query.cursor);
+  const suffix = params.size === 0 ? '' : `?${params.toString()}`;
+  return apiFetch(`${propertyPath(hotelId)}/guests${suffix}`, guestProfilePageSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+export function fetchGuestProfile(hotelId: string, guestId: string): Promise<GuestProfileDetail> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/guests/${encodeURIComponent(guestId)}`,
+    guestProfileDetailSchema,
+  );
+}
+
+export function createGuestProfile(
+  hotelId: string,
+  body: CreateGuestProfileCommand,
+): Promise<GuestProfileDetail> {
+  return apiFetch(`${propertyPath(hotelId)}/guests`, guestProfileDetailSchema, {
+    method: 'POST',
+    body,
+  });
+}
+
+export function updateGuestProfile(
+  hotelId: string,
+  guestId: string,
+  body: UpdateGuestProfileCommand,
+): Promise<GuestProfileDetail> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/guests/${encodeURIComponent(guestId)}`,
+    guestProfileDetailSchema,
+    { method: 'PATCH', body },
+  );
+}
+
+export function linkGuestStay(
+  hotelId: string,
+  guestId: string,
+  reservationGuestId: string,
+): Promise<GuestProfileDetail> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/guests/${encodeURIComponent(guestId)}/stays`,
+    guestProfileDetailSchema,
+    { method: 'POST', body: { reservationGuestId } },
+  );
+}
+
+export function unlinkGuestStay(
+  hotelId: string,
+  guestId: string,
+  reservationGuestId: string,
+): Promise<GuestProfileDetail> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/guests/${encodeURIComponent(guestId)}/stays/${encodeURIComponent(reservationGuestId)}`,
+    guestProfileDetailSchema,
+    { method: 'DELETE' },
   );
 }

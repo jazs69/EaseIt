@@ -43,7 +43,8 @@ export function fiscalYearOf(businessDate: string): string {
  * prefix, which is the GST rules' ceiling for an invoice number.
  */
 export function invoiceNumber(prefix: string, fiscalYear: string, sequence: number): string {
-  if (!Number.isInteger(sequence) || sequence < 1) throw new Error(`Bad sequence ${String(sequence)}`);
+  if (!Number.isInteger(sequence) || sequence < 1)
+    throw new Error(`Bad sequence ${String(sequence)}`);
   const compact = `${fiscalYear.slice(2, 4)}${fiscalYear.slice(5, 7)}`;
   return `${prefix}${compact}-${String(sequence).padStart(5, '0')}`;
 }
@@ -189,7 +190,8 @@ export function pdfText(value: string): string {
     const mapped = TRANSLITERATE[char] ?? char;
     for (const c of mapped) {
       const code = c.charCodeAt(0);
-      const safe = (code >= 32 && code <= 126) || (code >= 160 && code <= 255) ? c : code < 32 ? ' ' : '?';
+      const safe =
+        (code >= 32 && code <= 126) || (code >= 160 && code <= 255) ? c : code < 32 ? ' ' : '?';
       out += safe === '\\' || safe === '(' || safe === ')' ? `\\${safe}` : safe;
     }
   }
@@ -331,7 +333,9 @@ export function renderInvoicePdf(invoice: Invoice): Buffer {
       : []),
     ['Total', t.totalMinor, true],
     ['Paid', t.paidMinor, false],
-    ...(t.refundedMinor > 0 ? ([['Refunded', t.refundedMinor, false]] as [string, number, boolean][]) : []),
+    ...(t.refundedMinor > 0
+      ? ([['Refunded', t.refundedMinor, false]] as [string, number, boolean][])
+      : []),
     ['Balance', t.balanceMinor, true],
   ];
   ensure(totals.length * 14 + 20);
@@ -351,7 +355,14 @@ export function renderInvoicePdf(invoice: Invoice): Buffer {
     for (const payment of invoice.payments) {
       ensure(13);
       put(MARGIN, 8, 'F3', payment.date);
-      put(108, 8, 'F1', `${payment.kind === 'REFUND' ? 'Refund' : 'Payment'} - ${payment.method ?? 'OTHER'}`);
+      put(
+        108,
+        8,
+        'F1',
+        payment.method === 'CITY_LEDGER'
+          ? 'Billed to company account'
+          : `${payment.kind === 'REFUND' ? 'Refund' : 'Payment'} - ${payment.method ?? 'OTHER'}`,
+      );
       putRight(RIGHT, 8, `${payment.kind === 'REFUND' ? '-' : ''}${money(payment.amountMinor)}`);
       y -= 13;
     }
@@ -363,7 +374,13 @@ export function renderInvoicePdf(invoice: Invoice): Buffer {
   pages.forEach((page, index) => {
     page.push({ x: MARGIN, y: MARGIN - 10, size: 7, font: 'F1', text: footer });
     const label = `Page ${String(index + 1)} of ${String(pages.length)}`;
-    page.push({ x: RIGHT - courierWidth(label, 7), y: MARGIN - 10, size: 7, font: 'F3', text: label });
+    page.push({
+      x: RIGHT - courierWidth(label, 7),
+      y: MARGIN - 10,
+      size: 7,
+      font: 'F3',
+      text: label,
+    });
   });
 
   return serialise(pages, invoice.number);
@@ -377,7 +394,8 @@ function serialise(pages: TextOp[][], title: string): Buffer {
   objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
   objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${String(id)} 0 R`).join(' ')}] /Count ${String(pages.length)} >>`;
   objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
-  objects[4] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
+  objects[4] =
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
   objects[5] = '<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>';
   objects[6] = `<< /Title (${pdfText(title)}) /Producer (EaseIt) >>`;
 

@@ -111,6 +111,21 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   OTHER: 'Other',
 };
 
+/**
+ * A payment method as STORED on a folio line (GP-07).
+ *
+ * `CITY_LEDGER` is written only by the bill-to-company transfer, never chosen
+ * by a clerk as a way to pay, so it is in this response-side enum and not in
+ * `paymentMethodSchema`, which every payment command validates against.
+ */
+export const storedPaymentMethodSchema = z.enum([...paymentMethodSchema.options, 'CITY_LEDGER']);
+export type StoredPaymentMethod = z.infer<typeof storedPaymentMethodSchema>;
+
+export const STORED_PAYMENT_METHOD_LABELS: Record<StoredPaymentMethod, string> = {
+  ...PAYMENT_METHOD_LABELS,
+  CITY_LEDGER: 'Billed to company',
+};
+
 export const genderSchema = z.enum(['MALE', 'FEMALE', 'OTHER']);
 export type Gender = z.infer<typeof genderSchema>;
 
@@ -124,7 +139,10 @@ export const GENDER_LABELS: Record<Gender, string> = {
 export const reservationGuestSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
   lastName: z.string().trim().max(80).default(''),
-  email: z.union([z.email(), z.literal('')]).nullable().default(null),
+  email: z
+    .union([z.email(), z.literal('')])
+    .nullable()
+    .default(null),
   phone: z.string().trim().max(32).nullable().default(null),
 
   addressLine1: z.string().trim().max(160).nullable().default(null),
@@ -431,7 +449,10 @@ export const createCompanySchema = z.object({
   city: z.string().trim().max(80).nullable().default(null),
   state: z.string().trim().max(80).nullable().default(null),
   postalCode: z.string().trim().max(16).nullable().default(null),
-  email: z.union([z.email(), z.literal('')]).nullable().default(null),
+  email: z
+    .union([z.email(), z.literal('')])
+    .nullable()
+    .default(null),
   phone: z.string().trim().max(32).nullable().default(null),
   /**
    * What the client believes about the name's provenance.

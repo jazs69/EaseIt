@@ -25,6 +25,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {
+  billToCompanySchema,
+  type BillToCompanyCommand,
   correctFolioChargeSchema,
   correctRoomChargesSchema,
   postFolioChargeSchema,
@@ -169,6 +171,29 @@ export class FoliosController {
     @Body(new ZodValidationPipe(postFolioPaymentSchema)) body: PostFolioPaymentCommand,
   ): Promise<FolioPage> {
     return this.folios.postPayment(this.userId(request), hotelId, folioId, body);
+  }
+
+  @Post(':hotelId/folios/:folioId/bill-to-company')
+  @ApiOperation({
+    summary: "Bill (part of) the balance to the stay's company account (GP-07)",
+    description:
+      'Posts a CITY_LEDGER payment line on the folio and, in the same ' +
+      "transaction, a receivable on the company's ledger. Never more than the " +
+      'balance; the stay must be attached to a company. Idempotent per key. ' +
+      'Requires direct_billing:manage.',
+  })
+  @ApiOkResponse({ description: 'The recomputed folio page.' })
+  @ApiConflictResponse({
+    description: 'The folio is closed, or the key was used for something else.',
+  })
+  @ApiBadRequestResponse({ description: 'No company on the stay, or more than the balance.' })
+  billToCompany(
+    @Req() request: FastifyRequest,
+    @Param('hotelId') hotelId: string,
+    @Param('folioId') folioId: string,
+    @Body(new ZodValidationPipe(billToCompanySchema)) body: BillToCompanyCommand,
+  ): Promise<FolioPage> {
+    return this.folios.billToCompany(this.userId(request), hotelId, folioId, body);
   }
 
   @Post(':hotelId/folios/:folioId/lines/:lineId/correct')
