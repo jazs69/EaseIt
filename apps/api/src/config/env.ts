@@ -194,6 +194,14 @@ export const envSchema = z
     GST_PROVIDER: z.enum(['mock', 'sandbox', 'cashfree']).default('mock'),
     GST_API_KEY: z.string().min(1).optional(),
     GST_API_SECRET: z.string().min(1).optional(),
+    /**
+     * Which of the provider's hosts to call. `test` answers with the
+     * provider's canned data, so those answers are tagged MOCK, never
+     * VERIFIED; production refuses it.
+     */
+    GST_ENVIRONMENT: z.enum(['test', 'live']).default('test'),
+    /** Overrides the provider host. For tests and smoke runs; refused in production. */
+    GST_BASE_URL: z.url().optional(),
     /** Seconds before a provider lookup is abandoned. */
     GST_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(4_000),
 
@@ -256,6 +264,16 @@ export const envSchema = z
 
     // A live provider with no credentials would fall back to mock data
     // silently, which is the failure mode this whole feature has to avoid.
+    // Both live providers authenticate with a key AND a secret (Sandbox's
+    // /authenticate; Cashfree's x-client-id + x-client-secret).
+    if (env.GST_PROVIDER !== 'mock' && env.GST_API_SECRET === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GST_API_SECRET'],
+        message: `GST_PROVIDER is "${env.GST_PROVIDER}" but GST_API_SECRET is unset.`,
+      });
+    }
+
     if (env.GST_PROVIDER !== 'mock' && env.GST_API_KEY === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -317,6 +335,24 @@ export const envSchema = z
           'SMTP_HOST is required in production: sign-in needs a real mail ' +
           'transport to deliver two-factor codes, and the development log ' +
           'fallback is not available here.',
+      });
+    }
+
+    if (env.GST_PROVIDER !== 'mock' && env.GST_ENVIRONMENT !== 'live') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GST_ENVIRONMENT'],
+        message:
+          'GST_ENVIRONMENT must be "live" in production: the provider test host ' +
+          'returns canned taxpayers, which must never reach a tax invoice.',
+      });
+    }
+
+    if (env.GST_BASE_URL !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GST_BASE_URL'],
+        message: 'GST_BASE_URL is a test override and is refused in production.',
       });
     }
 

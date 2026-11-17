@@ -124,7 +124,8 @@ export function inspectGstin(raw: string): GstinInspection {
   if (!GSTIN_SHAPE.test(gstin)) {
     return {
       ...base,
-      reason: 'That is not the shape of a GSTIN: 2 digits, a PAN, an entity code, Z, then a check character.',
+      reason:
+        'That is not the shape of a GSTIN: 2 digits, a PAN, an entity code, Z, then a check character.',
     };
   }
 

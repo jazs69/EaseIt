@@ -59,11 +59,7 @@ export class CompaniesService {
   /* -------------------------------------------------------------------- */
 
   async list(userId: string, hotelId: string): Promise<CompanySummary[]> {
-    const propertyId = await this.resolveProperty(
-      userId,
-      hotelId,
-      Permission.RESERVATIONS_READ,
-    );
+    const propertyId = await this.resolveProperty(userId, hotelId, Permission.RESERVATIONS_READ);
 
     const rows = await this.prisma.client.company.findMany({
       where: { propertyId },
@@ -99,11 +95,7 @@ export class CompaniesService {
     // Billing master data, not a booking action: this is the approved
     // single-hotel pilot policy (property:settings), so reception cannot
     // create a corporate account while an admin can.
-    const propertyId = await this.resolveProperty(
-      userId,
-      hotelId,
-      Permission.PROPERTY_SETTINGS,
-    );
+    const propertyId = await this.resolveProperty(userId, hotelId, Permission.PROPERTY_SETTINGS);
 
     // Validated server-side, not merely in the form: a malformed GSTIN on a
     // tax invoice is the hotel's problem, not the browser's.

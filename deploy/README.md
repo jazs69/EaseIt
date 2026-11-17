@@ -63,6 +63,21 @@ openssl rand -hex 32   # JWT_SECRET
 If the GHCR packages are private, log in once with a token that has
 `read:packages`: `echo <token> | docker login ghcr.io -u <user> --password-stdin`.
 
+**GSTIN lookups.** Production needs a real provider, `sandbox` (Sandbox.co.in: an API key and
+secret) or `cashfree` (Secure ID: client id as `GST_API_KEY`, client secret as `GST_API_SECRET`;
+whitelist the server's IP in the Cashfree dashboard). Production also needs
+`GST_ENVIRONMENT=live`. Check the keys from a checkout of the repository before deploying. Each run
+is one metered lookup:
+
+```bash
+pnpm --filter @repo/api build
+GST_PROVIDER=sandbox GST_API_KEY=... GST_API_SECRET=... GST_ENVIRONMENT=live \
+  pnpm gst:smoke -- <a real GSTIN>      # exit 0 and "OK: sandbox answered (VERIFIED)"
+```
+
+With the provider's test keys, use `GST_ENVIRONMENT=test`. Those answers are tagged MOCK and
+marked "(PROVIDER TEST DATA)", never VERIFIED.
+
 ## 3. First start
 
 ```bash

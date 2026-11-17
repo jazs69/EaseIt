@@ -34,6 +34,9 @@ x-api-env: &api-env
   # legal name a lookup returns).
   GST_PROVIDER: ${GST_PROVIDER:?set GST_PROVIDER to sandbox or cashfree}
   GST_API_KEY: ${GST_API_KEY:?set GST_API_KEY}
+  GST_API_SECRET: ${GST_API_SECRET:?set GST_API_SECRET}
+  # The provider's live host. Production refuses "test" (canned taxpayers).
+  GST_ENVIRONMENT: ${GST_ENVIRONMENT:-live}
   # Required: a background job that fails permanently (a confirmation email, a
   # night-audit step) is emailed here by the worker. The webhook is optional
   # and receives the same alert as JSON (Slack, Teams or any HTTP receiver).

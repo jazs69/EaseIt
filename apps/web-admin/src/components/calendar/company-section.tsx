@@ -238,8 +238,7 @@ export function CompanySection({
                   <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                   <span>
                     <span className="font-semibold">Verified taxpayer</span>
-                    {lookup.status === null ? null : ` · ${lookup.status}`} ·{' '}
-                    {lookup.stateName}
+                    {lookup.status === null ? null : ` · ${lookup.status}`} · {lookup.stateName}
                     <br />
                     <span className="text-emerald-200/60">
                       Confirmed against the GST registry via {lookup.provider}.
@@ -254,8 +253,10 @@ export function CompanySection({
                     {lookup.stateName}
                     <br />
                     <span className="text-amber-200/70">
-                      The lookup provider is set to mock, so this name is invented. It is
-                      saved tagged as MOCK and must not be used on a real invoice.
+                      {lookup.provider === 'mock'
+                        ? 'The lookup provider is set to mock, so this name is invented.'
+                        : `This came from ${lookup.provider}'s test environment, which returns sample taxpayers.`}{' '}
+                      It is saved tagged as MOCK and must not be used on a real invoice.
                     </span>
                   </span>
                 </p>
@@ -310,9 +311,7 @@ export function CompanySection({
                 />
               </label>
 
-              {error !== null ? (
-                <p className="text-[11px] text-rose-300">{error}</p>
-              ) : null}
+              {error !== null ? <p className="text-[11px] text-rose-300">{error}</p> : null}
 
               <button
                 type="button"
