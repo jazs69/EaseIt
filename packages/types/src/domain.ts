@@ -51,9 +51,16 @@ export type BusinessDate = Brand<string, 'BusinessDate'>;
 export const businessDateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected a calendar date in YYYY-MM-DD form')
-  .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)), {
-    message: 'Not a real calendar date',
-  })
+  // Round-tripped, not merely parsed: `Date.parse('2026-02-30')` is not NaN, it
+  // silently rolls over to 2 March, so a parse check alone let impossible
+  // dates through as real arrival and business dates.
+  .refine(
+    (value) => {
+      const parsed = new Date(`${value}T00:00:00Z`);
+      return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+    },
+    { message: 'Not a real calendar date' },
+  )
   .transform((value) => value as BusinessDate);
 
 /** An instant in time, always UTC on the wire. */

@@ -4,7 +4,7 @@
  * ===========================================================================
  * The problem this replaces.
  *
- * `pnpm test` exits **0 having run nothing**. Turbo plans eight `test` tasks,
+ * `pnpm test` exited **0 having run nothing** (before CI-05 added vitest). Turbo plans eight `test` tasks,
  * one per workspace package, and every one resolves to `<NONEXISTENT>` because
  * no package defines a `test` script — there is no vitest in this repository
  * and no `*.test.ts` anywhere, despite CLAUDE.md section 4 advertising both.
@@ -65,6 +65,15 @@ const checks = [
     name: 'lint',
     shellCommand: 'pnpm lint',
     why: 'ESLint errors',
+  },
+  {
+    name: 'domain unit tests (vitest)',
+    // CI-05: money rounding and allocation, business-date math, GST bands,
+    // stay pricing, rate/occupancy/promotion policies, the reservation state
+    // machine and the night-audit schedule. `*.test.ts` beside the code in
+    // packages/types and apps/api; pure functions, no services.
+    shellCommand: 'pnpm turbo run test --filter=@repo/types --filter=@repo/api',
+    why: 'a domain unit test failed',
   },
   {
     name: 'unit tests (guards, no services)',
