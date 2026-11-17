@@ -78,10 +78,10 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 92      | 44.9% |
+| `CV` COMPLETE AND VERIFIED | 94      | 45.9% |
 | `PI` PARTIALLY IMPLEMENTED | 89      | 43.4% |
-| `NI` NOT IMPLEMENTED       | 21      | 10.2% |
-| `BU` BLOCKED / UNKNOWN     | 3       | 1.5%  |
+| `NI` NOT IMPLEMENTED       | 20      | 9.8%  |
+| `BU` BLOCKED / UNKNOWN     | 2       | 1.0%  |
 | **Total feature IDs**      | **205** |       |
 
 Verification command and result (re-run 2026-11-15):
@@ -515,11 +515,11 @@ workflow has ever run.
 
 ### 2.24 Performance and load testing
 
-| ID    | Subfeature                 | St   | Evidence                                            | U/A/L/D/I | Tests | Acceptance criterion                                                | Dep   | Pri | Launch | Verified   | Method |
-| ----- | -------------------------- | ---- | --------------------------------------------------- | --------- | ----- | ------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| PF-01 | Group performance endpoint | `PI` | `performance.controller.ts:44`                      | ✔/✔/✔/✔/– | none  | Figures reconcile to snapshots                                      | RP-08 | 2   | A      | 2026-10-29 | SI     |
-| PF-02 | Load / stress testing      | `NI` | no k6, artillery or JMeter profile                  | ✖/✖/✖/–/– | none  | Documented profile at 50 concurrent staff with p95 latency recorded | —     | 2   | A      | 2026-10-29 | SI     |
-| PF-03 | Index and query profiling  | `BU` | indexes declared in `schema.prisma`; never profiled | –/–/?/✔/– | none  | Hot queries profiled with `EXPLAIN` under representative data       | PF-02 | 2   | A      | 2026-10-29 | NV     |
+| ID    | Subfeature                 | St   | Evidence                                                                                                                                                                                                                                                                                                                                                         | U/A/L/D/I | Tests                                                                                                                                                                                                                                           | Acceptance criterion                                                | Dep   | Pri | Launch | Verified   | Method |
+| ----- | -------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
+| PF-01 | Group performance endpoint | `PI` | `performance.controller.ts:44`                                                                                                                                                                                                                                                                                                                                   | ✔/✔/✔/✔/– | none                                                                                                                                                                                                                                            | Figures reconcile to snapshots                                      | RP-08 | 2   | A      | 2026-10-29 | SI     |
+| PF-02 | Load / stress testing      | `CV` | 2026-11-17: `scripts/load/run-load.mjs` (`pnpm load:run`), 50 virtual staff over 9 hotels with a weighted front-desk mix and think time, then a no-think-time stress phase; data from `pnpm load:seed` (a year: 34,994 reservations, 154,539 folio lines). Recorded in `docs/release/LOAD-AND-QUERY-PROFILE.md`                                                  | ✔/✔/✔/–/✔ | steady 300 s: 6,158 requests, p50 19 ms, **p95 104 ms**, p99 142 ms, 0 errors; stress: 66 req/s, 0 errors; afterwards 45,310 inventory cells all equal their live room rows, none oversold. Laptop, single API process, not production hardware | Documented profile at 50 concurrent staff with p95 latency recorded | —     | 2   | A      | 2026-11-17 | SI     |
+| PF-03 | Index and query profiling  | `CV` | 2026-11-17: `scripts/load/profile-queries.mjs` (`pnpm load:profile`) turns on `auto_explain` for the disposable database only and ranks every real plan under the PF-02 load (9,668 plans, 218 shapes), flagging large sequential scans and propertyId-led indexes entered without propertyId. Found 5; fixed by migration `20261118090000_child_lookup_indexes` | ✔/✔/✔/✔/– | re-profiled on the same data: 0 flagged; master-report folio query 465→50 ms, endpoint p50 913→92 ms. Dashboard all-time status counts recorded, not changed (product decision)                                                                 | Hot queries profiled with `EXPLAIN` under representative data       | PF-02 | 2   | A      | 2026-11-17 | SI     |
 
 ### 2.25 Calendar and timeline (product-specific)
 
@@ -796,6 +796,34 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-17 (forty-eighth pass) - load profile and query profiling (PF-02, PF-03)
+
+**Status transitions.** PF-02 `NI`→`CV`, PF-03 `BU`→`CV`. Counts: `CV` 92→94, `NI` 21→20,
+`BU` 3→2.
+
+**PF-02.** No new dependency: `scripts/load/run-load.mjs` is plain Node `fetch`. 50 virtual
+staff, a weighted front-desk mix, 1-4 s think time, 300 s steady after a ramp, then 60 s
+with no think time. Data from `scripts/load/seed-volume.mjs`: a deterministic year on
+`easeit_racetest`. Steady p95 104 ms, 0 errors. One API process tops out at about
+66 req/s on the laptop. Bookings and cancellations ran throughout; afterwards every
+per-date, per-category inventory counter equalled its live room rows.
+
+**PF-03.** `scripts/load/profile-queries.mjs` reads `auto_explain` plans of the real
+queries, so there is no hand-copied SQL. Finding: Prisma relation loads and the master
+report fetch child rows by parent id alone. The RLS policy's `bypass OR propertyId` cannot
+become an index condition, so `reservation_night` was sequentially scanned and
+`folio_line` / `reservation_guest` had their `propertyId`-led indexes walked end to end.
+Three single-column indexes (migration `20261118090000_child_lookup_indexes`, applied to
+`easeit_racetest`, `easeit_test` and dev `easeit` with approval) fixed it: master-report
+p50 913→92 ms.
+
+**Verified.** `pnpm gate:integration` 34/34 suites, 2002 checks, on `easeit_test` with
+the migration. The re-profile flags nothing.
+
+**Not verified.** Production hardware, the public booking engine's traffic, a soak
+longer than five minutes. The dashboard's all-time status counts grow with history;
+recorded as a product decision, not changed.
 
 ### 2026-11-17 (forty-seventh pass) - observability and no personal data in logs (OB-05, SE-02)
 

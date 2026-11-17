@@ -1964,6 +1964,10 @@ model ReservationNight {
 
   @@unique([propertyId, reservationId, stayDate], name: "reservation_night_one_per_date")
   @@index([propertyId, stayDate])
+  /// PF-03: a relation load fetches children by the parent id alone; RLS's
+  /// `bypass OR propertyId = …` filter can never become an index condition,
+  /// so without this the propertyId-led indexes are walked end to end.
+  @@index([reservationId])
   @@map("reservation_night")
 }
 
@@ -2071,6 +2075,10 @@ model ReservationGuest {
   @@unique([propertyId, reservationId, ordinal], name: "reservation_guest_unique_ordinal")
   @@index([propertyId, reservationId])
   @@index([propertyId, guestProfileId])
+  /// PF-03: a relation load fetches children by the parent id alone; RLS's
+  /// `bypass OR propertyId = …` filter can never become an index condition,
+  /// so without this the propertyId-led indexes are walked end to end.
+  @@index([reservationId])
   @@map("reservation_guest")
 }
 
@@ -2656,6 +2664,10 @@ model FolioLine {
   @@unique([propertyId, idempotencyKey], name: "folio_line_unique_idempotency_key")
   @@index([propertyId, folioId, chargeDate])
   @@index([propertyId, kind, chargeDate])
+  /// PF-03: a relation load fetches children by the parent id alone; RLS's
+  /// `bypass OR propertyId = …` filter can never become an index condition,
+  /// so without this the propertyId-led indexes are walked end to end.
+  @@index([folioId])
   @@map("folio_line")
 }
 

@@ -398,6 +398,13 @@ inherit all of the above, and specifically:
   (`pnpm db:app-role`), while migrations, seeds and fixtures use the owner login. Cross-property routes
   carry `@CrossProperty(reason)`; background code uses `withoutTenantScope(reason)` or
   `runInPropertyScope(propertyId)`. Array-form `$transaction([...])` is refused — use the callback form.
+- **RLS never helps an index** (PF-03, `docs/release/LOAD-AND-QUERY-PROFILE.md`). Its predicate,
+  `bypass = 'on' OR "propertyId" = …`, cannot become an index condition, so a query that leaves the
+  property to RLS cannot use a `propertyId`-led index and walks it end to end. Prisma relation loads
+  do exactly that (`WHERE "folioId" = …`). So a child table loaded through a relation also needs a
+  plain index on its parent id (as `reservation_room`, `reservation_night`, `folio_line`,
+  `reservation_guest` have), and raw SQL states `propertyId` on every joined table. Check with
+  `pnpm load:profile`, which flags both shapes.
 - A staff user's accessible properties are an explicit allowlist (`UserPropertyAccess`). Switching
   property re-authorizes; it does not merely change a dropdown.
 - **Required test.** For each module, a test that authenticates as Property A and asserts that reading,
