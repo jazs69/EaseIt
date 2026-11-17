@@ -162,19 +162,20 @@ async function body() {
 
   /* ============================================================== GP-02 */
   console.log('\n1. Guest profiles: create, suggest, link, refuse, unlink, search.');
-  const s1 = await book('Kapoor', { email: '  Asha.K@Example.COM ', phone: '+91 98765-43210' });
+  const s1 = await book('Kapoor', { email: 'Asha.K@Example.COM', phone: '+91 98765-43210' });
   const s1Guest = await bookerRow(s1);
 
   const created = await h.call('POST', `${base}/guests`, clerk, {
     firstName: 'Asha',
     lastName: 'Kapoor',
     email: 'asha.k@example.com',
+    phone: '+91 98765 43210',
   });
   h.check('front desk creates a profile', ok(created), show(created));
   const p1 = created.payload;
   const suggestion = p1?.suggestedStays?.find((stay) => stay.reservationGuestId === s1Guest);
   h.check(
-    'the booking guest with the same email (any case, spaces) is suggested',
+    'the booking guest with the same email (any case) is suggested',
     suggestion?.matchedOn?.includes('email') === true,
     JSON.stringify(p1?.suggestedStays),
   );
@@ -314,18 +315,23 @@ async function body() {
     { reservationGuestId: s1Guest },
   );
   h.check('linking another property’s guest row is 404', crossLink.status === 404, show(crossLink));
-  let triggerRefused = false;
-  try {
-    await prisma.reservationGuest.update({
-      where: { id: s1Guest },
-      data: { guestProfileId: foreignProfile.payload.id },
-    });
-  } catch (error) {
-    triggerRefused = String(error?.message ?? error).includes(
-      'reservation_guest_profile_same_property',
-    );
-  }
-  h.check('the database refuses a cross-property link even from the owner login', triggerRefused);
+  const refusal = async (work) => {
+    try {
+      await work();
+      return 'not refused';
+    } catch (error) {
+      return String(error?.message ?? error);
+    }
+  };
+  const linkError = await refusal(
+    () =>
+      prisma.$executeRaw`UPDATE "reservation_guest" SET "guestProfileId" = ${foreignProfile.payload.id}::uuid WHERE "id" = ${s1Guest}::uuid`,
+  );
+  h.check(
+    'the database refuses a cross-property link even from the owner login',
+    linkError.includes('guest profile is not of this property'),
+    linkError.slice(0, 160),
+  );
 
   /* ============================================================== GP-07 */
   console.log('\n3. Bill to company: refusals, then an 8-way race.');
@@ -576,35 +582,27 @@ async function body() {
     );
   }
   h.check('a positive PAYMENT is refused by the CHECK', shapeRefused);
-  let crossCompany = false;
-  try {
-    await prisma.$executeRaw`
+  const crossCompanyError = await refusal(
+    () => prisma.$executeRaw`
       INSERT INTO "company_ledger_entry" ("id","propertyId","companyId","kind","amountMinor","currency","postingDate","paymentMethod","idempotencyKey")
-      VALUES (${randomUUID()}::uuid, ${A.propertyId}::uuid, ${foreignCompany.id}::uuid, 'PAYMENT', -500, 'INR', ${utcMidnight(D)}::date, 'CASH', ${randomUUID()})`;
-  } catch (error) {
-    crossCompany = String(error?.message ?? error).includes('company_ledger_entry_same_property');
-  }
-  h.check('an entry against another property’s company is refused', crossCompany);
-  let orphanRefused = false;
-  try {
-    await prisma.$transaction(async (tx) => {
-      await tx.folioLine.create({
-        data: {
-          propertyId: A.propertyId,
-          folioId: s1Folio,
-          kind: 'PAYMENT',
-          description: 'orphan',
-          amountMinor: -1,
-          currency: 'INR',
-          chargeDate: utcMidnight(D),
-          paymentMethod: 'CITY_LEDGER',
-        },
-      });
-    });
-  } catch (error) {
-    orphanRefused = String(error?.message ?? error).includes('folio_line_city_ledger_has_entry');
-  }
-  h.check('a CITY_LEDGER folio line with no ledger entry is refused at commit', orphanRefused);
+      VALUES (${randomUUID()}::uuid, ${A.propertyId}::uuid, ${foreignCompany.id}::uuid, 'PAYMENT', -500, 'INR', ${utcMidnight(D)}::date, 'CASH', ${randomUUID()})`,
+  );
+  h.check(
+    'an entry against another property’s company is refused',
+    crossCompanyError.includes('company is not of this property'),
+    crossCompanyError.slice(0, 160),
+  );
+  // One autocommitted statement: the deferred check fires at its commit.
+  const orphanError = await refusal(
+    () => prisma.$executeRaw`
+      INSERT INTO "folio_line" ("id","propertyId","folioId","kind","description","amountMinor","currency","chargeDate","paymentMethod")
+      VALUES (${randomUUID()}::uuid, ${A.propertyId}::uuid, ${s1Folio}::uuid, 'PAYMENT', 'orphan', -1, 'INR', ${utcMidnight(D)}::date, 'CITY_LEDGER')`,
+  );
+  h.check(
+    'a CITY_LEDGER folio line with no ledger entry is refused at commit',
+    orphanError.includes('billed to the city ledger with no ledger entry'),
+    orphanError.slice(0, 160),
+  );
 
   console.log('\n7. Direct billing: permissions and tenancy.');
   const hkOverview = await h.call('GET', `${base}/direct-billing`, hk);

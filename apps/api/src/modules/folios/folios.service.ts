@@ -1938,6 +1938,23 @@ export class FoliosService {
 
     try {
       await this.inFolioWrite(property.id, folio, async (tx) => {
+        // The key first, under the lock, as a refund does: a replay of a
+        // transfer that emptied the folio is the original success, not
+        // "nothing is owed". Found by the integration suite.
+        const replayed = await tx.folioLine.findFirst({
+          where: { propertyId: property.id, idempotencyKey: command.idempotencyKey },
+          select: { folioId: true, amountMinor: true, paymentMethod: true, kind: true },
+        });
+        if (replayed !== null) {
+          const differing: string[] = [];
+          if (replayed.folioId !== folio.id) differing.push('folioId');
+          if (replayed.kind !== 'PAYMENT') differing.push('kind');
+          if (replayed.paymentMethod !== 'CITY_LEDGER') differing.push('method');
+          if (replayed.amountMinor !== -command.amountMinor) differing.push('amountMinor');
+          if (differing.length > 0) throw new IdempotencyKeyReusedError(differing);
+          return;
+        }
+
         const stay = await tx.reservation.findFirst({
           where: { id: folio.reservationId, propertyId: property.id },
           select: { companyId: true },
