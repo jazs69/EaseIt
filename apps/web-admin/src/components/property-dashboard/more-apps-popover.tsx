@@ -79,7 +79,13 @@ const APPS: readonly AppItem[] = [
     href: '/direct-billing',
     requiredPermission: Permission.FINANCIAL_REPORTS_READ,
   },
-  { id: 'payments', name: 'Payment', icon: CreditCard, href: '/payments' },
+  {
+    id: 'payments',
+    name: 'Payments',
+    icon: CreditCard,
+    href: '/payments',
+    requiredPermission: Permission.FOLIO_READ,
+  },
   {
     id: 'revenue',
     name: 'Revenue',

@@ -32,7 +32,9 @@ async function bootstrap(): Promise<void> {
       genReqId: () => crypto.randomUUID(),
       bodyLimit: 2 * 1024 * 1024,
     }),
-    { bufferLogs: true },
+    // rawBody: the Razorpay webhook's signature is an HMAC of the exact bytes
+    // received (FO-15), so they are kept beside the parsed JSON.
+    { bufferLogs: true, rawBody: true },
   );
 
   const config = app.get(ConfigService);

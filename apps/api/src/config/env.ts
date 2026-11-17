@@ -202,6 +202,19 @@ export const envSchema = z
     GST_ENVIRONMENT: z.enum(['test', 'live']).default('test'),
     /** Overrides the provider host. For tests and smoke runs; refused in production. */
     GST_BASE_URL: z.url().optional(),
+
+    /**
+     * Razorpay payment links (FO-15). Optional: without the key pair no link
+     * can be sent and the screens say why. `rzp_test_` keys are test mode.
+     */
+    RAZORPAY_KEY_ID: z.preprocess(emptyAsUndefined, z.string().min(1).optional()),
+    RAZORPAY_KEY_SECRET: z.preprocess(emptyAsUndefined, z.string().min(1).optional()),
+    /** The webhook secret set in the Razorpay dashboard; checks every webhook. */
+    RAZORPAY_WEBHOOK_SECRET: z.preprocess(emptyAsUndefined, z.string().min(1).optional()),
+    /** Overrides https://api.razorpay.com. For tests only; refused in production. */
+    RAZORPAY_BASE_URL: z.url().optional(),
+    RAZORPAY_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(30_000).default(8_000),
+    PAYMENT_LINK_EXPIRY_DAYS: z.coerce.number().int().min(1).max(90).default(7),
     /** Seconds before a provider lookup is abandoned. */
     GST_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(4_000),
 
@@ -264,6 +277,15 @@ export const envSchema = z
 
     // A live provider with no credentials would fall back to mock data
     // silently, which is the failure mode this whole feature has to avoid.
+    // A Razorpay key id is useless without its secret, and vice versa.
+    if ((env.RAZORPAY_KEY_ID === undefined) !== (env.RAZORPAY_KEY_SECRET === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RAZORPAY_KEY_SECRET'],
+        message: 'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET together, or neither.',
+      });
+    }
+
     // Both live providers authenticate with a key AND a secret (Sandbox's
     // /authenticate; Cashfree's x-client-id + x-client-secret).
     if (env.GST_PROVIDER !== 'mock' && env.GST_API_SECRET === undefined) {
@@ -345,6 +367,24 @@ export const envSchema = z
         message:
           'GST_ENVIRONMENT must be "live" in production: the provider test host ' +
           'returns canned taxpayers, which must never reach a tax invoice.',
+      });
+    }
+
+    if (env.RAZORPAY_BASE_URL !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RAZORPAY_BASE_URL'],
+        message: 'RAZORPAY_BASE_URL is a test override and is refused in production.',
+      });
+    }
+
+    // Payments arrive by webhook in production; without its secret every
+    // webhook is refused and payments wait for someone to press "Check".
+    if (env.RAZORPAY_KEY_ID !== undefined && env.RAZORPAY_WEBHOOK_SECRET === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RAZORPAY_WEBHOOK_SECRET'],
+        message: 'RAZORPAY_WEBHOOK_SECRET is required in production when Razorpay keys are set.',
       });
     }
 

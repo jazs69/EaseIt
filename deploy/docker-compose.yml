@@ -42,6 +42,12 @@ x-api-env: &api-env
   # and receives the same alert as JSON (Slack, Teams or any HTTP receiver).
   ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:?set ALERT_EMAIL_TO (where failed background jobs are reported)}
   ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+  # Optional: Razorpay payment links (FO-15). Without the key pair no link can
+  # be sent. With it, the webhook secret is required (set the webhook URL
+  # https://<api host>/api/v1/webhooks/razorpay in the Razorpay dashboard).
+  RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+  RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+  RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
 
 services:
   postgres:

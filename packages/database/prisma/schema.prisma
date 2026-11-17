@@ -369,6 +369,7 @@ model Property {
   reservations      Reservation[]
   pricedNights      ReservationNight[]
   gatewayConfigs    PaymentGatewayConfig[]
+  paymentLinks      PaymentLink[]
   companies         Company[]
   folios            Folio[]
   invoices          Invoice[]
@@ -1884,6 +1885,7 @@ model Reservation {
   invoices      Invoice[]
   internalNotes ReservationNote[]
   companyLedger CompanyLedgerEntry[]
+  paymentLinks  PaymentLink[]
   /// What each night was sold for. Written once at booking; never repriced.
   pricedNights  ReservationNight[]
 
@@ -2453,7 +2455,8 @@ model Folio {
   /// because most properties never assign it.
   customFolioId String?
 
-  lines FolioLine[]
+  lines        FolioLine[]
+  paymentLinks PaymentLink[]
 
   /// FO-14: at most one, issued from the folio once it is closed.
   invoice Invoice?
@@ -2696,11 +2699,13 @@ model AuditLog {
   @@map("audit_log")
 }
 
-/// A property's payment-gateway onboarding state.
+/// A property's payment-gateway onboarding state, and its on/off switch (FO-15).
 ///
 /// Drives the operational alert on the property dashboard: a property stuck in
 /// PENDING_KYC cannot take card payments, and the front desk needs to know
-/// that before a guest tries to pay rather than after.
+/// that before a guest tries to pay rather than after. Payment links can be
+/// sent only from a property whose RAZORPAY row is ACTIVE (and only when the
+/// API holds Razorpay keys).
 ///
 /// One row per (property, provider) so a property can migrate between
 /// providers without losing the old record.
@@ -3222,4 +3227,75 @@ model CompanyLedgerEntry {
   @@unique([propertyId, idempotencyKey], name: "company_ledger_unique_idempotency_key")
   @@index([propertyId, companyId, postingDate])
   @@map("company_ledger_entry")
+}
+
+enum PaymentLinkStatus {
+  /// Row written; the provider has not confirmed the link yet.
+  CREATING
+  /// Live at the provider and payable.
+  ACTIVE
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+  EXPIRED
+  /// The provider refused or could not be reached when creating it.
+  FAILED
+  /// Money was captured but could not be posted (e.g. the folio had closed).
+  /// A person must post it by hand or refund it at the provider.
+  NEEDS_ATTENTION
+}
+
+/// A hosted payment link sent to a guest for a folio balance (FO-15).
+///
+/// ===========================================================================
+/// The link is ours first: this row is written before the provider is called,
+/// and its id is the provider's `reference_id` (unique at Razorpay), so a
+/// retried creation cannot open a second link. The provider is called outside
+/// any transaction (section 3.1).
+///
+/// The row is NOT the money. A captured payment is posted to the folio as an
+/// ordinary PAYMENT line whose idempotency key is `razorpay_<payment id>`, so
+/// a webhook and a status check racing on one payment post it once. This row
+/// only tracks the link's lifecycle for the screens.
+///
+/// No guest PII is stored here: the provider holds the contact it was sent to.
+/// ===========================================================================
+model PaymentLink {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  folioId       String      @db.Uuid
+  folio         Folio       @relation(fields: [folioId], references: [id], onDelete: Cascade)
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  provider       PaymentGatewayProvider
+  /// The provider's id, e.g. `plink_...`. Null until the provider confirms.
+  providerLinkId String?
+  shortUrl       String?
+
+  amountMinor     Int
+  amountPaidMinor Int    @default(0)
+  currency        String @db.Char(3)
+
+  status    PaymentLinkStatus @default(CREATING)
+  /// The provider's or the poster's last error, short, never a payload.
+  lastError String?
+
+  expiresAt DateTime @db.Timestamptz(6)
+
+  /// The client's key for "send this link", so a retried click is one link.
+  idempotencyKey String
+
+  createdById String?  @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, idempotencyKey], name: "payment_link_unique_idempotency_key")
+  @@unique([propertyId, provider, providerLinkId], name: "payment_link_unique_provider_link")
+  @@index([propertyId, createdAt])
+  @@index([propertyId, folioId])
+  @@map("payment_link")
 }

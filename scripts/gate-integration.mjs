@@ -270,6 +270,11 @@ const suites = [
     script: 'test/integration/guests-and-direct-billing.test.mjs',
     why: 'profiles suggest by email/phone and never merge; links refused across profiles and properties; bill-to-company 8-way race gives one transfer mirrored by one folio line; company payments capped, 8-way race gives one; invoice balance is the billed amount; append-only ledger; 403/404',
   },
+  {
+    name: 'payment links (FO-15, FO-16)',
+    script: 'test/integration/payment-links.test.mjs',
+    why: 'Razorpay stand-in: per-property switch, one link per key, signed webhook only, a captured payment posted once under repeated webhooks and 6 racing checks, captured-after-close flagged not posted, cancel, ledger, 403/404, cross-property webhook refused; API needs the RAZORPAY_* test values',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

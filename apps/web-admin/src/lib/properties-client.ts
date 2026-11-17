@@ -9,6 +9,14 @@
  */
 
 import {
+  paymentGatewayStateSchema,
+  paymentLinkListSchema,
+  paymentLinkSchema,
+  paymentsOverviewSchema,
+  type PaymentGatewayState,
+  type PaymentLink,
+  type PaymentsOverview,
+  type SendPaymentLinkCommand,
   companyStatementSchema,
   directBillingOverviewSchema,
   guestProfileDetailSchema,
@@ -2098,5 +2106,76 @@ export function unlinkGuestStay(
     `${propertyPath(hotelId)}/guests/${encodeURIComponent(guestId)}/stays/${encodeURIComponent(reservationGuestId)}`,
     guestProfileDetailSchema,
     { method: 'DELETE' },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Payments: gateway, links, ledger (FO-15, FO-16)                           */
+/* -------------------------------------------------------------------------- */
+
+export function fetchPaymentsOverview(
+  hotelId: string,
+  window: { from?: string; to?: string } = {},
+  options: { cookieHeader?: string } = {},
+): Promise<PaymentsOverview> {
+  const params = new URLSearchParams();
+  if (window.from !== undefined && window.from !== '') params.set('from', window.from);
+  if (window.to !== undefined && window.to !== '') params.set('to', window.to);
+  const suffix = params.size === 0 ? '' : `?${params.toString()}`;
+  return apiFetch(`${propertyPath(hotelId)}/payments${suffix}`, paymentsOverviewSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+export function setPaymentGateway(
+  hotelId: string,
+  status: 'ACTIVE' | 'INACTIVE',
+): Promise<PaymentGatewayState> {
+  return apiFetch(`${propertyPath(hotelId)}/payment-gateway`, paymentGatewayStateSchema, {
+    method: 'PUT',
+    body: { status },
+  });
+}
+
+export function fetchPaymentGateway(hotelId: string): Promise<PaymentGatewayState> {
+  return apiFetch(`${propertyPath(hotelId)}/payment-gateway`, paymentGatewayStateSchema);
+}
+
+export async function fetchFolioPaymentLinks(
+  hotelId: string,
+  folioId: string,
+): Promise<PaymentLink[]> {
+  const list = await apiFetch(
+    `${propertyPath(hotelId)}/folios/${encodeURIComponent(folioId)}/payment-links`,
+    paymentLinkListSchema,
+  );
+  return list.items;
+}
+
+export function sendPaymentLink(
+  hotelId: string,
+  folioId: string,
+  body: SendPaymentLinkCommand,
+): Promise<PaymentLink> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/folios/${encodeURIComponent(folioId)}/payment-links`,
+    paymentLinkSchema,
+    { method: 'POST', body },
+  );
+}
+
+export function refreshPaymentLink(hotelId: string, linkId: string): Promise<PaymentLink> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/payment-links/${encodeURIComponent(linkId)}/refresh`,
+    paymentLinkSchema,
+    { method: 'POST' },
+  );
+}
+
+export function cancelPaymentLink(hotelId: string, linkId: string): Promise<PaymentLink> {
+  return apiFetch(
+    `${propertyPath(hotelId)}/payment-links/${encodeURIComponent(linkId)}/cancel`,
+    paymentLinkSchema,
+    { method: 'POST' },
   );
 }

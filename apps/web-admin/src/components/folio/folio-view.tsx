@@ -30,7 +30,6 @@ import {
   CreditCard,
   FileText,
   IdCard,
-  Link2,
   Loader2,
   Lock,
   Mail,
@@ -67,6 +66,7 @@ import {
 
 import { BookingActionsMenu } from './booking-actions-menu';
 import { BillToCompany } from './bill-to-company';
+import { PaymentLinks } from './payment-links';
 import { InvoiceActions } from './invoice-actions';
 import { useFolioSummaryRows, type FolioSummaryRow } from './use-folio-summary-rows';
 import { EditableFolioCell } from './editable-folio-cell';
@@ -312,10 +312,13 @@ export function FolioView({ folio: initial, hotelId }: FolioViewProps) {
             label="Registration card"
             needs="the frontdesk module's registration card"
           />
-          <ActionPill
-            icon={Link2}
-            label="Send payment link"
-            needs="the payments module's hosted link"
+          {/* FO-15: a Razorpay link; a captured payment posts to this folio. */}
+          <PaymentLinks
+            hotelId={hotelId}
+            folio={folio}
+            onPosted={() => {
+              router.refresh();
+            }}
           />
           <ActionPill
             icon={Plus}

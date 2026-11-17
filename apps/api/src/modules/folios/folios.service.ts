@@ -1894,6 +1894,117 @@ export class FoliosService {
   }
 
   /* -------------------------------------------------------------------- */
+  /*  Gateway payments (FO-15)                                             */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Posts one payment captured by the payment gateway to its folio.
+   *
+   * ===========================================================================
+   * Called by the payments module for a webhook or a "Check payment", never
+   * by a clerk, so there is no acting user: the audit row's actor is null and
+   * the line names the gateway payment in its remark.
+   *
+   * The same folio write as every other (reservation, then folio, FOR UPDATE,
+   * bounded wait), and idempotent on the gateway's payment id: the key is
+   * looked up under the lock, and the unique index is the backstop for a
+   * webhook and a status check racing on one payment. Posted to the business
+   * date, never `now()` (section 3.3).
+   *
+   * A folio that is no longer OPEN cannot take the line; the caller is told,
+   * and flags the link for a person, because the money has been taken.
+   * ===========================================================================
+   */
+  async postGatewayPayment(
+    propertyId: string,
+    folio: { id: string; reservationId: string },
+    payment: {
+      key: string;
+      amountMinor: number;
+      method: 'CARD' | 'UPI' | 'BANK_TRANSFER' | 'OTHER';
+      cardLast4: string | null;
+      issuer: string | null;
+      remark: string;
+    },
+  ): Promise<'posted' | 'already_posted' | 'folio_not_open'> {
+    const property = await this.prisma.client.property.findFirst({
+      where: { id: propertyId },
+      select: { businessDate: true },
+    });
+    if (property === null) throw new TenantScopeViolationError('Property');
+    const businessDate = toBusinessDate(property.businessDate);
+
+    let outcome: 'posted' | 'already_posted' | 'folio_not_open' = 'posted';
+    try {
+      await this.runFolioTransaction(async (tx) => {
+        const status = await this.lockFolio(tx, propertyId, folio);
+        const existing = await tx.folioLine.findFirst({
+          where: { propertyId, idempotencyKey: payment.key },
+          select: { id: true },
+        });
+        if (existing !== null) {
+          outcome = 'already_posted';
+          return;
+        }
+        if (status !== 'OPEN') {
+          outcome = 'folio_not_open';
+          return;
+        }
+        const currency =
+          (
+            await tx.folio.findFirst({
+              where: { id: folio.id, propertyId },
+              select: { currency: true },
+            })
+          )?.currency ?? 'INR';
+        await tx.folioLine.create({
+          data: {
+            propertyId,
+            folioId: folio.id,
+            kind: 'PAYMENT',
+            description: `Payment (${payment.method}, online)`,
+            amountMinor: -payment.amountMinor,
+            currency,
+            chargeDate: toUtcMidnight(businessDate),
+            paymentMethod: payment.method,
+            remark: payment.remark,
+            cardLast4: payment.cardLast4,
+            paymentIssuer: payment.issuer,
+            postedById: null,
+            idempotencyKey: payment.key,
+          },
+        });
+        await tx.reservation.update({
+          where: { id: folio.reservationId },
+          data: { paidAmountMinor: { increment: payment.amountMinor } },
+        });
+        await tx.auditLog.create({
+          data: {
+            propertyId,
+            actorUserId: null,
+            event: 'FOLIO_GATEWAY_PAYMENT_POSTED',
+            entityType: 'folio',
+            entityId: folio.reservationId,
+            before: Prisma.JsonNull,
+            after: {
+              amountMinor: payment.amountMinor,
+              method: payment.method,
+              businessDate,
+              idempotencyKey: payment.key,
+            },
+            reason: null,
+          },
+        });
+      });
+    } catch (cause) {
+      // A concurrent poster won the race on this payment id: already posted.
+      if (isIdempotencyKeyCollision(cause)) return 'already_posted';
+      throw cause;
+    }
+    return outcome;
+  }
+
+  /* -------------------------------------------------------------------- */
   /*  Bill to company: the city ledger (GP-07)                             */
   /* -------------------------------------------------------------------- */
 

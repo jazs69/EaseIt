@@ -93,6 +93,12 @@ jobs:
             # Test-only mail transport, as in pr.yml: the account-lifecycle suite
             # reads reset and invitation links from these files.
             printf 'MAIL_CAPTURE_DIR=/tmp/easeit-mail\n'
+            # Razorpay stand-in served by payment-links.test.mjs (FO-15); these
+            # are the suite's fixed test values, not credentials.
+            printf 'RAZORPAY_KEY_ID=rzp_test_suite\n'
+            printf 'RAZORPAY_KEY_SECRET=suite-secret\n'
+            printf 'RAZORPAY_WEBHOOK_SECRET=suite-webhook-secret\n'
+            printf 'RAZORPAY_BASE_URL=http://127.0.0.1:4993\n'
           } > apps/api/.env
 
       - name: Build
