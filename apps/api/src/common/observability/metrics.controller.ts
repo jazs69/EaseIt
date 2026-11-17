@@ -5,15 +5,24 @@
  * `Authorization: Bearer <METRICS_TOKEN>` (the env schema refuses production
  * without one); outside production an unset token leaves it open for local
  * inspection. Compared in constant time. Excluded from the API reference.
+ *
+ * `@CrossProperty`, like the health endpoint's outbox gauge: the backlog is a
+ * portfolio-wide count read through the logged bypass (CLAUDE.md 3.2), and
+ * without it the tenant client refuses the unscoped read.
+ *
+ * The content type is set on success only. Declared with `@Header`, it also
+ * applied to the 401's JSON error body, which Fastify then refused to send,
+ * turning every refusal into a 500 (found by observability.test.mjs).
  */
 
-import { Controller, Get, Header, Req } from '@nestjs/common';
+import { Controller, Get, Req, Res } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'node:crypto';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import { UnauthenticatedError } from '../errors/domain-error.js';
+import { CrossProperty } from '../tenancy/cross-property.decorator.js';
 import { MetricsService } from './metrics.service.js';
 
 @ApiExcludeController()
@@ -24,10 +33,12 @@ export class MetricsController {
     private readonly config: ConfigService,
   ) {}
 
+  @CrossProperty('portfolio-wide metrics scrape (outbox backlog gauge)')
   @Get()
-  @Header('content-type', 'text/plain; version=0.0.4; charset=utf-8')
-  @Header('cache-control', 'no-store')
-  scrape(@Req() request: FastifyRequest): Promise<string> {
+  async scrape(
+    @Req() request: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<string> {
     const token = this.config.get<string>('METRICS_TOKEN');
     if (token !== undefined) {
       const header = request.headers.authorization ?? '';
@@ -37,6 +48,9 @@ export class MetricsController {
         throw new UnauthenticatedError();
       }
     }
-    return this.metrics.render();
+    const body = await this.metrics.render();
+    void reply.header('content-type', 'text/plain; version=0.0.4; charset=utf-8');
+    void reply.header('cache-control', 'no-store');
+    return body;
   }
 }

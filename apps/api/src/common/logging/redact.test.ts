@@ -1,6 +1,6 @@
 /** SE-02: what the runtime redaction removes, and what it must leave alone. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { redactText, redactValue } from './redact.js';
 
@@ -60,5 +60,27 @@ describe('redactValue', () => {
     const out = redactValue({ cause: error, to: ['x@y.in'] }) as { cause: Error; to: string[] };
     expect(out.cause.message).toBe('could not mail [email]');
     expect(out.to).toEqual(['[email]']);
+  });
+});
+
+describe('RedactingLogger never fails its caller', () => {
+  it('logs an error with no stack, a non-string and an object without throwing', async () => {
+    const { RedactingLogger } = await import('./redacting-logger.js');
+    const logger = new RedactingLogger('Test');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(() => logger.error('no stack here')).not.toThrow();
+      expect(() => logger.error('with undefined stack', undefined)).not.toThrow();
+      expect(() => logger.warn({ to: 'a@b.co' })).not.toThrow();
+      expect(() => logger.log(42)).not.toThrow();
+      logger.error('mail to asha@example.com failed');
+      const written = writeErr.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain('[email]');
+      expect(written).not.toContain('asha@example.com');
+    } finally {
+      write.mockRestore();
+      writeErr.mockRestore();
+    }
   });
 });

@@ -58,7 +58,7 @@ const wrong = await fetch(`${API}/metrics`, {
 check('refused with a wrong token', wrong.status === 401, String(wrong.status));
 
 // A request with an id in its path, to see how it is labelled.
-await fetch(`${API}/properties/31999/work-orders`);
+await fetch(`${API}/properties/ZZOBSERVEID42/work-orders`);
 const scrape = await fetch(`${API}/metrics`, { headers: { authorization: `Bearer ${TOKEN}` } });
 const text = await scrape.text();
 check(
@@ -73,7 +73,8 @@ check(
 );
 check(
   'labelled by route template, never by the id in the URL',
-  text.includes('route="/api/v1/properties/:hotelId/work-orders"') && !text.includes('31999'),
+  text.includes('route="/api/v1/properties/:hotelId/work-orders"') &&
+    !text.includes('ZZOBSERVEID42'),
 );
 check(
   'outbox and process gauges render',
@@ -82,8 +83,11 @@ check(
 );
 check('no personal-data-looking label values', !/@|\+91/.test(text));
 
+// exitCode, not process.exit(): exiting while fetch's keep-alive sockets are
+// still closing aborts Node on Windows (seen in gate-integration).
 if (failures > 0) {
   console.error(`\n${String(failures)} ${SUITE} check(s) FAILED.`);
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  console.log(`\nAll ${SUITE} checks passed.`);
 }
-console.log(`\nAll ${SUITE} checks passed.`);
