@@ -35,6 +35,7 @@ import { cn } from '@repo/ui';
 import { Permission, permissionsForRoles, type Role } from '@repo/types';
 import {
   Activity,
+  ArrowDownUp,
   Boxes,
   CreditCard,
   FileText,
@@ -61,6 +62,8 @@ interface AppItem {
   isLocked?: boolean;
   /** Required to open it; absent means any grant at the property will do. */
   requiredPermission?: Permission;
+  /** Opens with ANY of these (a screen whose parts need different permissions). */
+  requiredAnyOf?: readonly Permission[];
 }
 
 const APPS: readonly AppItem[] = [
@@ -72,6 +75,13 @@ const APPS: readonly AppItem[] = [
     icon: Wrench,
     href: '/maintenance',
     requiredPermission: Permission.HOUSEKEEPING_READ,
+  },
+  {
+    id: 'data-exchange',
+    name: 'Import & export',
+    icon: ArrowDownUp,
+    href: '/data-exchange',
+    requiredAnyOf: [Permission.ROOMS_MANAGE, Permission.RATES_MANAGE, Permission.DATA_EXPORT],
   },
   {
     id: 'guests',
@@ -196,7 +206,9 @@ export function MoreAppsPopover({ isOpen, onClose, hotelId, roles }: MoreAppsPop
             const Icon = app.icon;
 
             const restricted =
-              app.requiredPermission !== undefined && !granted.includes(app.requiredPermission);
+              (app.requiredPermission !== undefined && !granted.includes(app.requiredPermission)) ||
+              (app.requiredAnyOf !== undefined &&
+                !app.requiredAnyOf.some((permission) => granted.includes(permission)));
             // A property-scoped destination with no property is as unusable as
             // one that is locked, and silently linking nowhere is worse.
             const unavailable = app.href === undefined || hotelId === null;

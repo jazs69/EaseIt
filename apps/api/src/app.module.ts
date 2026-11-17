@@ -28,6 +28,7 @@ import { DirectBillingModule } from './modules/direct-billing/direct-billing.mod
 import { GuestsModule } from './modules/guests/guests.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module.js';
+import { DataExchangeModule } from './modules/data-exchange/data-exchange.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 /**
@@ -75,6 +76,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     GuestsModule,
     PaymentsModule,
     MaintenanceModule,
+    DataExchangeModule,
   ],
 })
 export class AppModule {}

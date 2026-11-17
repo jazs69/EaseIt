@@ -3,6 +3,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { redactText, redactValue } from './redact.js';
+// Static, not `await import()` inside the test: loading Nest there counted
+// against the 5 s test timeout and failed the gate on a busy machine.
+import { RedactingLogger } from './redacting-logger.js';
 
 describe('redactText removes personal data', () => {
   it('email addresses, including inside a mail relay error', () => {
@@ -64,8 +67,7 @@ describe('redactValue', () => {
 });
 
 describe('RedactingLogger never fails its caller', () => {
-  it('logs an error with no stack, a non-string and an object without throwing', async () => {
-    const { RedactingLogger } = await import('./redacting-logger.js');
+  it('logs an error with no stack, a non-string and an object without throwing', () => {
     const logger = new RedactingLogger('Test');
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const writeErr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

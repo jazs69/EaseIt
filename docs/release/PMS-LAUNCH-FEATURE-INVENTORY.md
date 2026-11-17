@@ -78,9 +78,9 @@ Counted mechanically from the status column of the inventory tables in §2, not 
 
 | Status                     | Count   | Share |
 | -------------------------- | ------- | ----- |
-| `CV` COMPLETE AND VERIFIED | 94      | 45.9% |
+| `CV` COMPLETE AND VERIFIED | 96      | 46.8% |
 | `PI` PARTIALLY IMPLEMENTED | 89      | 43.4% |
-| `NI` NOT IMPLEMENTED       | 20      | 9.8%  |
+| `NI` NOT IMPLEMENTED       | 18      | 8.8%  |
 | `BU` BLOCKED / UNKNOWN     | 2       | 1.0%  |
 | **Total feature IDs**      | **205** |       |
 
@@ -432,10 +432,10 @@ Parent status: **`NI`** — advertised in CLAUDE.md §1; only an enum and one mi
 
 ### 2.18 Import / export
 
-| ID    | Subfeature                    | St   | Evidence | U/A/L/D/I | Tests | Acceptance criterion                                                        | Dep   | Pri | Launch | Verified   | Method |
-| ----- | ----------------------------- | ---- | -------- | --------- | ----- | --------------------------------------------------------------------------- | ----- | --- | ------ | ---------- | ------ |
-| IE-01 | Bulk data import              | `NI` | none     | ✖/✖/✖/–/– | none  | Dry-run validation then transactional import of properties, rooms and rates | RM-02 | 2   | A      | 2026-10-29 | SI     |
-| IE-02 | Data export beyond report CSV | `NI` | none     | ✖/✖/✖/–/– | none  | Tenant-scoped export of operational data                                    | RP-07 | 3   | P      | 2026-10-29 | SI     |
+| ID    | Subfeature                    | St   | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | U/A/L/D/I | Tests                                                                                                                                                                                                                                                                                                                                        | Acceptance criterion                                                                                                           | Dep   | Pri | Launch | Verified   | Method |
+| ----- | ----------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ----- | --- | ------ | ---------- | ------ |
+| IE-01 | Bulk data import              | `CV` | 2026-11-18: `POST /properties/:hotelId/import` (`modules/data-exchange/import.service.ts`) loads room types, rooms and rates (defaults and dated ranges) from CSV into an existing property. DRY_RUN runs the whole import in a transaction under a per-property advisory lock and rolls it back; COMMIT must quote the dry run's digest and writes all or nothing, with audit rows in the same transaction. Rooms cannot change category; retired rows and derived, archived or inactive plans are refused. No `inventory_day` writes. Screen: `/data-exchange` | ✔/✔/✔/✔/✔ | `data-exchange.test.mjs` 65/65 in `pnpm gate:integration` (35/35 suites, 2068 checks) on `easeit_test`: dry run writes nothing; per-date rate nights; 11 kinds of refusal with nothing written; re-import UNCHANGED; 6-way commit creates once; import racing the rooms screen leaves one room. CSV vitest 5. Screen not driven in a browser | Dry-run validation then transactional import of properties, rooms and rates. Properties come from onboarding (fixed portfolio) | RM-02 | 2   | A      | 2026-11-18 | SI     |
+| IE-02 | Data export beyond report CSV | `CV` | 2026-11-18: `GET /properties/:hotelId/export/:dataset`: room types, rooms and rates in the import's own columns (a template and a re-importable backup); reservations, folio lines (windowed, at most 370 days) and guest profiles. New sensitive permission `data:export` (administrators; migration `20261118120000_data_export_permission`). Every export writes a DATA_EXPORTED audit row with dataset, window, row count and a personal-data flag. Formula-safe CSV; amounts formatted from minor units by string arithmetic                                | ✔/✔/✔/✔/✔ | same suite: headers and content type; no other property's rows; the configuration export imports back all UNCHANGED; 6 exports give 6 audit rows, 3 refusals give none; 403 for front desk and revenue manager, 404 for another property; formatting vitest 3                                                                                | Tenant-scoped export of operational data                                                                                       | RP-07 | 3   | P      | 2026-11-18 | SI     |
 
 ### 2.19 Security and privacy
 
@@ -577,7 +577,7 @@ workflow has ever run.
 - [ ] BR-04 — PITR (BR-01..03 done 2026-11-17)
 - [x] RP-09, RP-10 — tax reports, revenue screen (built 2026-11-17; integration run pending)
 - [ ] BE-01 … BE-05, CM-01 … CM-05 — optional modules, advertised
-- [ ] GP-02, GP-07, MA-01, IE-01, IE-02, SE-05, AV-09, NO-06, PF-02, WK-13, MT-08 (AD-03 done 2026-11-17)
+- [ ] GP-02, GP-07, MA-01, SE-05, AV-09, NO-06, PF-02, WK-13, MT-08 (AD-03 done 2026-11-17)
 
 ### 3.3 BLOCKED / UNKNOWN (`BU`) — and the isolated setup each needs
 
@@ -796,6 +796,38 @@ compliance.
 ## 8. Change history
 
 Newest first. Every status transition records the date, the feature IDs, the evidence and the reason.
+
+### 2026-11-18 (forty-ninth pass) - bulk import and export (IE-01, IE-02)
+
+**Status transitions.** IE-01 `NI`→`CV`, IE-02 `NI`→`CV`. Counts: `CV` 94→96, `NI` 20→18.
+
+**IE-01.** Room types, rooms and rates are imported from CSV into an existing property;
+properties come from onboarding in a fixed portfolio. The dry run and the commit share one
+code path:
+
+- the whole import runs in a transaction under a per-property advisory lock;
+- a dry run rolls back, so a clean check has already passed every constraint;
+- a commit must quote the dry run's digest, and one bad row refuses all of it;
+- audit rows use the screens' event names, plus a `DATA_IMPORTED` summary, all in the same
+  transaction (the room, room-type and rate services write theirs after the change).
+
+No `inventory_day` writes; the result says new categories need the horizon extended.
+
+**IE-02.** Six datasets, behind the new sensitive `data:export` permission:
+
+- the configuration datasets use the import's columns and round-trip (tested);
+- the operational datasets are windowed;
+- every export is audited with a personal-data flag.
+
+**Also.** The #25 logger unit test loaded Nest inside its body with a dynamic import and
+timed out at 5.3 s on a busy machine, which failed the fast gate. The import is now
+static and the test takes 29 ms.
+
+**Verified.** `pnpm gate:integration` 35/35 suites, 2068 checks, on `easeit_test` with the
+migration (also applied to dev `easeit`, with approval). Fast gate green.
+
+**Not verified.** The `/data-exchange` screen was not driven in a browser (free memory
+was below 1 GB); it typechecks and lints.
 
 ### 2026-11-17 (forty-eighth pass) - load profile and query profiling (PF-02, PF-03)
 

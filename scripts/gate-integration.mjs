@@ -285,6 +285,11 @@ const suites = [
     script: 'test/integration/observability.test.mjs',
     why: 'traceparent and x-request-id on every response, an incoming trace continued and a forged one replaced; /metrics refuses without METRICS_TOKEN and labels requests by route template, never ids',
   },
+  {
+    name: 'bulk import and export (IE-01, IE-02)',
+    script: 'test/integration/data-exchange.test.mjs',
+    why: 'dry run writes nothing; commit needs the dry-run digest and lands all or nothing with audit rows; rate nights per date; 11 refusal kinds; re-import UNCHANGED; 6-way commit creates once; import racing the rooms screen leaves one room; export audited, formula-safe, windowed, round-trips; 403/404',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

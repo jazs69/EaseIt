@@ -204,6 +204,10 @@ import {
   type ReplacePolicies,
   type ReplaceTaxSlabs,
   type UpdatePropertySettings,
+  importResultSchema,
+  type ExportDataset,
+  type ImportRequest,
+  type ImportResult,
 } from '@repo/types';
 
 import { z } from 'zod';
@@ -2233,3 +2237,26 @@ export const resolveWorkOrder = (hotelId: string, orderId: string, note: string 
   workOrderAction(hotelId, orderId, 'resolve', { note });
 export const cancelWorkOrder = (hotelId: string, orderId: string, note: string | null) =>
   workOrderAction(hotelId, orderId, 'cancel', { note });
+
+/* -- IE-01 / IE-02: bulk import and export -------------------------------- */
+
+/** Dry-run or commit an import; a commit quotes the dry run's digest. */
+export function runImport(hotelId: string, body: ImportRequest): Promise<ImportResult> {
+  return apiFetch(`${propertyPath(hotelId)}/import`, importResultSchema, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** One dataset as a CSV file to save (data:export; every export is audited). */
+export function downloadExport(
+  hotelId: string,
+  dataset: ExportDataset,
+  range?: { fromDate: string; toDate: string },
+): Promise<Blob> {
+  const query =
+    range === undefined
+      ? ''
+      : `?fromDate=${encodeURIComponent(range.fromDate)}&toDate=${encodeURIComponent(range.toDate)}`;
+  return apiDownload(`${propertyPath(hotelId)}/export/${encodeURIComponent(dataset)}${query}`);
+}

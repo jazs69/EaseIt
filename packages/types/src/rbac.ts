@@ -173,6 +173,12 @@ export const Permission = {
    * amounts and guest-facing state, which a staff directory does not.
    */
   AUDIT_LOG_READ: 'audit_log:read',
+  /**
+   * IE-02: download the property's data as CSV. Sensitive: the reservation and
+   * guest datasets carry personal data, so it is administrators-only by default
+   * and every export writes an audit row.
+   */
+  DATA_EXPORT: 'data:export',
 } as const;
 
 export type Permission = (typeof Permission)[keyof typeof Permission];
@@ -446,6 +452,14 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
     description: 'Read who changed what at this property, with the values before and after.',
     category: C.ADMINISTRATION,
     sensitive: false,
+  },
+  {
+    key: P.DATA_EXPORT,
+    label: 'Export data',
+    description:
+      "Download the property's rooms, rates, reservations, folio lines and guest profiles as CSV.",
+    category: C.ADMINISTRATION,
+    sensitive: true,
   },
 ];
 
