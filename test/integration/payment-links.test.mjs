@@ -207,6 +207,7 @@ async function body() {
       { label: 'R1', category: 'A', status: 'VACANT_CLEAN' },
       { label: 'R2', category: 'A', status: 'VACANT_CLEAN' },
       { label: 'R3', category: 'A', status: 'VACANT_CLEAN' },
+      { label: 'R4', category: 'A', status: 'VACANT_CLEAN' },
     ],
   });
   const B = await other.buildFixture({ roles: { admin: 'PROPERTY_ADMIN' }, rooms: [] });
@@ -225,12 +226,12 @@ async function body() {
     })),
   });
 
-  const stayIn = async (last, room) => {
+  const stayIn = async (last, room, nights = 1) => {
     const booked = await h.call('POST', `${base}/reservations`, admin, {
       roomTypeId: A.categoryA,
       roomId: null,
       arrivalDate: D,
-      departureDate: shiftDays(D, 1),
+      departureDate: shiftDays(D, nights),
       adults: 1,
       mealPlan: 'EP',
       source: 'WALK_IN',
@@ -443,6 +444,35 @@ async function body() {
       0,
   );
 
+  /* -------------------------------------------------------------- 4b */
+  console.log('\n4b. The cap is the balance the folio shows, scheduled nights included.');
+  // Two nights: check-in posts the first; the second is scheduled. Paying the
+  // posted charges leaves the ledger at zero while the folio still shows the
+  // second night due. Before the fix this answered "nothing is owed".
+  const s4 = await stayIn('Four', 'R4', 2);
+  const posted4 = await balanceOf(s4.folioId);
+  await h.call('POST', `${base}/folios/by-booking/${s4.stay.bookingCode}/payment`, clerk, {
+    method: 'CASH',
+    amountMinor: posted4,
+    remark: null,
+    idempotencyKey: randomUUID(),
+  });
+  const page4 = await h.call('GET', `${base}/folios/by-booking/${s4.stay.bookingCode}`, clerk);
+  const due4 = page4.payload?.totals?.balanceDueMinor ?? 0;
+  h.check(
+    'the posted charges are paid, but the folio still shows the second night due',
+    (await balanceOf(s4.folioId)) === 0 && due4 > 0,
+    `ledger 0, due ${String(due4)}`,
+  );
+  const ahead = await send(clerk, s4.folioId, due4);
+  h.check(
+    'a link for the balance due is accepted, though nothing posted is owed',
+    ok(ahead) && ahead.payload.status === 'ACTIVE',
+    show(ahead),
+  );
+  const beyond = await send(clerk, s4.folioId, due4 + 1);
+  h.check('a link above the balance due is still refused', beyond.status === 400, show(beyond));
+
   /* -------------------------------------------------------------- 5 */
   console.log('\n5. Cancel, the ledger, permissions and tenancy.');
   const s3 = await stayIn('Three', 'R3');
@@ -466,7 +496,7 @@ async function body() {
       online?.amountMinor === owed &&
       online?.method === 'CARD' &&
       ledger.payload.totals.byMethod.CARD === owed &&
-      ledger.payload.links.length === 3,
+      ledger.payload.links.length === 4,
     show(ledger),
   );
 

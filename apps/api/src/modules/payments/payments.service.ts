@@ -275,13 +275,13 @@ export class PaymentsService {
     });
     if (folio === null) throw new TenantScopeViolationError('Folio');
     if (folio.status !== 'OPEN') throw new FolioAlreadyClosedError(folio.id);
-    const balance =
-      (
-        await this.prisma.client.folioLine.aggregate({
-          where: { folioId: folio.id, propertyId: property.id },
-          _sum: { amountMinor: true },
-        })
-      )._sum.amountMinor ?? 0;
+    // The cap is the balance the folio SHOWS: posted lines plus the nights
+    // scheduled but not yet charged. A guest paying ahead for their stay is
+    // the ordinary case; capping at posted lines alone refused every folio
+    // with a deposit ("nothing is owed" beside a visible balance due).
+    const balance = (
+      await this.folios.byBookingCode(userId, hotelId, folio.reservation.confirmationCode)
+    ).totals.balanceDueMinor;
     if (command.amountMinor > balance) {
       throw new ValidationFailedError({
         amountMinor:
