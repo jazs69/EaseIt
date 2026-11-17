@@ -35,13 +35,11 @@ function first(value: string | string[] | undefined): string | undefined {
  * silently:
  *
  *   * **Plans price a booking only when chosen in the booking form** (F9);
- *     otherwise the rack rate applies. Occupancy pricing and promotions do
- *     not yet affect bookings, and the screen says so.
- *   * **No per-date pricing**, seasonal or weekday rates — F2/F3, and a
- *     separate `rate_plan_day` table this model is already shaped for.
- *   * **No restrictions** (stop-sell, minimum stay, closed to arrival or
- *     departure) — F6/F7. `inventory_day` still carries only the counters the
- *     oversell CHECK guards.
+ *     otherwise the rack rate applies. Extra-guest charges, promotions and
+ *     stay restrictions (minimum stay, closed to arrival or departure; AV-07)
+ *     apply to plan-priced bookings only, and the screen says so.
+ *   * **No stop-sell** on the room type as a whole: a restriction belongs to a
+ *     plan, and a rack-rate booking names none.
  *   * **No channel distribution.** A rate editor that cannot push would
  *     silently disagree with what the OTAs are selling.
  *

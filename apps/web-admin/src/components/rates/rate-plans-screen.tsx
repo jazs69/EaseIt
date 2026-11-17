@@ -7,13 +7,13 @@
  * WHAT THIS SCREEN SAYS OUT LOUD, AND WHY.
  *
  * A booking prices from a plan only when the clerk picks it in the booking
- * form (F9); otherwise it uses the rack rate. Occupancy pricing and promotions
- * do not price bookings yet. The banner says exactly that, because an operator
- * who believed a price was live when it was not would quote the wrong figure.
+ * form (F9); otherwise it uses the rack rate. Extra-guest charges, promotions
+ * and stay restrictions (AV-07) apply only to plan-priced bookings. The banner
+ * says exactly that, because an operator who believed a price or a rule was
+ * live when it was not would quote the wrong figure.
  *
- * There is also no per-date pricing, no restriction control and no channel
- * push here, and the banner names those too rather than leaving an operator to
- * discover the absence.
+ * There is no channel push here, and the banner names that too rather than
+ * leaving an operator to discover the absence.
  *
  * NO DELETE CONTROL, because there is no delete endpoint. A plan that has ever
  * been quoted is history. Deactivate is the reversible stop; archive is
@@ -60,6 +60,7 @@ import { OccupancyPricingPanel } from './occupancy-pricing-panel';
 import { PricingRulesPanel } from './pricing-rules-panel';
 import { PromotionsPanel } from './promotions-panel';
 import { RateCalendar } from './rate-calendar';
+import { RestrictionsPanel } from './restrictions-panel';
 import { RatePlanForm } from './rate-plan-form';
 
 type StatusFilter = ListRatePlansQuery['status'];
@@ -540,6 +541,10 @@ export function RatePlansScreen({ hotelId, initialPlans, roomTypes, currency, ca
         }}
       />
 
+      {/* AV-07: minimum stay, closed to arrival and closed to departure, for
+          the SAME plan the calendar and the other panels are showing. */}
+      <RestrictionsPanel hotelId={hotelId} plan={pricingPlan} canManage={canManage} />
+
       {/* F5: promotions apply across rate plans rather than to one, so this
           panel takes the whole selectable set rather than the single plan the
           calendar and the rules panel are focused on. It owns its own reads;
@@ -586,8 +591,8 @@ function ScopeNotice() {
           Each night is priced from this plan&apos;s calendar — date price, then season, weekday and
           weekend rules, then the default — and taxed in its own GST band. Bookings made without a
           plan still use the room type&apos;s rack rate. A price is fixed when the booking is made;
-          changing it here does not reprice existing bookings. Occupancy pricing and promotions do
-          not affect bookings yet, there are no stay restrictions, and nothing here reaches an OTA.
+          changing it here does not reprice existing bookings. Extra-guest charges, promotions and
+          stay restrictions apply to bookings made on a plan. Nothing here reaches an OTA.
         </p>
       </div>
     </div>

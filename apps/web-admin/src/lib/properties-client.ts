@@ -9,6 +9,9 @@
  */
 
 import {
+  rateRestrictionsResponseSchema,
+  type RateRestrictionsResponse,
+  type SetRateRestrictionsRequest,
   auditLogFacetsSchema,
   auditLogPageSchema,
   type AuditLogFacets,
@@ -698,7 +701,11 @@ export function issueInvoice(hotelId: string, folioId: string): Promise<Invoice>
 }
 
 /** The invoice as a file to save. */
-export function downloadInvoice(hotelId: string, invoiceId: string, format: 'pdf' | 'csv'): Promise<Blob> {
+export function downloadInvoice(
+  hotelId: string,
+  invoiceId: string,
+  format: 'pdf' | 'csv',
+): Promise<Blob> {
   return apiDownload(
     `/properties/${encodeURIComponent(hotelId)}/invoices/${encodeURIComponent(invoiceId)}/${format}`,
   );
@@ -1766,10 +1773,14 @@ export function fetchNightAuditOverview(
   hotelId: string,
   options: { cookieHeader?: string; signal?: AbortSignal } = {},
 ): Promise<NightAuditOverview> {
-  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/night-audit`, nightAuditOverviewSchema, {
-    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  });
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/night-audit`,
+    nightAuditOverviewSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
 }
 
 /**
@@ -1777,10 +1788,14 @@ export function fetchNightAuditOverview(
  * does, and the screen polls the overview to watch the steps.
  */
 export function startNightAudit(hotelId: string): Promise<StartNightAuditResult> {
-  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/night-audit/runs`, startNightAuditResultSchema, {
-    method: 'POST',
-    body: {},
-  });
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/night-audit/runs`,
+    startNightAuditResultSchema,
+    {
+      method: 'POST',
+      body: {},
+    },
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1795,9 +1810,13 @@ export function fetchFrontDeskBoard(
   hotelId: string,
   options: { cookieHeader?: string } = {},
 ): Promise<FrontDeskBoard> {
-  return apiFetch(`/properties/${encodeURIComponent(hotelId)}/front-desk/board`, frontDeskBoardSchema, {
-    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
-  });
+  return apiFetch(
+    `/properties/${encodeURIComponent(hotelId)}/front-desk/board`,
+    frontDeskBoardSchema,
+    {
+      ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+    },
+  );
 }
 
 export function fetchHousekeepingBoard(
@@ -1881,5 +1900,42 @@ export function fetchAuditLogFacets(
 ): Promise<AuditLogFacets> {
   return apiFetch(`${auditLogPath(hotelId)}/facets`, auditLogFacetsSchema, {
     ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Stay restrictions (AV-07)                                                 */
+/* -------------------------------------------------------------------------- */
+
+function restrictionsPath(hotelId: string, ratePlanId: string): string {
+  return `/properties/${encodeURIComponent(hotelId)}/rate-plans/${encodeURIComponent(ratePlanId)}/restrictions`;
+}
+
+/** Restricted nights only, for one plan and room type, both ends inclusive. */
+export function fetchRateRestrictions(
+  hotelId: string,
+  ratePlanId: string,
+  query: { roomTypeId: string; fromDate: string; toDate: string },
+  options: { signal?: AbortSignal } = {},
+): Promise<RateRestrictionsResponse> {
+  const params = new URLSearchParams(query);
+  return apiFetch(
+    `${restrictionsPath(hotelId, ratePlanId)}?${params.toString()}`,
+    rateRestrictionsResponseSchema,
+    {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+  );
+}
+
+/** Sets the same restriction on every night of the range; all defaults clears it. */
+export function setRateRestrictions(
+  hotelId: string,
+  ratePlanId: string,
+  body: SetRateRestrictionsRequest,
+): Promise<RateRestrictionsResponse> {
+  return apiFetch(restrictionsPath(hotelId, ratePlanId), rateRestrictionsResponseSchema, {
+    method: 'PUT',
+    body,
   });
 }
