@@ -6,6 +6,9 @@
  *   GST_PROVIDER=sandbox GST_API_KEY=key_test_... GST_API_SECRET=secret_test_... \
  *   GST_ENVIRONMENT=test pnpm gst:smoke -- 29AAACR5055K1Z3
  *
+ * Or put the four GST_ settings in apps/api/.env and run just
+ * `pnpm gst:smoke -- <GSTIN>`; a variable set in the shell still wins.
+ *
  * Prints the mapped result and its provenance tag. Never prints the key or
  * secret. Exits 1 when the provider could not be reached or refused the
  * credentials (the result comes back UNVERIFIED with "unavailable"), so a
@@ -16,6 +19,14 @@
  */
 
 await import(new URL('../apps/api/node_modules/reflect-metadata/Reflect.js', import.meta.url));
+
+// The API's own settings, so keys kept in apps/api/.env need not be retyped.
+// A variable already set in the shell wins: loadEnvFile never overwrites.
+try {
+  process.loadEnvFile(new URL('../apps/api/.env', import.meta.url));
+} catch {
+  // No apps/api/.env: the shell must supply everything, checked below.
+}
 
 const gstin = process.argv.slice(2).find((arg) => arg !== '--');
 if (gstin === undefined) {
