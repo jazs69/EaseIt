@@ -148,6 +148,8 @@ export const Permission = {
   RATES_MANAGE: 'rates:manage',
   CHANNELS_READ: 'channels:read',
   CHANNELS_SYNC: 'channels:sync',
+  /** Connect a provider, map room types and rate plans, resolve inbound bookings. */
+  CHANNELS_MANAGE: 'channels:manage',
   /** Raise a room type's overbooking allowance (CLAUDE.md section 3.1). */
   INVENTORY_OVERRIDE: 'inventory:override',
 
@@ -377,7 +379,7 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
   {
     key: P.CHANNELS_READ,
     label: 'View channels',
-    description: 'See OTA mappings and the ARI push log.',
+    description: 'See channel connections, mappings, the ARI push log and inbound OTA bookings.',
     category: C.RATES_DISTRIBUTION,
     sensitive: false,
   },
@@ -385,6 +387,14 @@ export const PERMISSION_DEFINITIONS: readonly PermissionDefinition[] = [
     key: P.CHANNELS_SYNC,
     label: 'Sync channels',
     description: 'Trigger an ARI push or a full channel resync.',
+    category: C.RATES_DISTRIBUTION,
+    sensitive: true,
+  },
+  {
+    key: P.CHANNELS_MANAGE,
+    label: 'Manage channels',
+    description:
+      'Connect a channel provider, map room types and rate plans, and resolve inbound OTA bookings that need attention.',
     category: C.RATES_DISTRIBUTION,
     sensitive: true,
   },
@@ -514,6 +524,7 @@ const REVENUE_MANAGER_PERMISSIONS: readonly Permission[] = [
   P.RATES_MANAGE,
   P.CHANNELS_READ,
   P.CHANNELS_SYNC,
+  P.CHANNELS_MANAGE,
   P.INVENTORY_OVERRIDE,
   // Withholding capacity for maintenance or owner use is a revenue decision,
   // and this role already carries the oversell override it sits beside.
@@ -608,8 +619,8 @@ export function primaryRole(roles: readonly Role[]): Role | null {
  * then cover the permission check.
  */
 export const UNAVAILABLE_PERMISSIONS: Readonly<Partial<Record<Permission, string>>> = {
-  [Permission.CHANNELS_READ]: 'The channel manager is not built yet.',
-  [Permission.CHANNELS_SYNC]: 'The channel manager is not built yet.',
+  // Empty since CM-01 .. CM-05 shipped the channel manager (2026-11-21). The
+  // mechanism stays: the next unbuilt feature's permission goes here.
 };
 
 /** True when the feature behind a permission exists and it may be granted. */

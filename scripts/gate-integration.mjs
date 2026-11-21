@@ -295,6 +295,11 @@ const suites = [
     script: 'test/integration/booking-engine.test.mjs',
     why: 'slug resolved server-side (unknown/inactive 404, spoofed header ignored); search offers only sellable categories on public plans; cached search vs live quote; the held price survives a rate change; tampered/expired/cross-property quotes refused with nothing written; 6 parallel submits of one quote book once; 8 guests racing for the last room: exactly one wins, sold = live rows per date and category; overbooking allowance never sold publicly; pay-now link, captured once under 3 webhooks; access token or 404; throttled; Razorpay stand-in on 4993',
   },
+  {
+    name: 'channel manager (CM-01..CM-05)',
+    script: 'test/integration/channels.test.mjs',
+    why: 'triggers record ARI changes in the writing transaction under RLS (nothing while paused, allowance-only ignored); one push in flight per connection, debounced; availability = physical - sold - blocked, plan rate, restrictions, stop-sell; rows deleted only on acknowledgement; 5xx retryable, 422 permanent; every call logged; pull stores raw without card data before acknowledging; 6 concurrent applies book once; unmapped/unreadable/modified/earlier-revision go to a person; OTA cancel releases each night once; guest in house not cancelled; last room raced by 6 desk bookings and an OTA booking: exactly one wins, sold = live rows per date and category; 403/404 tenancy; Channex stand-in on 4994, API needs CHANNEX_API_KEY/CHANNEX_BASE_URL test values',
+  },
 ];
 
 console.log('════ release gate (integration) ════');

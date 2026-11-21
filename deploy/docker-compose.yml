@@ -50,6 +50,11 @@ x-api-env: &api-env
   RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
   RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
   RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+  # Optional: the channel manager through Channex (CM-01..05). Without a key the
+  # Channels screen works but nothing is sent. The worker schedules pushes and
+  # pulls (CHANNEL_SYNC_SCHEDULER defaults to on in production).
+  CHANNEX_API_KEY: ${CHANNEX_API_KEY:-}
+  CHANNEX_BASE_URL: ${CHANNEX_BASE_URL:-https://app.channex.io}
 
 services:
   postgres:

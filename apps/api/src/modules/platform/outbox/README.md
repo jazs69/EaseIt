@@ -1,10 +1,11 @@
 # The transactional outbox
 
-Phase A of the Channel Manager. This is the delivery foundation only: there is no
-channel, no mapping, no ARI push and no inbound reservation handling here. Handlers
-registered today: the self-test fake, the night audit (`NIGHT_AUDIT_RUN`,
-`NIGHT_AUDIT_COMPLETED`) and the booking confirmation email
-(`RESERVATION_CONFIRMATION_EMAIL`, NO-04).
+The delivery foundation every background side effect uses. Handlers registered
+today: the self-test fake, the night audit (`NIGHT_AUDIT_RUN`,
+`NIGHT_AUDIT_COMPLETED`), the booking confirmation email
+(`RESERVATION_CONFIRMATION_EMAIL`, NO-04) and the channel manager
+(`CHANNEL_ARI_PUSH`, `CHANNEL_BOOKINGS_PULL`, `CHANNEL_INBOUND_APPLY`, CM-03/04;
+see `modules/channels`).
 
 ---
 
@@ -72,13 +73,13 @@ here.
 
 ### Observing it
 
-| Where | What |
-| --- | --- |
-| `GET /api/v1/health` | liveness — touches nothing |
-| `GET /api/v1/health/ready` | readiness — **PostgreSQL only**, deliberately not Redis |
-| `GET /api/v1/health/outbox` | backlog gauge — always 200, never a readiness verdict |
-| worker log | backlog line every `OUTBOX_BACKLOG_LOG_MS`; `warn` when a dead letter or a stale lease exists |
-| `pnpm queue:ui` | Bull Board, for the Redis side |
+| Where                       | What                                                                                          |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `GET /api/v1/health`        | liveness — touches nothing                                                                    |
+| `GET /api/v1/health/ready`  | readiness — **PostgreSQL only**, deliberately not Redis                                       |
+| `GET /api/v1/health/outbox` | backlog gauge — always 200, never a readiness verdict                                         |
+| worker log                  | backlog line every `OUTBOX_BACKLOG_LOG_MS`; `warn` when a dead letter or a stale lease exists |
+| `pnpm queue:ui`             | Bull Board, for the Redis side                                                                |
 
 A backlog is a workload signal. Ten thousand pending events means the system is
 working as designed; pulling the API out of a load balancer for it would turn a
@@ -118,7 +119,7 @@ replayed against a finished row, real concurrency, and shutdown mid-flight.
 
 One gap worth naming: **the SIGTERM path itself is not tested on Windows**, which has
 no deliverable SIGTERM — `Stop-Process` is a hard kill and `process.kill` terminates
-unconditionally. The suite exercises what the signal handler *calls*
+unconditionally. The suite exercises what the signal handler _calls_
 (`onModuleDestroy` on each component, in Nest's order) and asserts the row is never
 stuck, but the handler wiring in `worker.ts` is verified by reading it, not by
 signal. On Linux or in a container it would be testable directly.
@@ -139,8 +140,8 @@ and expired leases return to PENDING. A crash costs one lease duration of latenc
 
 **A claim carries a token, and every outcome write quotes it.** `claimedBy` travels
 to the worker in the job, and the success, retry and dead-letter writes all end
-`AND "claimedBy" = $token`. Status alone cannot tell *my* claim from *someone
-else's*: after a lease expiry a row goes PENDING and straight back to IN_FLIGHT
+`AND "claimedBy" = $token`. Status alone cannot tell _my_ claim from _someone
+else's_: after a lease expiry a row goes PENDING and straight back to IN_FLIGHT
 under a new token, and a job holding the old one would look perfectly current. With
 the token, a worker whose lease was reclaimed mid-handler writes zero rows, logs a
 warning naming `OUTBOX_LEASE_MS`, and leaves the outcome to whoever owns the row.
@@ -161,10 +162,10 @@ republish a row that had failed and become due again.
 
 **Two dedupe modes, and they are not interchangeable.**
 
-| Mode | Index | Means |
-| --- | --- | --- |
-| `COALESCE` | unique on `(propertyId, dedupeKey)` **where PENDING** | "the latest intent for this scope wins" — five enqueues before the worker drains become one push carrying the newest state. The key is free again once the row is terminal. |
-| `UNIQUE_FOREVER` | unique on `(propertyId, dedupeKey)`, unconditional | "this must happen exactly once, ever" — a second enqueue is suppressed as success, now and in a year. |
+| Mode             | Index                                                 | Means                                                                                                                                                                       |
+| ---------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COALESCE`       | unique on `(propertyId, dedupeKey)` **where PENDING** | "the latest intent for this scope wins" — five enqueues before the worker drains become one push carrying the newest state. The key is free again once the row is terminal. |
+| `UNIQUE_FOREVER` | unique on `(propertyId, dedupeKey)`, unconditional    | "this must happen exactly once, ever" — a second enqueue is suppressed as success, now and in a year.                                                                       |
 
 **Payloads carry identifiers only.** No guest name, email, government ID or card
 detail, and no credentials. A row outlives the request that wrote it, is read by a
@@ -173,7 +174,7 @@ need from the database under the tenant scope the row names.
 
 **Error metadata is scrubbed.** `lastError` is name and message, truncated to fit
 `VARCHAR(500)`; never a stack, SQL string, or provider response body. A validation
-failure records the field *paths*, never the values.
+failure records the field _paths_, never the values.
 
 ---
 
@@ -182,7 +183,7 @@ failure records the field *paths*, never the values.
 **Delivery is at-least-once, never exactly-once.** The enqueue is genuinely atomic
 with its transaction, and that is a real guarantee. The external call is not: once a
 provider request times out, we do not know whether it was applied — a timeout means
-*unknown*, not *failed*. A handler must buy its own safety, by full-state writes
+_unknown_, not _failed_. A handler must buy its own safety, by full-state writes
 (push the whole window rather than a delta), a provider-side idempotency key, or an
 acknowledgement the provider owns. **A handler that does none of these is unsafe to
 retry, and nothing in this module fixes that.**
@@ -203,7 +204,7 @@ counters at ten properties is not one. The durable history is `outbox_event`.
 
 **Latency is bounded by the poll interval**, 1s by default. Polling rather than a
 post-commit publish is a deliberate trade: a post-commit publish that fails loses
-the event unless something later notices, and a poller *is* that something, so it
+the event unless something later notices, and a poller _is_ that something, so it
 has to exist anyway. One mechanism, and restart recovery comes free.
 
 **The dispatcher's claim and the reaper are cross-property.** They read the whole
@@ -213,8 +214,9 @@ with `propertyId`. Per-property views use `(propertyId, status, createdAt)`.
 
 **Several worker processes are safe; several dispatchers are safe.** `FOR UPDATE
 SKIP LOCKED` is proven under 8 concurrent dispatchers in the race suite. There is
-no ordering guarantee between events yet — the per-property ordering an ARI push
-needs is Phase B work, not something this module provides today.
+no ordering guarantee between events in this module. The per-connection ordering
+an ARI push needs is provided by its producer instead: `ChannelSyncScheduler`
+enqueues a push only when none is PENDING or IN_FLIGHT for that connection.
 
 ---
 
@@ -245,21 +247,13 @@ one-off migration.
 
 ---
 
-## Next phase
+## Phase B: done (CM-01 .. CM-05, 2026-11-21)
 
-Phase B, in rough order:
-
-1. **`Channel` and `ChannelConnection`** — per-property channel registration and
-   credentials, with secrets outside the outbox payload.
-2. **Room-type and rate-plan mapping** — `(propertyId, channel, externalId)`, with
-   the unavoidable question of what an unmapped room type does to a push.
-3. **A channel-independent sync contract** — one adapter interface, mapping only,
-   no business rules, so a provider swap is an adapter and not a rewrite.
-4. **Real ARI event types**, replacing `OUTBOX_SELF_TEST`, with per-property
-   ordering and debouncing per `(propertyId, roomTypeId, dateRange)`.
-5. **Inbound reservations** — store the raw payload first, normalise in a second
-   step, idempotent on the channel's reservation id, so a parser bug cannot lose a
-   booking.
-6. **Ordering and rate limiting per provider**, plus a circuit breaker, so a
-   failing OTA degrades the sync layer and never the front desk.
-7. **A reviewed dead-letter replay path**, and alerting that is not a log line.
+The channel manager lives in `apps/api/src/modules/channels`: per-property
+connections (credentials stay in env), room-type and rate-plan mappings, one adapter
+interface with a Channex adapter, ARI change capture by triggers in the writer's own
+transaction, debounced and ordered pushes of full state, inbound bookings stored raw
+before they are read, and a circuit breaker per provider. Still owed from the old
+list: a reviewed dead-letter replay path (a dead ARI push is re-scheduled by the
+channel scheduler after 15 minutes, which is safe because a push is full state; other
+event types still need an explicit `UPDATE`).

@@ -229,6 +229,20 @@ public never sells the allowance (stricter than the CHECK, never looser). Its `a
 link is requested after commit. Raced in `booking-engine.test.mjs` (8 guests, last room) and
 `pnpm test:concurrency` (passing 2026-11-18).
 
+The channel manager (CM-04, `modules/channels`) is **not** a second path either. An OTA booking is
+applied by the worker through `CreateReservationService.createForChannel`, the same transaction,
+whose `before` hook takes `pg_advisory_xact_lock` on the provider booking
+(`channel-booking:<property>:<connection>:<booking id>`) **before** any `inventory_day` lock (taken
+nowhere else) and then refuses a room already linked in `channel_reservation`; its `after` hook
+writes that unique link and the audit row. It passes `allowOverbooking: true`: the channels are
+pushed physical stock only (`physical - sold - blocked`), so the allowance exists to absorb a sale
+the OTA made before a push landed; beyond it the CHECK refuses and the message goes to a person. An
+OTA cancellation goes through `CancelReservationService.cancelAsSystem`, the clerk's path with a null
+actor (reservation row first). ARI change capture is statement-level triggers on `inventory_day` and
+the rate tables that INSERT into `channel_ari_change` in the writer's transaction: no row locks, so
+the lock order above is unchanged. Raced in `channels.test.mjs` (6 concurrent applies of one
+revision book once; 6 desk bookings and an OTA booking for the last room: exactly one).
+
 - The lock is **always scoped by `propertyId` in the same predicate as the id**, so another
   property's stay is _not found_ rather than forbidden (§3.2). A row lock taken on id alone is a
   tenancy bug even when the subsequent read is scoped.
@@ -361,9 +375,10 @@ deterministic harness pinning both orderings; and bounded lock waits for room mo
 
 **Requirements for any future module writing these tables.** `nightaudit` now exists and follows them
 (`modules/nightaudit/night-audit.runner.ts`: no-shows via the RS-13 path, nightly charges under the
-reservation then folio locks). `housekeeping` and
-`channels` do not exist yet; when they write `reservation`, `reservation_room` or `inventory_day` they
-inherit all of the above, and specifically:
+reservation then folio locks). `channels` now exists and follows them (above: inbound bookings and
+cancellations only through `createForChannel` and `cancelAsSystem`). `housekeeping` writes none of
+these tables; any module that ever writes `reservation`, `reservation_room` or `inventory_day`
+inherits all of the above, and specifically:
 
 1. Take the **reservation row `FOR UPDATE` first**, scoped by `propertyId` in the same predicate, then
    `inventory_day` in ascending `stayDate`, `roomTypeId` order.

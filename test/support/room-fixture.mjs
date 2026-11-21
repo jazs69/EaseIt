@@ -283,6 +283,10 @@ export function createHarness({ suiteName, prefix, slugPrefix, emailDomain, pris
     const scope = { propertyId };
     await prisma.$transaction(
       async (tx) => {
+        // Channel connections cascade to their mappings, change log, call log,
+        // inbound messages and booking links (CM-01..05). First, because a
+        // mapping RESTRICTs the room type and rate plan it points at.
+        await tx.channelConnection.deleteMany({ where: scope });
         await tx.folioLine.deleteMany({ where: { folio: { propertyId } } });
         await tx.folio.deleteMany({ where: scope });
         // Redemptions RESTRICT the reservation they consumed, so they go first.

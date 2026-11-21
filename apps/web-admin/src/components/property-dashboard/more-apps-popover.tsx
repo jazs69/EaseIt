@@ -47,6 +47,7 @@ import {
   UsersRound,
   Wallet,
   Wrench,
+  Network,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
@@ -110,6 +111,13 @@ const APPS: readonly AppItem[] = [
     icon: Activity,
     href: '/revenue',
     requiredPermission: Permission.FINANCIAL_REPORTS_READ,
+  },
+  {
+    id: 'channels',
+    name: 'Channels',
+    icon: Network,
+    href: '/channels',
+    requiredPermission: Permission.CHANNELS_READ,
   },
   { id: 'stock', name: 'Stock', icon: Boxes, isLocked: true },
   {

@@ -217,6 +217,32 @@ export const envSchema = z
     PAYMENT_LINK_EXPIRY_DAYS: z.coerce.number().int().min(1).max(90).default(7),
 
     /**
+     * Channel manager (CM-01 .. CM-05), through Channex. Optional: without a
+     * key a connection can be set up and mapped, and the screen says the
+     * provider is not configured; nothing is pushed or pulled.
+     */
+    CHANNEX_API_KEY: z.preprocess(emptyAsUndefined, z.string().min(1).optional()),
+    /**
+     * https://app.channex.io (production) or https://staging.channex.io (the
+     * sandbox). Plain http is for the test stand-in and refused in production.
+     */
+    CHANNEX_BASE_URL: z.url().default('https://app.channex.io'),
+    CHANNEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(30_000).default(10_000),
+    /**
+     * Whether this worker schedules channel pushes and pulls. Off by default
+     * outside production, like the night-audit scheduler, so a developer's
+     * worker never talks to a provider by surprise.
+     */
+    CHANNEL_SYNC_SCHEDULER: booleanFromEnv.optional(),
+    CHANNEL_SYNC_TICK_MS: z.coerce.number().int().min(500).max(600_000).default(5_000),
+    /** How long changes settle before a push, so a burst becomes one push. */
+    CHANNEL_ARI_DEBOUNCE_MS: z.coerce.number().int().min(0).max(600_000).default(2_000),
+    /** How often each connection's new bookings are fetched. */
+    CHANNEL_PULL_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
+    /** How far ahead, from the business date, ARI is pushed. */
+    CHANNEL_ARI_WINDOW_DAYS: z.coerce.number().int().min(7).max(730).default(365),
+
+    /**
      * OB-05. Bearer token for `GET /api/v1/metrics`. Required in production;
      * unset elsewhere leaves the endpoint open for local inspection.
      */
@@ -393,6 +419,14 @@ export const envSchema = z
         code: 'custom',
         path: ['RAZORPAY_BASE_URL'],
         message: 'RAZORPAY_BASE_URL is a test override and is refused in production.',
+      });
+    }
+
+    if (!env.CHANNEX_BASE_URL.startsWith('https://')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CHANNEX_BASE_URL'],
+        message: 'CHANNEX_BASE_URL must be https in production (plain http is the test stand-in).',
       });
     }
 

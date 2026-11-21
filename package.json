@@ -53,6 +53,7 @@
     "test:work-orders": "node test/integration/work-orders.test.mjs",
     "test:data-exchange": "node test/integration/data-exchange.test.mjs",
     "test:booking-engine": "node test/integration/booking-engine.test.mjs",
+    "test:channels": "node test/integration/channels.test.mjs",
     "test:observability": "node test/integration/observability.test.mjs",
     "check:log-pii": "node scripts/check-log-pii.mjs",
     "load:seed": "node scripts/load/seed-volume.mjs",

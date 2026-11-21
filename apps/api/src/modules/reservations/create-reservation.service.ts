@@ -99,6 +99,12 @@ export type CommitOptions = {
     tx: Prisma.TransactionClient,
     reservation: { id: string; bookingCode: string },
   ) => Promise<void>;
+  /** CM-04: what the channel says about the booking, stored on the reservation. */
+  ota?: {
+    otaBookingId: string;
+    otaCommissionMinor: number;
+    otaPrepaidAmountMinor: number;
+  };
 };
 
 const STAFF_COMMIT: CommitOptions = { allowOverbooking: true };
@@ -418,6 +424,101 @@ export class CreateReservationService {
     );
   }
 
+  /* -------------------------------------------------------------------- */
+  /*  Channel bookings (CM-04): sold by an OTA, priced by the OTA           */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Prices an OTA booking at the nightly amounts the channel sold it for.
+   *
+   * The amounts are the pre-tax nightly rates: they are what this system
+   * pushed (the plan's nightly rate, before tax), echoed back by the channel.
+   * GST is then banded and rounded per night exactly as for any other stay,
+   * through `quoteStay`, so an OTA stay's folio and invoice are built the same
+   * way as a desk booking's. Each night is marked MANUAL: the price was set
+   * outside this system's plans, and a later reprice must not touch it.
+   */
+  async quoteForChannel(
+    propertyId: string,
+    input: {
+      roomTypeId: string;
+      ratePlan: { id: string; code: string } | null;
+      arrivalDate: string;
+      departureDate: string;
+      nights: readonly { stayDate: string; rateMinor: number }[];
+    },
+  ): Promise<ReservationQuote> {
+    const property = await this.loadProperty(propertyId);
+    const roomType = await this.loadRoomType(property.id, input.roomTypeId);
+    this.assertStayWindow(input.arrivalDate, input.departureDate);
+    const quote = quoteStay({
+      arrivalDate: input.arrivalDate,
+      departureDate: input.departureDate,
+      baseNightlyRateMinor: roomType.baseRateMinor,
+      plan: {
+        ratePlanId: input.ratePlan?.id ?? '',
+        ratePlanCode: input.ratePlan?.code ?? '',
+        nights: input.nights.map((night) => ({
+          stayDate: night.stayDate,
+          rateMinor: night.rateMinor,
+          source: 'DATE_OVERRIDE' as const,
+          extraGuestMinor: 0,
+          discountMinor: 0,
+        })),
+        promotion: null,
+      },
+      isTaxExempt: false,
+      currency: roomType.currency,
+      taxSlabs: await this.slabsFor(property),
+    });
+    return {
+      ...quote,
+      ratePlanId: input.ratePlan?.id ?? null,
+      ratePlanCode: input.ratePlan?.code ?? null,
+      isOverridden: true,
+      nightly: quote.nightly.map((night) => ({ ...night, rateSource: 'MANUAL' as const })),
+    };
+  }
+
+  /**
+   * Books a stay an OTA sold, through the staff transaction unchanged.
+   *
+   * Same as `createForGuest` -- ascending `inventory_day` lock, oversell
+   * CHECK, bounded retries, the outbox confirmation -- with one difference
+   * that is deliberate: the overbooking allowance IS sellable here. The
+   * channels are pushed physical stock only, so a channel booking that needs
+   * the allowance is one the OTA sold in the seconds before a push landed,
+   * which is exactly what a revenue manager sets an allowance for. Beyond the
+   * allowance the CHECK refuses it, and the inbound message is handed to a
+   * person (never a silent oversell, never a lost booking).
+   */
+  async createForChannel(
+    propertyId: string,
+    command: CreateReservationCommand,
+    quote: ReservationQuote,
+    options: Pick<CommitOptions, 'before' | 'after' | 'ota'>,
+  ): Promise<CreatedReservation> {
+    if (
+      command.isInstantCheckIn ||
+      command.payment !== null ||
+      command.roomId !== null ||
+      command.companyId !== null
+    ) {
+      throw new ValidationFailedError({
+        request: 'A channel booking cannot check in, pay at the desk, pick a room or bill a company.',
+      });
+    }
+    const property = await this.loadProperty(propertyId);
+    const roomType = await this.loadRoomType(property.id, command.roomTypeId);
+    this.assertStayWindow(command.arrivalDate, command.departureDate);
+    return this.withRetry(() =>
+      this.commit(null, property, roomType, command, quote, {
+        allowOverbooking: true,
+        ...options,
+      }),
+    );
+  }
+
   private async loadProperty(propertyId: string): Promise<{
     id: string;
     code: string;
@@ -594,6 +695,14 @@ export class CreateReservationService {
             mealPlan: command.mealPlan,
             // The plan that priced it, if one did; null for rack or manual.
             ratePlanId: quote.ratePlanId,
+            // CM-04: the channel's own reference and settlement figures.
+            ...(options.ota === undefined
+              ? {}
+              : {
+                  otaBookingId: options.ota.otaBookingId,
+                  otaCommissionMinor: options.ota.otaCommissionMinor,
+                  otaPrepaidAmountMinor: options.ota.otaPrepaidAmountMinor,
+                }),
             totalAmountMinor: quote.totalMinor,
             taxAmountMinor: quote.taxMinor,
             // Recorded, so an exempt stay is never taxed later by a derivation

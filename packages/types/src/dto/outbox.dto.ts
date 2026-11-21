@@ -28,16 +28,17 @@ import { businessDateSchema } from '../domain.js';
 /**
  * The event types the system knows how to handle.
  *
- * Phase A carries exactly one, and it is a self-test with no business
- * meaning. Real ARI event types land with the `channels` module once the
- * provider contract is known (CLAUDE.md section 2); inventing them now would
- * bake in a shape the OTAs have not agreed to.
+ * The self-test, the night audit, the booking confirmation, and the three
+ * channel-manager jobs (CM-03, CM-04), each per connection.
  */
 export const outboxEventTypeSchema = z.enum([
   'OUTBOX_SELF_TEST',
   'NIGHT_AUDIT_RUN',
   'NIGHT_AUDIT_COMPLETED',
   'RESERVATION_CONFIRMATION_EMAIL',
+  'CHANNEL_ARI_PUSH',
+  'CHANNEL_BOOKINGS_PULL',
+  'CHANNEL_INBOUND_APPLY',
 ]);
 
 export type OutboxEventType = z.infer<typeof outboxEventTypeSchema>;
@@ -106,6 +107,17 @@ export const reservationConfirmationPayloadSchema = z.object({ reservationId: z.
 
 export type ReservationConfirmationPayload = z.infer<typeof reservationConfirmationPayloadSchema>;
 
+/**
+ * CM-03 / CM-04: work on one channel connection.
+ *
+ * The connection id only. The push reads the pending change rows and the
+ * current ARI at send time; the pull and the apply read the connection's own
+ * rows. No credential and no guest data ever sits in the queue.
+ */
+export const channelConnectionPayloadSchema = z.object({ connectionId: z.uuid() });
+
+export type ChannelConnectionPayload = z.infer<typeof channelConnectionPayloadSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*  Registry                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -123,6 +135,9 @@ export const OUTBOX_PAYLOAD_VERSION: Record<OutboxEventType, number> = {
   NIGHT_AUDIT_RUN: 1,
   NIGHT_AUDIT_COMPLETED: 1,
   RESERVATION_CONFIRMATION_EMAIL: 1,
+  CHANNEL_ARI_PUSH: 1,
+  CHANNEL_BOOKINGS_PULL: 1,
+  CHANNEL_INBOUND_APPLY: 1,
 };
 
 /**
@@ -137,6 +152,9 @@ export const OUTBOX_PAYLOAD_SCHEMAS: Record<string, z.ZodType> = {
   'NIGHT_AUDIT_RUN:1': nightAuditRunPayloadSchema,
   'NIGHT_AUDIT_COMPLETED:1': nightAuditCompletedPayloadSchema,
   'RESERVATION_CONFIRMATION_EMAIL:1': reservationConfirmationPayloadSchema,
+  'CHANNEL_ARI_PUSH:1': channelConnectionPayloadSchema,
+  'CHANNEL_BOOKINGS_PULL:1': channelConnectionPayloadSchema,
+  'CHANNEL_INBOUND_APPLY:1': channelConnectionPayloadSchema,
 };
 
 export function outboxPayloadSchemaFor(

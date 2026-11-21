@@ -168,6 +168,25 @@ export class CancelReservationService {
   }
 
   /**
+   * CM-04: a cancellation the channel sent, by the system.
+   *
+   * No grant check, because no person is acting: the property is the inbound
+   * message's own, passed in rather than resolved from a session, exactly as
+   * `markNoShowAsSystem` does for the night audit. Everything else -- the
+   * reservation lock first, the release from the actual room rows, the
+   * refusals, the idempotent replay -- is the clerk's path unchanged.
+   */
+  async cancelAsSystem(
+    propertyId: string,
+    reservationId: string,
+    reason: string,
+  ): Promise<CancelReservationResult> {
+    return this.withRetry('reservation cancellation', reservationId, () =>
+      this.commit(null, propertyId, reservationId, { reason }),
+    );
+  }
+
+  /**
    * Run one attempt until it commits or gives up: typed errors pass straight
    * through, a lock timeout or deadline is a 409, and only 40001/40P01 retry.
    */
@@ -241,9 +260,9 @@ export class CancelReservationService {
     throw new TransactionConflictError(operation);
   }
 
-  /** One attempt: the whole cancellation, atomically. */
+  /** One attempt: the whole cancellation, atomically. A null user is the system. */
   private commit(
-    userId: string,
+    userId: string | null,
     propertyId: string,
     reservationId: string,
     command: CancelReservationCommand,

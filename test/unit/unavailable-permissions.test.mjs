@@ -61,7 +61,13 @@ const enforced = (permission) =>
 const unavailable = Object.keys(UNAVAILABLE_PERMISSIONS);
 
 console.log('\n1. The unavailable list matches what the API enforces.');
-check('the list is not empty', unavailable.length > 0, unavailable.join(', '));
+// Empty since the channel manager shipped (CM-01..05). An empty list is a
+// valid state; the two-way check below still guards every permission.
+console.log(`  NOTE  unavailable today: ${unavailable.length === 0 ? 'none' : unavailable.join(', ')}`);
+check(
+  'the channel permissions are grantable now that the channel manager exists',
+  ['channels:read', 'channels:sync', 'channels:manage'].every((p) => isPermissionAvailable(p)),
+);
 for (const permission of unavailable) {
   check(`${permission} is enforced nowhere in the API (feature unbuilt)`, !enforced(permission));
   check(

@@ -390,6 +390,14 @@ model Property {
   guestProfiles     GuestProfile[]
   companyLedger     CompanyLedgerEntry[]
 
+  channelConnections     ChannelConnection[]
+  channelRoomTypeMaps    ChannelRoomTypeMapping[]
+  channelRatePlanMaps    ChannelRatePlanMapping[]
+  channelAriChanges      ChannelAriChange[]
+  channelSyncAttempts    ChannelSyncAttempt[]
+  channelInboundMessages ChannelInboundMessage[]
+  channelReservations    ChannelReservation[]
+
   @@index([status])
   @@map("property")
 }
@@ -709,6 +717,7 @@ model RoomType {
   media            PropertyMedia[]
   ratePlans        RatePlanRoomType[]
   promotions       PromotionRoomType[]
+  channelMappings  ChannelRoomTypeMapping[]
 
   @@unique([propertyId, code], name: "room_type_unique_code_per_property")
   @@unique([propertyId, name], name: "room_type_unique_name_per_property")
@@ -989,6 +998,7 @@ model RatePlan {
   pricingRules RatePricingRule[]
   promotions   PromotionRatePlan[]
   reservations Reservation[]
+  channelMappings ChannelRatePlanMapping[]
 
   /// Derived (linked) plan, AV-06: priced as the parent's nightly rate adjusted by
   /// derivationKind/Value. Null on a plan priced from its own calendar.
@@ -1894,6 +1904,7 @@ model Reservation {
   companyLedger CompanyLedgerEntry[]
   paymentLinks  PaymentLink[]
   onlineBooking OnlineBooking[]
+  channelReservation ChannelReservation[]
   /// What each night was sold for. Written once at booking; never repriced.
   pricedNights  ReservationNight[]
 
@@ -2784,6 +2795,13 @@ enum OutboxEventType {
   /// NO-04: email the guest their booking confirmation. Enqueued in the
   /// booking's own transaction, once per reservation (UNIQUE_FOREVER).
   RESERVATION_CONFIRMATION_EMAIL
+  /// CM-03: push the pending ARI changes of one channel connection. Enqueued
+  /// by the channel scheduler, at most one PENDING or IN_FLIGHT per connection.
+  CHANNEL_ARI_PUSH
+  /// CM-04: fetch new booking revisions from the provider, store them raw, ack.
+  CHANNEL_BOOKINGS_PULL
+  /// CM-04: turn stored raw revisions into reservations, in arrival order.
+  CHANNEL_INBOUND_APPLY
 }
 
 /// How a row's `dedupeKey` constrains other rows.
@@ -3409,4 +3427,261 @@ model OnlineBooking {
   @@unique([propertyId, quoteId], name: "online_booking_one_per_quote")
   @@unique([propertyId, reservationId], name: "online_booking_one_per_reservation")
   @@map("online_booking")
+}
+
+// -----------------------------------------------------------------------------
+// Channel manager (CM-01 .. CM-05)
+// -----------------------------------------------------------------------------
+
+/// Which channel provider a connection speaks to. Each value has exactly one
+/// adapter in `apps/api/src/modules/channels` (CM-05). CHANNEX is a channel
+/// aggregator: one connection reaches Booking.com, Expedia, Agoda, Airbnb and
+/// MakeMyTrip through the provider's own certified links.
+enum ChannelProvider {
+  CHANNEX
+}
+
+/// ACTIVE connections are pushed to and pulled from. PAUSED ones are not, and
+/// record no ARI changes while paused; activating one pushes the whole window.
+enum ChannelConnectionStatus {
+  ACTIVE
+  PAUSED
+}
+
+/// Where one stored inbound message is.
+enum ChannelInboundStatus {
+  /// Stored raw, not yet turned into reservations.
+  RECEIVED
+  /// Applied: the reservations it describes exist, or the cancellation ran.
+  APPLIED
+  /// Nothing to do, with the reason recorded.
+  IGNORED
+  /// A person must act; `attentionCode` says why. Never retried by itself.
+  NEEDS_ATTENTION
+  /// A person dealt with it and said so.
+  RESOLVED
+}
+
+/// One property's link to one channel provider (CM-01).
+///
+/// Credentials are NOT here: the provider's API key is server configuration
+/// (env), and this row carries only the provider's id for the hotel. Nothing
+/// secret reaches the outbox payload or this table.
+model ChannelConnection {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  provider           ChannelProvider
+  /// The provider's identifier for this hotel (Channex `property_id`).
+  externalPropertyId String
+
+  status ChannelConnectionStatus @default(PAUSED)
+
+  lastAriSyncAt DateTime? @db.Timestamptz(6)
+  lastAriError  String?   @db.VarChar(500)
+  lastPulledAt  DateTime? @db.Timestamptz(6)
+  lastPullError String?   @db.VarChar(500)
+
+  createdByUserId String   @db.Uuid
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+
+  roomTypeMappings ChannelRoomTypeMapping[]
+  ratePlanMappings ChannelRatePlanMapping[]
+  ariChanges       ChannelAriChange[]
+  syncAttempts     ChannelSyncAttempt[]
+  inboundMessages  ChannelInboundMessage[]
+  reservations     ChannelReservation[]
+
+  @@unique([propertyId, provider], name: "channel_connection_one_per_provider")
+  @@unique([id, propertyId], name: "channel_connection_id_property_pair")
+  @@index([status])
+  @@map("channel_connection")
+}
+
+/// Our room type <-> the provider's room type, per connection (CM-02).
+model ChannelRoomTypeMapping {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  connectionId String            @db.Uuid
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  externalRoomTypeId String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  ratePlans ChannelRatePlanMapping[]
+
+  @@unique([propertyId, connectionId, roomTypeId], name: "channel_room_type_mapping_one_per_room_type")
+  @@unique([propertyId, connectionId, externalRoomTypeId], name: "channel_room_type_mapping_one_per_external")
+  @@index([connectionId])
+  @@map("channel_room_type_mapping")
+}
+
+/// Our (room type, rate plan) <-> the provider's rate plan, per connection
+/// (CM-02). A provider rate plan belongs to one provider room type, so the
+/// pair hangs off the room-type mapping.
+model ChannelRatePlanMapping {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  connectionId String            @db.Uuid
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  roomTypeMappingId String                 @db.Uuid
+  roomTypeMapping   ChannelRoomTypeMapping @relation(fields: [roomTypeMappingId], references: [id], onDelete: Cascade)
+
+  roomTypeId String   @db.Uuid
+  ratePlanId String   @db.Uuid
+  ratePlan   RatePlan @relation(fields: [ratePlanId], references: [id], onDelete: Restrict)
+
+  externalRatePlanId String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, connectionId, roomTypeId, ratePlanId], name: "channel_rate_plan_mapping_one_per_product")
+  @@unique([propertyId, connectionId, externalRatePlanId], name: "channel_rate_plan_mapping_one_per_external")
+  @@index([roomTypeMappingId])
+  @@map("channel_rate_plan_mapping")
+}
+
+/// A range of ARI that changed and has not been pushed yet (CM-03).
+///
+/// Written by triggers on `inventory_day` and the rate tables, in the very
+/// transaction that changed the data, one row per ACTIVE connection, so no
+/// write path can forget to tell the channels. A null room type means every
+/// room type; null dates mean the whole push window. The push handler merges
+/// the rows into ranges per room type (the debounce), reads the CURRENT state
+/// and sends it -- full state, so a repeated push is harmless -- then deletes
+/// exactly the rows it read. Rows committed during a push wait for the next.
+model ChannelAriChange {
+  id BigInt @id @default(autoincrement())
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  connectionId String            @db.Uuid
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  roomTypeId String?   @db.Uuid
+  fromDate   DateTime? @db.Date
+  toDate     DateTime? @db.Date
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([propertyId, connectionId, id])
+  @@index([connectionId, createdAt])
+  @@map("channel_ari_change")
+}
+
+/// Every call made to a provider, with what was sent and what came back, for
+/// dispute resolution (CLAUDE.md section 5). ARI bodies carry no personal data
+/// and are kept whole; a booking pull keeps only a count, because its body is
+/// guest data that already lives in `channel_inbound_message`.
+model ChannelSyncAttempt {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  connectionId String            @db.Uuid
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  /// ARI_AVAILABILITY, ARI_RATES, BOOKINGS_PULL or BOOKING_ACK.
+  operation String
+  method    String
+  path      String
+
+  requestBody    Json?
+  responseStatus Int?
+  responseBody   Json?
+
+  ok         Boolean
+  error      String? @db.VarChar(500)
+  durationMs Int
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([propertyId, connectionId, createdAt])
+  @@map("channel_sync_attempt")
+}
+
+/// One message received from a provider, stored as it arrived (minus card
+/// data) BEFORE anything tries to read it (CM-04), so a parser bug can never
+/// lose a booking. Idempotent on the provider's message id.
+model ChannelInboundMessage {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Arrival order; the revisions of one booking are applied in it.
+  sequence BigInt @default(autoincrement())
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  connectionId String            @db.Uuid
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  /// The provider's id for this message (Channex booking revision id).
+  externalMessageId String
+  /// The provider's booking id, when it could be read without parsing.
+  externalBookingId String?
+
+  rawPayload Json
+
+  status        ChannelInboundStatus @default(RECEIVED)
+  /// Why it needs a person (UNMAPPED_ROOM_TYPE, NO_AVAILABILITY, ...).
+  attentionCode String?
+  /// The outcome in plain words; never a stack or SQL.
+  outcome       String?              @db.VarChar(500)
+  /// NEW, MODIFIED or CANCELLED, once read.
+  revisionKind  String?
+
+  attempts         Int       @default(0)
+  appliedAt        DateTime? @db.Timestamptz(6)
+  resolvedAt       DateTime? @db.Timestamptz(6)
+  resolvedByUserId String?   @db.Uuid
+
+  receivedAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([propertyId, connectionId, externalMessageId], name: "channel_inbound_message_once")
+  @@index([propertyId, connectionId, status, sequence])
+  @@index([propertyId, connectionId, externalBookingId])
+  @@map("channel_inbound_message")
+}
+
+/// Which reservation each room of a provider booking became (CM-04). The
+/// unique key is what makes applying a revision idempotent.
+model ChannelReservation {
+  id String @id @default(uuid()) @db.Uuid
+
+  propertyId String   @db.Uuid
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  connectionId String            @db.Uuid
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  externalBookingId String
+  /// 1-based position of the room within the provider booking.
+  roomIndex         Int
+
+  reservationId String      @db.Uuid
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([propertyId, connectionId, externalBookingId, roomIndex], name: "channel_reservation_once_per_room")
+  @@unique([propertyId, reservationId], name: "channel_reservation_one_per_reservation")
+  @@index([reservationId])
+  @@map("channel_reservation")
 }

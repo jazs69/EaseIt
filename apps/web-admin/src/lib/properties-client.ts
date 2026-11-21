@@ -9,6 +9,20 @@
  */
 
 import {
+  channelConnectionSchema,
+  channelInboundListSchema,
+  channelInboundMessageSchema,
+  channelOverviewSchema,
+  channelSyncAttemptListSchema,
+  channelSyncResultSchema,
+  type ChannelConnection,
+  type ChannelInboundList,
+  type ChannelInboundMessage,
+  type ChannelMappingsCommand,
+  type ChannelOverview,
+  type ChannelSyncAttemptList,
+  type ChannelSyncResult,
+  type CreateChannelConnectionCommand,
   workOrderListSchema,
   workOrderSchema,
   type AssignWorkOrderCommand,
@@ -2259,4 +2273,90 @@ export function downloadExport(
       ? ''
       : `?fromDate=${encodeURIComponent(range.fromDate)}&toDate=${encodeURIComponent(range.toDate)}`;
   return apiDownload(`${propertyPath(hotelId)}/export/${encodeURIComponent(dataset)}${query}`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Channel manager (CM-01 .. CM-05)                                          */
+/* -------------------------------------------------------------------------- */
+
+export function fetchChannelOverview(
+  hotelId: string,
+  options: { cookieHeader?: string } = {},
+): Promise<ChannelOverview> {
+  return apiFetch(`${propertyPath(hotelId)}/channels`, channelOverviewSchema, {
+    ...(options.cookieHeader === undefined ? {} : { cookieHeader: options.cookieHeader }),
+  });
+}
+
+export function createChannelConnection(
+  hotelId: string,
+  body: CreateChannelConnectionCommand,
+): Promise<ChannelConnection> {
+  return apiFetch(`${propertyPath(hotelId)}/channels`, channelConnectionSchema, { method: 'POST', body });
+}
+
+const channelPath = (hotelId: string, connectionId: string): string =>
+  `${propertyPath(hotelId)}/channels/${encodeURIComponent(connectionId)}`;
+
+export function saveChannelMappings(
+  hotelId: string,
+  connectionId: string,
+  body: ChannelMappingsCommand,
+): Promise<ChannelConnection> {
+  return apiFetch(`${channelPath(hotelId, connectionId)}/mappings`, channelConnectionSchema, {
+    method: 'PUT',
+    body,
+  });
+}
+
+export function setChannelActive(
+  hotelId: string,
+  connectionId: string,
+  active: boolean,
+): Promise<ChannelConnection> {
+  return apiFetch(
+    `${channelPath(hotelId, connectionId)}/${active ? 'activate' : 'pause'}`,
+    channelConnectionSchema,
+    { method: 'POST', body: {} },
+  );
+}
+
+export function syncChannel(hotelId: string, connectionId: string, full: boolean): Promise<ChannelSyncResult> {
+  return apiFetch(`${channelPath(hotelId, connectionId)}/sync`, channelSyncResultSchema, {
+    method: 'POST',
+    body: { full },
+  });
+}
+
+export function fetchChannelAttempts(
+  hotelId: string,
+  connectionId: string,
+  cursor?: string,
+): Promise<ChannelSyncAttemptList> {
+  const query = cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`;
+  return apiFetch(`${channelPath(hotelId, connectionId)}/attempts${query}`, channelSyncAttemptListSchema);
+}
+
+export function fetchChannelInbound(
+  hotelId: string,
+  connectionId: string,
+  status: 'attention' | 'all',
+  cursor?: string,
+): Promise<ChannelInboundList> {
+  const query = `?status=${status}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`;
+  return apiFetch(`${channelPath(hotelId, connectionId)}/inbound${query}`, channelInboundListSchema);
+}
+
+export function actOnChannelInbound(
+  hotelId: string,
+  connectionId: string,
+  messageId: string,
+  action: 'retry' | 'resolve',
+  note: string | null = null,
+): Promise<ChannelInboundMessage> {
+  return apiFetch(
+    `${channelPath(hotelId, connectionId)}/inbound/${encodeURIComponent(messageId)}/${action}`,
+    channelInboundMessageSchema,
+    { method: 'POST', body: action === 'resolve' ? { note } : {} },
+  );
 }

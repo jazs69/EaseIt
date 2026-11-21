@@ -93,6 +93,10 @@ import { RatePlanService } from './rate-plan.service.js';
     OccupancyPricingService,
     // F9: the booking path prices occupancy and promotions through priceStay.
     PromotionService,
+    // CM-03: the ARI push reads assignments and restrictions through these,
+    // so a channel is sent exactly what the desk would quote.
+    RateCalendarRepository,
+    RateRestrictionRepository,
   ],
 })
 export class RatesModule {}

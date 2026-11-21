@@ -2,10 +2,16 @@
  * AU-13 against the running API: a custom role cannot be granted a permission
  * whose feature is unbuilt, and no role view or session reports one.
  *
+ * The list is read from the rbac source, so it cannot drift from the code.
+ * Since the channel manager shipped (CM-01..05, 2026-11-21) it is empty; the
+ * suite then proves the converse for the permissions that left it: they are
+ * grantable, and reported once granted.
+ *
  * ISOLATION: suite-owned fixture (prefix ZZPRM), torn down here. Custom roles
  * created by the suite are removed with the property.
  */
 
+import { UNAVAILABLE_PERMISSIONS } from '../../packages/types/src/rbac.ts';
 import { createHarness, requireEnvironment, runSuite } from '../support/room-fixture.mjs';
 
 const SUITE = 'unavailable permissions';
@@ -23,10 +29,9 @@ const h = createHarness({
   prisma,
 });
 
-const UNAVAILABLE = [
-  'channels:read',
-  'channels:sync',
-];
+const UNAVAILABLE = Object.keys(UNAVAILABLE_PERMISSIONS);
+/** Permissions that were on the list until their feature shipped. */
+const SHIPPED = ['channels:read', 'channels:sync', 'channels:manage'];
 
 let fixture;
 
@@ -69,10 +74,24 @@ async function body() {
     `HTTP ${String(ok.status)} ${JSON.stringify(ok.payload?.details ?? ok.payload?.message ?? '')}`,
   );
 
-  const patch = await h.call('PATCH', `${base}/roles/${ok.payload?.id}`, admin, {
-    permissions: ['reservations:read', 'channels:sync'],
+  if (UNAVAILABLE.length > 0) {
+    const patch = await h.call('PATCH', `${base}/roles/${ok.payload?.id}`, admin, {
+      permissions: ['reservations:read', UNAVAILABLE[0]],
+    });
+    h.check('nor can an edit add one: 400', patch.status === 400, `HTTP ${String(patch.status)}`);
+  } else {
+    h.note('no permission is unavailable today; the refusal path is proven by the unit suite');
+  }
+
+  console.log('\n1b. Shipped features are grantable.');
+  const shipped = await h.call('PATCH', `${base}/roles/${ok.payload?.id}`, admin, {
+    permissions: ['reservations:read', ...SHIPPED],
   });
-  h.check('nor can an edit add one: 400', patch.status === 400, `HTTP ${String(patch.status)}`);
+  h.check(
+    `a custom role can now hold ${SHIPPED.join(', ')}`,
+    shipped.status === 200 && SHIPPED.every((p) => (shipped.payload?.permissions ?? []).includes(p)),
+    `HTTP ${String(shipped.status)} ${JSON.stringify(shipped.payload?.details ?? '')}`,
+  );
 
   console.log('\n2. Nothing reports them as granted.');
   const roles = await h.call('GET', `${base}/roles`, admin);
@@ -90,6 +109,11 @@ async function body() {
     'my session permissions: 200 and none unavailable',
     me.status === 200 && mine.every((p) => !UNAVAILABLE.includes(p)),
     `HTTP ${String(me.status)}`,
+  );
+  h.check(
+    "a property admin's session carries the shipped channel permissions",
+    SHIPPED.every((p) => mine.includes(p)),
+    SHIPPED.filter((p) => !mine.includes(p)).join(', '),
   );
 }
 

@@ -35,6 +35,7 @@ import { OutboxRuntime } from './modules/platform/outbox/outbox.module.js';
 import { PrismaService } from './prisma/prisma.service.js';
 import { AlertMonitorService } from './modules/platform/alerting/alert-monitor.service.js';
 import { NightAuditScheduler } from './modules/nightaudit/night-audit.scheduler.js';
+import { ChannelSyncScheduler } from './modules/channels/channel-sync.scheduler.js';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Worker');
@@ -83,6 +84,10 @@ async function bootstrap(): Promise<void> {
 
   // NA-03: per-property schedule; off unless enabled (see env.ts).
   app.get(NightAuditScheduler).start();
+
+  // CM-03 / CM-04: ARI pushes, booking pulls and applies, per connection.
+  // Off unless enabled (see env.ts), like the night-audit schedule.
+  app.get(ChannelSyncScheduler).start();
 
   logger.log('EaseIt worker running. Dependencies: PostgreSQL ok, Redis ok.');
 

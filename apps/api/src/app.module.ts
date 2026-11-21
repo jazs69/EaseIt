@@ -30,6 +30,7 @@ import { PaymentsModule } from './modules/payments/payments.module.js';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module.js';
 import { DataExchangeModule } from './modules/data-exchange/data-exchange.module.js';
 import { BookingEngineModule } from './modules/booking-engine/booking-engine.module.js';
+import { ChannelsModule } from './modules/channels/channels.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 
 /**
@@ -79,6 +80,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     MaintenanceModule,
     DataExchangeModule,
     BookingEngineModule,
+    ChannelsModule,
   ],
 })
 export class AppModule {}
